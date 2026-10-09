@@ -1,0 +1,18 @@
+[package]
+name = "kenshi-char"
+version = "0.1.0"
+description = "Kenshi characters: stats and the limb-based medical system, from the sheet's specs"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+kenshi-data = { path = "../data" }
+kenshi-world = { path = "../world" }
+
+[dev-dependencies]
+kenshi-io = { path = "../io" }

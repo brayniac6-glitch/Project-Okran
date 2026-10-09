@@ -1,0 +1,465 @@
+//! Character inventories: the sections CharacterHuman::setupInventorySections makes (F040052) and
+//! the items in them, placed by their footprint ("inventory footprint width / height").
+//!
+//! A section takes items whose "slot" matches its slot type (7, the main grid, takes any); the
+//! main grid places items on its cells, an equipment section holds one item (assumption: as the
+//! game shows them, the section's grid sized to fit one of its kind).
+use kenshi_data::{GameData, GameDataContainer, ItemType};
+
+/// A thing in an inventory.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Item {
+    pub record: String,
+    pub name: String,
+    pub kind: Option<ItemType>,
+    /// The section slot type it goes in (ATTACH: 0 weapon, 3 head, 5 armour, 6 legs, 7 any,
+    /// 8 shirt, 9 boots, 12 backpack, 14 belt).
+    pub slot: i32,
+    pub w: u32,
+    pub h: u32,
+    pub quantity: u32,
+    /// "stackable": how many share a cell (1: one each).
+    pub stack: u32,
+    pub weight: f32,
+    pub value: i32,
+    /// The icon file ("icon"), when the item has one rather than a picture drawn from its mesh.
+    pub icon: Option<String>,
+    /// Food ("item function" 3): its food value ("charges") and what is left in the one being
+    /// eaten (+0x118).
+    pub food: Option<(f32, f32)>,
+    /// A medical kit ("item function" 1, a robot repair kit 12): its "quality" (the skill it
+    /// lets a medic use, +0x11c), the charges left in the one in use (+0x118, from
+    /// "charges"), and whether it is a robot kit.
+    pub medkit: Option<Medkit>,
+    /// Crossbow ammo ("item function" 16): the pack's "charges" (one a reload) and those left in
+    /// it (+0x118, F033853).
+    pub ammo: Option<(f32, f32)>,
+    /// Its quality, 0 .. 100 (`quality`: armour's grade, a weapon's model).
+    pub quality: f32,
+    /// A weapon's maker (WEAPON_MANUFACTURER) and model (MATERIAL_SPECS_WEAPON).
+    pub maker: Option<String>,
+    pub model: Option<String>,
+    /// Branded as a faction's uniform (CHARACTER "wears uniform"): that faction.
+    pub uniform: Option<String>,
+}
+
+impl Item {
+    pub fn from_record(r: &GameData, quantity: u32) -> Item {
+        let int = |k: &str| r.ints.get(k).copied().or_else(|| r.floats.get(k).map(|f| *f as i32));
+        let kind = r.item_type();
+        let slot = int("slot").unwrap_or(match kind {
+            Some(ItemType::Weapon) => 0,
+            _ => 7,
+        });
+        Item {
+            record: r.string_id.clone(),
+            name: r.name.clone(),
+            kind,
+            slot,
+            w: int("inventory footprint width").unwrap_or(1).max(1) as u32,
+            h: int("inventory footprint height").unwrap_or(1).max(1) as u32,
+            quantity: quantity.max(1),
+            stack: int("stackable").unwrap_or(1).max(1) as u32,
+            weight: r.floats.get("weight kg").copied().unwrap_or(0.0),
+            value: int("value").unwrap_or(0),
+            icon: r.files.get("icon").filter(|f| !f.is_empty()).cloned(),
+            food: (int("item function") == Some(3)).then(|| {
+                let c = int("charges").unwrap_or(0).max(1) as f32;
+                (c, c)
+            }),
+            medkit: matches!(int("item function"), Some(1 | 12)).then(|| {
+                let c = int("charges").unwrap_or(0).max(1) as f32;
+                Medkit {
+                    quality: r.floats.get("quality").copied().or_else(|| int("quality").map(|v| v as f32)).unwrap_or(0.0),
+                    charges: c,
+                    full: c,
+                    robot: int("item function") == Some(12),
+                }
+            }),
+            ammo: (int("item function") == Some(16)).then(|| {
+                let c = int("charges").unwrap_or(0).max(1) as f32;
+                (c, c)
+            }),
+            // (assumption) an item made with no grade or maker given: Standard armour (grade
+            // 2), a weapon at 15 (Ancient's lowest model)
+            quality: match kind {
+                Some(ItemType::Armour) => 40.0,
+                Some(ItemType::Weapon) => 15.0,
+                _ => 0.0,
+            },
+            maker: None,
+            model: None,
+            uniform: None,
+        }
+    }
+}
+
+/// A medical kit's state ([`Item::medkit`]).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Medkit {
+    pub quality: f32,
+    pub charges: f32,
+    pub full: f32,
+    pub robot: bool,
+}
+
+/// An item and the cell its top-left sits on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Placed {
+    pub item: Item,
+    pub x: u32,
+    pub y: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Section {
+    pub name: &'static str,
+    pub w: u32,
+    pub h: u32,
+    pub slot: i32,
+    pub items: Vec<Placed>,
+}
+
+/// The main grid's slot type: it takes anything.
+pub const ANY: i32 = 7;
+
+impl Section {
+    pub fn new(name: &'static str, w: u32, h: u32, slot: i32) -> Section {
+        Section { name, w, h, slot, items: Vec::new() }
+    }
+
+    /// An equipment section: one item of its kind.
+    pub fn is_equipment(&self) -> bool {
+        self.slot != ANY
+    }
+
+    pub fn takes(&self, item: &Item) -> bool {
+        self.slot == ANY || item.slot == self.slot
+    }
+
+    /// Whether `item` can sit at (x, y), leaving out item `except` (the one being moved).
+    pub fn fits(&self, item: &Item, x: u32, y: u32, except: Option<usize>) -> bool {
+        if !self.takes(item) {
+            return false;
+        }
+        if self.is_equipment() {
+            return self.items.iter().enumerate().all(|(i, _)| Some(i) == except);
+        }
+        if x + item.w > self.w || y + item.h > self.h {
+            return false;
+        }
+        self.items.iter().enumerate().filter(|(i, _)| Some(*i) != except).all(|(_, p)| {
+            x + item.w <= p.x || p.x + p.item.w <= x || y + item.h <= p.y || p.y + p.item.h <= y
+        })
+    }
+
+    /// The first free cell for `item`, row by row.
+    pub fn first_fit(&self, item: &Item) -> Option<(u32, u32)> {
+        if self.is_equipment() {
+            return self.fits(item, 0, 0, None).then_some((0, 0));
+        }
+        (0..self.h).flat_map(|y| (0..self.w).map(move |x| (x, y))).find(|&(x, y)| self.fits(item, x, y, None))
+    }
+
+    /// The item covering cell (x, y).
+    pub fn at(&self, x: u32, y: u32) -> Option<usize> {
+        if self.is_equipment() {
+            return (!self.items.is_empty()).then_some(0);
+        }
+        self.items.iter().position(|p| x >= p.x && x < p.x + p.item.w && y >= p.y && y < p.y + p.item.h)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Inventory {
+    pub sections: Vec<Section>,
+}
+
+impl Inventory {
+    /// @fn F040052
+    ///
+    /// A character's sections: hip 7x1 and back 10x2 (weapons), boots 4x2, head 4x3,
+    /// backpack_attach 5x4, shirt 4x2, armour 4x6, legs 4x5, belt 2x2 and the main 8x10.
+    pub fn character() -> Inventory {
+        Inventory {
+            sections: vec![
+                Section::new("hip", 7, 1, 0),
+                Section::new("back", 10, 2, 0),
+                Section::new("boots", 4, 2, 9),
+                Section::new("head", 4, 3, 3),
+                Section::new("backpack_attach", 5, 4, 12),
+                Section::new("shirt", 4, 2, 8),
+                Section::new("armour", 4, 6, 5),
+                Section::new("legs", 4, 5, 6),
+                Section::new("belt", 2, 2, 14),
+                Section::new("main", 8, 10, ANY),
+            ],
+        }
+    }
+
+    pub fn section(&self, name: &str) -> Option<usize> {
+        self.sections.iter().position(|s| s.name == name)
+    }
+
+    /// Stack onto the same item where there is room, else equip it (`equip`) in a free section
+    /// of its kind, else the first free cell of the main grid; false when it does not fit.
+    pub fn add(&mut self, mut item: Item, equip: bool) -> bool {
+        for s in &mut self.sections {
+            for p in &mut s.items {
+                if p.item.record == item.record && p.item.stack > 1 && p.item.quantity < p.item.stack {
+                    let take = (p.item.stack - p.item.quantity).min(item.quantity);
+                    p.item.quantity += take;
+                    item.quantity -= take;
+                    if item.quantity == 0 {
+                        return true;
+                    }
+                }
+            }
+        }
+        let order: Vec<usize> = if equip {
+            (0..self.sections.len()).filter(|&i| self.sections[i].is_equipment()).chain(self.section("main")).collect()
+        } else {
+            self.section("main").into_iter().collect()
+        };
+        for i in order {
+            if let Some((x, y)) = self.sections[i].first_fit(&item) {
+                self.sections[i].items.push(Placed { item, x, y });
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Move item `idx` of section `from` to cell (x, y) of section `to`, if it fits there.
+    pub fn move_item(&mut self, from: usize, idx: usize, to: usize, x: u32, y: u32) -> bool {
+        let Some(item) = self.sections.get(from).and_then(|s| s.items.get(idx)).map(|p| p.item.clone()) else {
+            return false;
+        };
+        let except = (from == to).then_some(idx);
+        if !self.sections.get(to).is_some_and(|s| s.fits(&item, x, y, except)) {
+            return false;
+        }
+        let p = self.sections[from].items.remove(idx);
+        self.sections[to].items.push(Placed { item: p.item, x, y });
+        true
+    }
+
+    /// Take item `idx` out of section `s`.
+    /// F039256 on the first food carried: eat one bite for a hunger shown at `shown`; the
+    /// food item loses it, one off its stack (or gone) when used up. The food's name and the
+    /// bite, or None with no food.
+    pub fn eat(&mut self, shown: f32) -> Option<(String, f32)> {
+        for sec in &mut self.sections {
+            let Some(i) = sec.items.iter().position(|p| p.item.food.is_some()) else { continue };
+            let item = &mut sec.items[i].item;
+            let (full, left) = item.food.expect("food");
+            let b = crate::hunger::bite(left, shown);
+            if b <= 0.0 {
+                return None;
+            }
+            let left = left - b;
+            let name = item.name.clone();
+            if left <= 0.0 {
+                if item.quantity > 1 {
+                    item.quantity -= 1;
+                    item.food = Some((full, full));
+                } else {
+                    sec.items.remove(i);
+                }
+            } else {
+                item.food = Some((full, left));
+            }
+            return Some((name, b));
+        }
+        None
+    }
+
+    /// The charges of ammo item `record` carried (every pack's left, packs after the first full).
+    pub fn ammo_charges(&self, record: &str) -> u32 {
+        self.sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter(|p| p.item.record == record)
+            .filter_map(|p| p.item.ammo.map(|(full, left)| left + full * (p.item.quantity.max(1) - 1) as f32))
+            .sum::<f32>() as u32
+    }
+
+    /// One charge of ammo item `record` spent (F033853): from the first pack, a pack emptied
+    /// taken away. False when there is none.
+    pub fn spend_ammo(&mut self, record: &str) -> bool {
+        for sec in &mut self.sections {
+            let Some(i) = sec.items.iter().position(|p| p.item.record == record && p.item.ammo.is_some()) else { continue };
+            let item = &mut sec.items[i].item;
+            let (full, mut left) = item.ammo.expect("ammo");
+            left -= 1.0;
+            if left <= 0.0 {
+                if item.quantity > 1 {
+                    item.quantity -= 1;
+                    item.ammo = Some((full, full));
+                } else {
+                    sec.items.remove(i);
+                }
+            } else {
+                item.ammo = Some((full, left));
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Put `item` in section `s` with its top-left at (x, y) if it fits there (back otherwise).
+    #[allow(clippy::result_large_err)]
+    pub fn put(&mut self, s: usize, item: Item, x: u32, y: u32) -> Result<(), Item> {
+        match self.sections.get_mut(s) {
+            Some(sec) if sec.takes(&item) && sec.fits(&item, x, y, None) => {
+                sec.items.push(Placed { item, x, y });
+                Ok(())
+            }
+            _ => Err(item),
+        }
+    }
+
+    pub fn take(&mut self, s: usize, idx: usize) -> Option<Item> {
+        let sec = self.sections.get_mut(s)?;
+        (idx < sec.items.len()).then(|| sec.items.remove(idx).item)
+    }
+
+    /// Everything carried, by weight (kg).
+    pub fn weight(&self) -> f32 {
+        self.sections.iter().flat_map(|s| &s.items).map(|p| p.item.weight * p.item.quantity as f32).sum()
+    }
+
+    /// The items equipped (every section but the main grid).
+    pub fn equipped(&self) -> impl Iterator<Item = &Item> {
+        self.sections.iter().filter(|s| s.is_equipment()).flat_map(|s| s.items.iter().map(|p| &p.item))
+    }
+
+    /// A CHARACTER template's starting kit: its "clothing" (worn), "weapons" (equipped) and
+    /// "inventory" items, each entry (count, chance %) rolled with `roll` (0..100).
+    pub fn from_template(data: &GameDataContainer, character: &GameData, roll: &mut impl FnMut() -> f32) -> Inventory {
+        let mut inv = Inventory::character();
+        for (cat, equip) in [("clothing", true), ("weapons", true), ("inventory", false)] {
+            // (assumption) a template's clothing is tried in random order, so of those for a slot
+            // that pass their chance a random one is worn (Kenshi's own choice, F030256's
+            // catalogue by slot and class, is not ported); in list order every character of a
+            // template wore the same
+            let mut entries: Vec<_> = character.refs(cat).iter().collect();
+            if cat == "clothing" {
+                for i in (1..entries.len()).rev() {
+                    let j = ((roll() * 0.01 * (i + 1) as f32) as usize).min(i);
+                    entries.swap(i, j);
+                }
+            }
+            for (sid, v) in entries {
+                let Some(r) = data.get(sid) else { continue };
+                let count = v.first().copied().unwrap_or(1).max(1) as u32;
+                let chance = v.get(1).copied().unwrap_or(100) as f32;
+                if roll() >= chance {
+                    continue;
+                }
+                let item = Item::from_record(r, count);
+                if item.stack > 1 {
+                    inv.add(item, equip);
+                } else {
+                    for _ in 0..count {
+                        let one = make_one(data, character, r, roll);
+                        inv.add(one, equip);
+                    }
+                }
+            }
+        }
+        inv
+    }
+}
+
+/// F040052: one of a CHARACTER template's kit items: armour at the character's "armour grade",
+/// one higher by its "armour upgrade chance" (grade below 5); a weapon by a maker from its
+/// "weapon level" (F038067: one of them at random; none: Ancient).
+fn make_one(data: &GameDataContainer, character: &GameData, r: &GameData, roll: &mut impl FnMut() -> f32) -> Item {
+    match r.item_type() {
+        Some(ItemType::Armour) => {
+            let grade = character.ints.get("armour grade").copied().unwrap_or(1);
+            let chance = character.ints.get("armour upgrade chance").copied().unwrap_or(0) as f32;
+            let up = (grade < 5 && roll() < chance) as i32;
+            Item::armour(data, r, grade + up)
+        }
+        Some(ItemType::Weapon) => {
+            let makers = character.refs("weapon level");
+            let maker = (!makers.is_empty()).then(|| makers[((roll() * 0.01 * makers.len() as f32) as usize).min(makers.len() - 1)].0.clone());
+            let mut unit = || (roll() * 0.01).clamp(0.0, 0.9999);
+            Item::weapon(data, r, maker.as_deref(), &mut unit)
+        }
+        _ => Item::from_record(r, 1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(slot: i32, w: u32, h: u32) -> Item {
+        Item {
+            record: format!("{slot}-{w}x{h}"),
+            name: String::new(),
+            kind: None,
+            slot,
+            w,
+            h,
+            quantity: 1,
+            stack: 1,
+            weight: 1.0,
+            value: 0,
+            quality: 0.0,
+            maker: None,
+            model: None,
+            uniform: None,
+            icon: None,
+            food: None,
+            medkit: None,
+            ammo: None,
+        }
+    }
+
+    #[test]
+    fn main_grid_packs_by_footprint() {
+        let mut inv = Inventory::character();
+        let main = inv.section("main").unwrap();
+        for _ in 0..4 {
+            assert!(inv.add(item(7, 4, 5), false));
+        }
+        // 8x10 holds four 4x5 items and nothing more
+        assert!(!inv.add(item(7, 1, 1), false));
+        assert_eq!(inv.sections[main].items.len(), 4);
+    }
+
+    #[test]
+    fn equipment_takes_its_kind_once() {
+        let mut inv = Inventory::character();
+        assert!(inv.add(item(6, 4, 4), true));
+        let legs = inv.section("legs").unwrap();
+        assert_eq!(inv.sections[legs].items.len(), 1);
+        // a second pair goes to the main grid
+        assert!(inv.add(item(6, 4, 4), true));
+        assert_eq!(inv.sections[legs].items.len(), 1);
+        assert_eq!(inv.sections[inv.section("main").unwrap()].items.len(), 1);
+        // moving a weapon into the legs is refused
+        assert!(inv.add(item(0, 7, 1), true));
+        let hip = inv.section("hip").unwrap();
+        assert!(!inv.move_item(hip, 0, legs, 0, 0));
+    }
+
+    #[test]
+    fn stacks_fill_before_new_cells() {
+        let mut inv = Inventory::character();
+        let mut kit = item(7, 2, 1);
+        kit.stack = 3;
+        kit.quantity = 2;
+        assert!(inv.add(kit.clone(), false));
+        kit.quantity = 2;
+        assert!(inv.add(kit, false));
+        let main = &inv.sections[inv.section("main").unwrap()];
+        assert_eq!(main.items.len(), 2);
+        assert_eq!(main.items[0].item.quantity, 3);
+        assert_eq!(main.items[1].item.quantity, 1);
+    }
+}

@@ -1,0 +1,16 @@
+[package]
+name = "kenshi-anim"
+version = "0.1.0"
+description = "Skeletal animation for Kenshi's Ogre skeletons (engine-independent math)"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+kenshi-io = { path = "../io" }
+kenshi-data = { path = "../data" }
+# same version Bevy 0.19 uses, so poses pass to the renderer without conversion
+glam = "0.32.1"

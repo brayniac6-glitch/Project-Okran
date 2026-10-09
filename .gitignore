@@ -1,0 +1,14 @@
+# Raw Ghidra output is derived from the proprietary Kenshi binary.
+# It stays local and is never committed; the sheet holds only our own notes/names.
+decomp/
+*.gpr
+*.rep/
+__pycache__/
+
+# Raw game text extracted from the binary; regenerate with: python tools/sheet.py ingest
+sheet/strings.tsv
+dist/
+*.png
+target/
+/exports/
+shots/

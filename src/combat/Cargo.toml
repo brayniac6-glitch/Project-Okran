@@ -1,0 +1,17 @@
+[package]
+name = "kenshi-combat"
+version = "0.1.0"
+description = "Kenshi combat: damage and blocking, from the sheet's specs"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+kenshi-char = { path = "../char" }
+kenshi-data = { path = "../data" }
+kenshi-anim = { path = "../anim" }
+kenshi-io = { path = "../io" }
+

@@ -1,0 +1,15 @@
+[package]
+name = "kenshi-physics"
+version = "0.1.0"
+description = "Ragdolls from Kenshi's Scythe physics files (stands in for PhysX 2.8; engine-independent)"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+kenshi-io = { path = "../io" }
+# same version Bevy uses, so poses pass to the renderer without conversion
+glam = "0.32.1"

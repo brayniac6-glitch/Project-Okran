@@ -1,0 +1,30 @@
+[package]
+name = "kenshi-game"
+version = "0.1.0"
+description = "Kenshi's game: the simulation of a zone and the playable app"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+kenshi-io = { path = "../io" }
+kenshi-data = { path = "../data" }
+kenshi-world = { path = "../world" }
+kenshi-char = { path = "../char" }
+kenshi-combat = { path = "../combat" }
+kenshi-ai = { path = "../ai" }
+kenshi-anim = { path = "../anim" }
+kenshi-render = { path = "../render" }
+kenshi-physics = { path = "../physics" }
+kenshi-gui = { path = "../gui" }
+kenshi-audio = { path = "../audio" }
+bevy = { version = "=0.19.1", features = ["dds"] }
+
+[[bin]]
+name = "kenshi"
+path = "bin/kenshi.rs"

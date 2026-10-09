@@ -1,0 +1,22 @@
+[package]
+name = "kenshi-io"
+version = "0.1.0"
+description = "Readers for Kenshi's on-disk formats (FCS .base/.mod records), read from the player's install"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "fcsdump"
+path = "bin/fcsdump.rs"
+
+[[bin]]
+name = "meshdump"
+path = "bin/meshdump.rs"
+
+[[bin]]
+name = "skeldump"
+path = "bin/skeldump.rs"

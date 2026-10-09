@@ -1,0 +1,276 @@
+tid	off	name	type	notes
+T00002	0	filetype	i32	16 or 17
+T00002	1	version	i32	mod version; 1 in base game files
+T00002	2	author	FcsString	
+T00002	3	description	FcsString	
+T00002	4	dependencies	FcsString	comma-separated file names this file builds on
+T00002	5	references	FcsString	comma-separated file names referenced but not required
+T00002	6	id_counter	i32	next numeric id for new string_ids ("<n>-<file>"); loader keeps the max over all files (F041671)
+T00002	7	record_count	i32	number of FcsRecord that follow
+T00002	8	header_size	i32	v17 only, read right after filetype: byte length of version..tail
+T00002	9	tail	bytes	v17 only, after references up to header end: 9-10 bytes, first i32 varies (1, 9, 0x13...); meaning unknown
+T00003	0	lead	i32	v16: 0. v17: 0 or the record byte length including this field
+T00003	1	type	i32	record type (ItemType); names from fcs.def sections
+T00003	2	id	i32	0 in observed files
+T00003	3	name	FcsString	display name
+T00003	4	string_id	FcsString	unique key '<n>-<file>'; references point at this
+T00003	5	datatype	FcsDataType	flags: bit0 = modifies an existing record (warn if missing), bit1 = sets the name; other bits unused by the loader (F041671)
+T00003	6	bools	list<(FcsString,u8)>	
+T00003	7	floats	list<(FcsString,f32)>	
+T00003	8	ints	list<(FcsString,i32)>	
+T00003	9	vec3s	list<(FcsString,f32x3)>	
+T00003	a	vec4s	list<(FcsString,f32x4)>	
+T00003	b	strings	list<(FcsString,FcsString)>	
+T00003	c	files	list<(FcsString,FcsString)>	paths into data/ (meshes, textures)
+T00003	d	references	list<(FcsString category, list<FcsReference>)>	category = fcs.def field name
+T00003	e	instances	list<FcsInstance>	
+T00004	0	target	FcsString	string_id of the referenced record
+T00004	1	values	i32x3	val0..val2
+T00005	0	id	FcsString	
+T00005	1	target	FcsString	string_id of the placed record
+T00005	2	position	f32x3	
+T00005	3	rotation	f32x4	quaternion stored w, x, y, z (zone placements start with 1.0 for identity)
+T00005	4	states	list<FcsString>	
+T00026	80	strength	f32	STATS record key
+T00026	84	endurance	f32	STATS record key
+T00026	88	dexterity	f32	STATS record key
+T00026	8c	perception	f32	STATS record key
+T00026	90	toughness2	f32	STATS record key
+T00026	13c	warrior spirit	f32	STATS record key
+T00026	120	attack	f32	STATS record key
+T00026	124	defence	f32	STATS record key
+T00026	f0	dodge	f32	STATS record key; the skill blocking uses (defenceLevel F047048, trained by F047459)
+T00026	94	athletics	f32	STATS record key
+T00026	98	medic	f32	STATS record key
+T00026	9c	mass combat	f32	STATS record key
+T00026	a0	arrow defence	f32	STATS record key
+T00026	a4	stealth	f32	STATS record key
+T00026	a8	swimming	f32	STATS record key
+T00026	ac	thievery	f32	STATS record key
+T00026	b0	lockpicking	f32	STATS record key
+T00026	b4	bluff	f32	STATS record key
+T00026	b8	assassin	f32	STATS record key
+T00026	bc	survival	f32	STATS record key
+T00026	c4	climbing	f32	STATS record key
+T00026	c0	tracking	f32	STATS record key
+T00026	cc	engineer	f32	STATS record key
+T00026	d0	weapon smith	f32	STATS record key
+T00026	d4	armour smith	f32	STATS record key
+T00026	dc	robotics	f32	STATS record key
+T00026	d8	bow smith	f32	STATS record key
+T00026	e0	science	f32	STATS record key
+T00026	e4	labouring	f32	STATS record key
+T00026	e8	farming	f32	STATS record key
+T00026	ec	cooking	f32	STATS record key
+T00026	f8	katana	f32	STATS record key
+T00026	118	poles	f32	STATS record key
+T00026	fc	sabres	f32	STATS record key
+T00026	100	hackers	f32	STATS record key
+T00026	108	heavy weapons	f32	STATS record key
+T00026	104	blunt	f32	STATS record key
+T00026	114	turrets	f32	STATS record key
+T00026	10c	unarmed	f32	STATS record key
+T00026	f4	ff	f32	STATS record key "ff" (meaning unknown)
+T00026	110	bow	f32	STATS record key "bow" (crossbows?)
+T00026	194	xp	f32	STATS record key "xp"
+T00027	32	vital	u8	disabling this part knocks out (from applyBodyPartDamage)
+T00027	34	ko_weight	f32	weight of this part's damage in knockout time
+T00027	40	flesh	f32	flesh health: cut/pierce damage (+ organ share of blunt)
+T00027	44	stun	f32	blunt/stun damage, subtracted from flesh for effective health
+T00027	4c	bonus	f32	added to effective health
+T00027	50	max_loss	f32	permanent max-health loss (robot wear)
+T00027	54	max_a	f32	max health = a*b*c - max_loss
+T00027	58	max_b	f32	
+T00027	5c	max_c	f32	
+T00027	60	health_frac	f32	(flesh - stun + bonus) / max health
+T00028	70	blood	f32	
+T00028	a0	knockout_time	f32	set by computeKnockoutTime
+T00028	161	knocked_out	u8	
+T00028	163	downed	u8	knocked down: set by blood loss (blood KO) and by a destroyed limb
+T00028	198	part_count	u32	
+T00028	1a0	parts	BodyPart**	
+T00028	1a8	stats	CharStats*	
+T00027	30	treated	u8	being treated (first aid): fills the treatment pool
+T00027	3c	focus	f32	hit-weight multiplier: +1 per hit up to 4 (1 once health frac < 0), 0 when destroyed; decays toward 1 by dt*0.01 while flesh >= 0
+T00027	48	treatment	f32	treatment pool: heals into flesh over time
+T00027	8	kind	i32	LOCATIONAL_DAMAGE "body part type": 0 torso, 1 leg, 2 arm, 3 head; limb slot = leg: 2/3, arm: 0/1 by side; low strikes skip arms and head
+T00027	20	side	i32	which of a limb pair (1 = first slot)
+T00027	38	hit_weight	f32	relative chance this part is hit (resolveHit)
+T00025	0	extra blood loss from bodyparts	f32	
+T00025	4	bleed rate	f32	stored = record value * 0.10000000149011612
+T00025	8	immediate blood loss	f32	
+T00025	c	bleeding clot rate	f32	
+T00025	10	blunt damage 1	f32	
+T00025	14	blunt damage 99	f32	
+T00025	18	cut damage 1	f32	
+T00025	1c	cut damage 99	f32	
+T00025	20	bow damage 1	f32	
+T00025	24	bow damage 99	f32	
+T00025	28	pierce damage multiplier	f32	
+T00025	2c	stumble damage max	i32	
+T00025	30	damage resistance min	f32	
+T00025	34	damage resistance max	f32	
+T00025	38	stun recovery rate	f32	
+T00025	3c	blood recovery rate	f32	
+T00025	40	attack chance factor	f32	
+T00025	44	base block chance	f32	
+T00025	48	block chance reduction per 10levels	f32	stored = record value * 0.1 (per skill level)
+T00025	4c	block chance increase per 10levels	f32	stored = record value * 0.1 (per skill level)
+T00025	50	degeneration mult 1	f32	
+T00025	54	degeneration mult 99	f32	
+T00025	58	medic speed mult	f32	
+T00025	5c	knockout mult 1	f32	
+T00025	60	knockout mult 99	f32	
+T00025	64	knockout time base	f32	
+T00025	68	bodypart degeneration rate	f32	
+T00025	6c	heal rate mult	f32	
+T00025	70	resting heal rate mult	f32	
+T00025	74	XP rate medic 1	f32	
+T00025	78	XP rate medic 99	f32	
+T00025	7c	medkit drain 1	f32	stored = record value * 0.1
+T00025	80	medkit drain 99	f32	
+T00025	84	robot wear rate	f32	
+T00025	88	robot medic speed mult	f32	
+T00025	8c	starvation time	f32	
+T00025	90	fed recovery rate mult	f32	
+T00025	94	bed hunger rate	f32	
+T00025	98	encumbrance hunger rate	f32	
+T00025	9c	food quality mult	f32	
+T00025	a0	food price mult	f32	
+T00025	a4	skill diff xp 2x bonus	f32	
+T00025	a8	skill diff xp 0x penalty	f32	
+T00025	c4	xp rate toughness	f32	
+T00025	c8	crossbow price mult	f32	
+T00025	cc	robotics price mult	f32	
+T00025	d0	armor price mult	f32	
+T00025	d4	sword price mult	f32	
+T00025	d8	trade price mult	f32	
+T00025	dc	global price mult	f32	
+T00025	e0	clothing price mult	f32	
+T00025	e4	trade profit margins	f32	
+T00025	e8	loot price mult GEAR	f32	
+T00025	ec	loot price mult	f32	
+T00025	f0	loot price mult player armour	f32	
+T00025	f4	loot price mult player weapons	f32	
+T00025	f8	blueprint price mult	f32	
+T00025	100	blunt permanent organ damage	f32	
+T00025	104	unarmed damage mult	f32	
+T00025	108	max num attack slots	i32	
+T00025	10c	min strength xp mult	f32	
+T00025	110	weight strength diff 1x	i32	
+T00025	114	weight strength diff max	f32	
+T00025	118	weapon inventory weight mult	f32	
+T00025	11c	xp rate strength from walking	f32	
+T00025	120	xp rate strength	f32	
+T00025	124	xp rate athletics	f32	stored = record value * 0.5
+T00025	128	encumbrance base	f32	
+T00025	12c	carry weight mult	f32	
+T00025	130	carry person weight	f32	
+T00025	134	min dismantle materials percentage	f32	stored = record value * 0.009999999776482582
+T00025	138	exp gain multiplier	f32	stored = record value * 0.25
+T00025	150	research level increase rate	f32	
+T00025	154	research rate	f32	
+T00025	158	minimum lockpick chance	f32	stored = record value * 0.009999999776482582
+T00025	160	animation blend rate	f32	
+T00025	164	production speed	f32	
+T00025	168	build speed	f32	
+T00025	16c	prison time	f32	
+T00025	170	min toughness ko point	f32	
+T00025	174	max toughness ko point	f32	
+T00025	178	max squad size	i32	
+T00025	17c	max squads	i32	
+T00025	190	appearance random deviation percentage	f32	
+T00028	74	limb_bleed	f32	sum of part bleedAmount (bleed)
+T00028	78	bleed_rate	f32	blood lost per second (bleed)
+T00028	164	dead	u8	set by update when blood < -maxBlood, health < 0 or a vital part is lost
+T00028	178	wounds	Wound*[]	bleeding wounds; each has remaining amount at +0x14, clots by bleeding clot rate
+T00028	e0	character	Character*	
+T00028	60	hunger	f32	nutrition level, capped at 3.0; starvation death below 0
+T00028	64	stomach	f32	food being digested into hunger
+T00028	68	hunger_time	f64	game time of the last hunger update
+T00028	80	limbs	BodyPart*[4]	the four limbs (+0x80,+0x88,+0x90,+0x98)
+T00026	178	hunger_rate	f32	base hunger rate (hungerRate)
+T00026	190	load	f32	encumbrance factor (1 = unburdened): hunger, martial arts, defence and XP gains scale by it
+T00030	228	cut_resistance	f32	fraction of cut damage stopped, [0, 0.9]
+T00030	22c	blunt_resistance	f32	fraction of blunt damage stopped, [0, 0.9]
+T00030	230	pierce_reduction	f32	flat pierce damage stopped
+T00030	238	cut_into_stun	f32	share of stopped cut (and pierce) that becomes stun, [0, 1]
+T00030	23c	material	i32	ARMOUR "material type" (ArmourType: cloth, leather, chain, plate); also the hit material
+T00030	240	class	i32	ARMOUR "class" (ArmourClass: cloth, light, medium, heavy)
+T00030	2a8	coverage	map	body part -> chance this piece covers it on a hit ("part coverage")
+T00030	220	quality	f32	0..1 item quality; lerp factor for the material ranges
+T00030	25c	stealth_mult	f32	
+T00035	120	inventory_weight	f32	
+T00035	220	quality	f32	0..1 item quality
+T00035	228	bleed	f32	'bleed mult'
+T00035	22c	attack_mod	i32	
+T00035	230	combat_weight	f32	max(blunt mult*40, weight)
+T00035	240	cut_mult	f32	
+T00035	244	blunt_mult	f32	
+T00035	248	min_cut	f32	'min cut damage mult'
+T00035	24c	defence_mod	i32	
+T00035	250	indoors_mod	i32	
+T00026	19c	weapon_cut_factor	f32	equipped weapon's cut mult (setWeapon)
+T00026	1a0	weapon_blunt_factor	f32	
+T00026	1a4	weapon_bleed	f32	
+T00026	1a8	weapon_pierce_factor	f32	record 'pierce damage multiplier'
+T00026	1ac	cut_base	f32	damage at the bottom of the cut curve
+T00026	1b0	blunt_base	f32	
+T00026	1b4	robot_damage_mult	f32	
+T00026	1b8	human_damage_mult	f32	
+T00026	1bc	animal_damage_mult	f32	
+T00026	1c0	armour_penetration	f32	
+T00026	1c8	race_damage	map	race -> damage factor (value0*0.01)
+T00026	1f0	weapon_category	i32	WeaponCategory
+T00026	1f8	weapon_skill	f32*	the skill field the category selects
+T00026	200	weapon_length	f32	
+T00026	228	weapon_weight	f32	
+T00035	234	category	i32	record int "skill category" (WeaponCategory), read at item setup (F044624)
+T00026	28	weapon_attack_mod	i32	
+T00026	2c	attack_base	i32	
+T00026	48	damage_mult	f32	scales all attack damage when != 1 and > 0
+T00026	4c	limb_damage_taken	f32	scales punch feedback damage (F040731)
+T00036	0	anim_name	string	
+T00036	28	speed	f32	'anim speed mult'
+T00036	2c	is_block	u8	
+T00036	2d	is_dodge	u8	
+T00036	2e	is_stumble_dodge	u8	
+T00036	2f	gains_ground	u8	
+T00036	30	is_prone	u8	
+T00036	31	low_strike	u8	can only hit torso and legs (resolveHit)
+T00036	34	hesitate	f32	'anim hesitate point' / num frames
+T00036	38	attack_distance	f32	
+T00036	3c	attack_distance_static	f32	'attack distance min vs static'
+T00036	40	acceptable_end	f32	'acceptable end time' / num frames
+T00036	44	min_skill	f32	
+T00036	48	max_skill	f32	
+T00036	4c	max_encumbrance	f32	
+T00036	50	chance	f32	
+T00036	54	max_simultaneous_hits	i32	
+T00036	58	events	map	animation event -> time
+T00036	98	allowed	u8[22]	by WeaponCategory
+T00036	a8	animal	i32	
+T00036	b8	frame_count	u32	
+T00036	c0	frames	Frame*	{direction i32, power f32, impact f32 ('anim blocked frame': the strike connects), stop f32 (the move ends), limb i32}, 0x14 each
+T00026	38	defence_mult	f32	multiplies the defence level (buffed)
+T00026	18c	combat_speed	f32	combat animation speed factor (technique speed * it)
+T00026	150	max_reach	f32	longest technique reach found by gatherAttacks (10 by default)
+T00039	40	speed	f32	
+T00039	4c	sync_offset	f32	
+T00039	50	time	f32	seconds into the clip
+T00039	54	progress	f32	time / length; what combat reads (actionProgress F038894)
+T00039	58	end_time	f32	
+T00039	5d	looping	u8	
+T00039	5e	synced	u8	follows a shared phase instead of its own clock
+T00039	66	stop_at_end	u8	
+T00039	67	playing	u8	
+T00039	80	events	(Event*, f32)[]	sorted by progress; count +0x78, cursor +0x8c, last progress +0x88
+T00039	44	weight	f32	current blend weight
+T00039	48	target_weight	f32	
+T00039	5c	keep_weight	u8	not rescaled by layer normalisation
+T00039	60	start_near_end	u8	first update jumps to 96% of the clip
+T00039	62	reverse_fading	u8	plays backwards while fading out
+T00040	40	fade_rate	f32	animation blend rate (GLOBAL CONSTANTS, 4) * the layer's multiplier (F040013)
+T00039	68	root_motion	u8	this clip moves the character (its root translation is extracted)
+T00026	17c	move_speed	f32	final movement speed (updateMoveSpeed F047064)
+T00026	18	speed_mult	f32	multiplies movement speed

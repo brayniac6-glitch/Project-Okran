@@ -1,0 +1,22 @@
+sub	title	desc	prio
+unk	Unsorted	Not yet triaged	5
+core	Core/Engine	Main loop, GameWorld update, memory, threads, hashing, logging	3
+io	Files & Mods	FCS .mod/.base data files, resource loading, mod load order	2
+data	Game Data	GameData records: items, races, factions, buildings, weapons, research	1
+char	Characters	Character, stats, race, body parts, medical system (limb HP, bleeding, KO), hunger	1
+combat	Combat	Melee attacks/blocks, weapons, armour, damage to limbs, crossbows, turrets	1
+ai	AI & Squads	Platoons/squads, orders and tasks, factions, relations, pathfinding (Recast/Detour)	1
+world	World	Zones, towns, nests, biomes, weather, time of day, world states	1
+build	Building	Bases/outposts, construction, furniture, production, farming	1
+econ	Economy & Items	Inventory, items, trading, shops, cats (money), containers, loot	1
+dialog	Dialogue	Dialogue trees, conditions, events, quests/world states	2
+player	Player Control	Selection, player orders, controlled squad, PlayerInterface	1
+ui	UI/HUD	HUD, inventory, trade, map windows (replaces MyGUI)	2
+save	Save/Load	Game saves, platoon/zone serialization	2
+render	Rendering	Scene rendering, materials, day/night, weather (replaces Ogre3D)	2
+physics	Physics	Collision, character movement, raycasts, ragdolls (replaces PhysX 2.8)	2
+anim	Animation	Skeletal animation, blending, ragdoll	4
+audio	Audio	Sound and music glue	4
+input	Input & Camera	Key bindings, selection, RTS camera (replaces OIS)	2
+thirdparty	Third-party	CRT, STL, Ogre, MyGUI, PhysX, OIS, boost, Steam, zlib: status=skip	5
+compiler	Compiler-generated	EH unwind/catch funclets, thunks, deleting dtors: status=skip	5

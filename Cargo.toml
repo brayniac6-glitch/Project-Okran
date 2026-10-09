@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["src/io", "src/data", "src/anim", "src/world", "src/char", "src/combat", "src/render", "src/ai", "src/export", "src/game", "src/physics", "src/gui", "src/audio"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Bevy is slow unoptimised: keep our crates debuggable, optimise dependencies
+[profile.dev.package."*"]
+opt-level = 3

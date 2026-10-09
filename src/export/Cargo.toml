@@ -1,0 +1,19 @@
+[package]
+name = "kenshi-export"
+version = "0.1.0"
+description = "Exports Kenshi's character models from a user's own install to glTF"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "export-models"
+path = "bin/export_models.rs"
+
+[dependencies]
+kenshi-io = { path = "../io" }
+kenshi-data = { path = "../data" }
+image = { version = "0.25", default-features = false, features = ["png"] }

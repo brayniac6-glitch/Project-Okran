@@ -1,0 +1,22 @@
+sub	agent	state	since	note
+unk		open		
+core		open		
+io		open		
+data		open		
+char		claude		
+combat		claude		
+ai		claude		
+world		open		
+build		open		
+econ		open		
+dialog		open		
+player		open		
+ui		open		
+save		open		
+render		open		
+physics		open		
+anim		claude		
+audio		open		
+input		open		
+thirdparty		open		
+compiler		open		

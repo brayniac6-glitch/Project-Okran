@@ -1,0 +1,45 @@
+[package]
+name = "kenshi-render"
+version = "0.1.0"
+description = "Rendering of Kenshi's assets with Bevy (replaces Ogre3D)"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "viewer"
+path = "bin/viewer.rs"
+
+[[bin]]
+name = "terrain"
+path = "bin/terrain.rs"
+
+[[bin]]
+name = "town"
+path = "bin/town.rs"
+
+[[bin]]
+name = "technique"
+path = "bin/technique.rs"
+
+[[bin]]
+name = "duel"
+path = "bin/duel.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+kenshi-io = { path = "../io" }
+kenshi-data = { path = "../data" }
+kenshi-anim = { path = "../anim" }
+kenshi-world = { path = "../world" }
+kenshi-combat = { path = "../combat" }
+kenshi-physics = { path = "../physics" }
+bevy = { version = "=0.19.1", features = ["dds"] }
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }
+
+[[bin]]
+name = "walk"
+path = "bin/walk.rs"

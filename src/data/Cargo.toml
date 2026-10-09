@@ -1,0 +1,17 @@
+[package]
+name = "kenshi-data"
+version = "0.1.0"
+description = "Kenshi game-data model on top of kenshi-io's FCS records"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+kenshi-io = { path = "../io" }
+
+[[bin]]
+name = "gamedata"
+path = "bin/gamedata.rs"
