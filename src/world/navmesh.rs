@@ -453,6 +453,61 @@ pub struct PathRequest<Owner> {
     pub water_cost: f32,
     /// +0x2c: 20 urgent, 10 normal, -1 cancel (F032211).
     pub priority: i32,
+    /// Which shut gates the asker may pass.
+    pub pass: Pass,
+}
+
+/// A shut door across the navmesh (DoorStuff marks its door along the navmesh while it is under
+/// 0.6 open, F029335): a line (x, z metres) between heights `lo` and `hi`, its owner's faction
+/// (a number the game gives it), and whether it is shut and locked.
+/// (assumption) Kenshi blocks the door's navmesh for all and lets its own people open it; here a
+/// shut gate is passed by its owner's people, and by the player's while it is not locked.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Barrier {
+    pub a: [f32; 2],
+    pub b: [f32; 2],
+    pub lo: f32,
+    pub hi: f32,
+    pub owner: u32,
+    pub shut: bool,
+    pub locked: bool,
+}
+
+/// Whom a path is for: their faction (as the barriers number them), whether the player's, or
+/// anyone (barriers ignored).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pass {
+    pub faction: u32,
+    pub player: bool,
+    pub ignore: bool,
+}
+
+impl Pass {
+    pub const ANYONE: Pass = Pass { faction: u32::MAX, player: false, ignore: true };
+}
+
+impl Default for Pass {
+    fn default() -> Self {
+        Pass::ANYONE
+    }
+}
+
+impl Barrier {
+    /// Whether this barrier stops `pass` going from `p` to `q` (metres).
+    pub fn stops(&self, pass: Pass, p: [f32; 3], q: [f32; 3]) -> bool {
+        if !self.shut || pass.ignore || pass.faction == self.owner || (pass.player && !self.locked) {
+            return false;
+        }
+        let y = p[1].min(q[1]);
+        if y > self.hi + 1.0 || p[1].max(q[1]) < self.lo - 1.0 {
+            return false;
+        }
+        let cross = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+        let (p2, q2) = ([p[0], p[2]], [q[0], q[2]]);
+        let (d1, d2) = (cross(self.a, self.b, p2), cross(self.a, self.b, q2));
+        let (d3, d4) = (cross(p2, q2, self.a), cross(p2, q2, self.b));
+        (d1 > 0.0) != (d2 > 0.0) && (d3 > 0.0) != (d4 > 0.0)
+    }
 }
 
 /// The navmesh manager's request queue (F032210 submit, F032211 cancel, F032235 update): requests
@@ -463,6 +518,8 @@ pub struct PathRequest<Owner> {
 pub struct PathManager<Owner> {
     incoming: Vec<PathRequest<Owner>>,
     pub queue: Vec<PathRequest<Owner>>,
+    /// The request answered last.
+    pub last: Option<PathRequest<Owner>>,
 }
 
 impl<Owner> Default for PathManager<Owner> {
@@ -470,6 +527,7 @@ impl<Owner> Default for PathManager<Owner> {
         PathManager {
             incoming: vec![],
             queue: vec![],
+            last: None,
         }
     }
 }
@@ -485,6 +543,12 @@ impl<Owner: PartialEq + Clone> PathManager<Owner> {
         water_cost: f32,
         urgent: bool,
     ) {
+        self.submit_as(owner, start, goal, radius, water_cost, urgent, Pass::ANYONE);
+    }
+
+    /// A request for someone the shut gates may stop (`pass`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn submit_as(&mut self, owner: Owner, start: [f32; 3], goal: [f32; 3], radius: f32, water_cost: f32, urgent: bool, pass: Pass) {
         self.incoming.push(PathRequest {
             owner,
             start,
@@ -496,6 +560,7 @@ impl<Owner: PartialEq + Clone> PathManager<Owner> {
             } else {
                 PRIORITY_NORMAL
             },
+            pass,
         });
     }
 
@@ -508,6 +573,7 @@ impl<Owner: PartialEq + Clone> PathManager<Owner> {
             radius: 0.0,
             water_cost: 1.0,
             priority: -1,
+            pass: Pass::ANYONE,
         });
     }
 
@@ -536,8 +602,10 @@ impl<Owner: PartialEq + Clone> PathManager<Owner> {
             return None;
         }
         let r = self.queue.remove(0);
-        let result = nav.find_path(r.start, r.goal, r.radius, r.water_cost);
-        Some((r.owner, result))
+        let result = nav.find_path_as(r.start, r.goal, r.radius, r.water_cost, r.pass);
+        let owner = r.owner.clone();
+        self.last = Some(r);
+        Some((owner, result))
     }
 }
 
@@ -590,6 +658,10 @@ pub struct NavWorld {
     pub(crate) cutter_grid: HashMap<(i32, i32), Vec<usize>>,
     pub(crate) pristine: HashMap<i64, Section>,
     pub(crate) cut_keys: HashSet<(i64, i64)>,
+    /// Each key's cutters (to take them away again: a building dismantled or destroyed).
+    pub(crate) key_cutters: HashMap<(i64, i64), Vec<usize>>,
+    /// The shut doors paths may not cross (gates; `Barrier`).
+    pub barriers: Vec<Barrier>,
 }
 
 /// A face in the grid: it and its bounds (low, high).
@@ -956,7 +1028,9 @@ impl NavWorld {
         goal: [f32; 3],
         radius: f32,
         water_cost: f32,
+        pass: Pass,
     ) -> Option<(Vec<Portal>, Vec<FaceRef>)> {
+        let gated = !pass.ignore && self.barriers.iter().any(|b| b.shut);
         let mut open = BinaryHeap::new();
         let mut best: HashMap<FaceRef, f32> = HashMap::from([(from, 0.0)]);
         let mut point: HashMap<FaceRef, [f32; 3]> = HashMap::from([(from, start)]);
@@ -995,6 +1069,10 @@ impl NavWorld {
                         continue;
                     }
                     let cross = if next == to { goal } else { lerp(a, b, 0.5) };
+                    // a shut gate across the step
+                    if gated && self.barred(pass, here, cross) {
+                        continue;
+                    }
                     let ng = g + modified_cost(kind, distance(here, cross), water_cost);
                     if best.get(&next).is_some_and(|&old| ng >= old) {
                         continue;
@@ -1017,13 +1095,17 @@ impl NavWorld {
     /// shut), goal face (30 m, else 500 m) kept a radius off the mesh boundary, cluster
     /// reachability, then the search.
     /// @fn F032235
-    pub fn find_path(
-        &self,
-        start: [f32; 3],
-        goal: [f32; 3],
-        radius: f32,
-        water_cost: f32,
-    ) -> PathResult {
+    pub fn find_path(&self, start: [f32; 3], goal: [f32; 3], radius: f32, water_cost: f32) -> PathResult {
+        self.find_path_as(start, goal, radius, water_cost, Pass::ANYONE)
+    }
+
+    /// Whether a shut gate stops `pass` going straight from `p` to `q` (metres).
+    pub fn barred(&self, pass: Pass, p: [f32; 3], q: [f32; 3]) -> bool {
+        !pass.ignore && self.barriers.iter().any(|b| b.stops(pass, p, q))
+    }
+
+    /// A path for `pass` (shut gates it may not cross left out).
+    pub fn find_path_as(&self, start: [f32; 3], goal: [f32; 3], radius: f32, water_cost: f32, pass: Pass) -> PathResult {
         let Some((from, start)) = self.closest_point(start, START_SEARCH) else {
             return PathResult::NoStart;
         };
@@ -1033,7 +1115,7 @@ impl NavWorld {
         else {
             return PathResult::NoGoal;
         };
-        if self.line_clear(from, start, goal, radius, water_edge_enabled) {
+        if self.line_clear(from, start, goal, radius, water_edge_enabled) && !self.barred(pass, start, goal) {
             return PathResult::Found(FoundPath {
                 points: vec![start, goal],
                 follow: GatePath::straight(goal),
@@ -1044,7 +1126,7 @@ impl NavWorld {
         if !self.reachable(from, to) {
             return PathResult::Unreachable;
         }
-        match self.search(from, start, to, goal, radius, water_cost) {
+        match self.search(from, start, to, goal, radius, water_cost, pass) {
             Some((portals, faces)) => PathResult::Found(FoundPath {
                 points: funnel(start, goal, &portals, radius),
                 follow: GatePath {
@@ -1059,7 +1141,7 @@ impl NavWorld {
 
     /// (testing) Whether the face search finds a way.
     pub fn search_found(&self, from: FaceRef, start: [f32; 3], to: FaceRef, goal: [f32; 3]) -> bool {
-        self.search(from, start, to, goal, 0.4, 3.0).is_some()
+        self.search(from, start, to, goal, 0.4, 3.0, Pass::ANYONE).is_some()
     }
 
     /// Push a goal out of `clearance` of the boundary edges of its face and the faces round it

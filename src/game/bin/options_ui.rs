@@ -560,7 +560,12 @@ pub fn update(
                     exit.write(AppExit::Success);
                 }
                 "ExitGameButton" => {
-                    exit.write(AppExit::Success);
+                    // F048526: asked first
+                    game.ask = Some(super::message_box::Ask {
+                        title: "Exit".into(),
+                        text: "Are you sure you want to exit?".into(),
+                        question: super::message_box::Question::Exit,
+                    });
                 }
                 _ => {}
             }

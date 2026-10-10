@@ -13,8 +13,6 @@ use kenshi_world::nest::{CampPiece, camp_layout, nest_def, pick_nest};
 use kenshi_world::ZONE_SIZE;
 use serde::{Deserialize, Serialize};
 
-/// "Number of nests multiplier" (options, F048535; default 1).
-pub const NESTS_MULT: f32 = 1.0;
 
 /// A camp or den in the world.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +40,7 @@ impl Sim {
     /// One nest for the first biome below its "num nests" x the multiplier: one of its "nests"
     /// (F038262) at a spawn point of the biome (F048115).
     pub fn spawn_nests(&mut self) {
+        let nests_mult = self.advanced.nests;
         let Some(pop) = self.population.as_ref() else { return };
         let n = pop.biomes.len();
         let mut counts = vec![0usize; n];
@@ -52,7 +51,7 @@ impl Sim {
         }
         let Some(b) = (0..n).find(|&b| {
             let bio = &pop.biomes[b];
-            !bio.nests_at_markers && 0 < bio.num_nests && (counts[b] as f32) < bio.num_nests as f32 * NESTS_MULT
+            !bio.nests_at_markers && 0 < bio.num_nests && (counts[b] as f32) < bio.num_nests as f32 * nests_mult
         }) else {
             return;
         };

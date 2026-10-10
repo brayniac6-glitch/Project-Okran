@@ -2,12 +2,13 @@
 //! (NEW_GAME_STARTOFF: its squad, its towns) in Kenshi_NewGamePanel.layout and loads that world
 //! behind Kenshi_LoadingScreen.layout; Exit quits. Continue loads the save last saved or loaded
 //! (settings.cfg "continue", else the newest; a restarted program's KENSHI_LOAD), Load and Import
-//! open their panels (saves_ui) and load the save chosen.
+//! open their panels (saves_ui) and load the save chosen. The new game panel's ADVANCED opens the
+//! advanced options (`advanced`), given to the new world.
 use super::saves_ui::{Kind, SavesDone, SavesPanel};
 use super::{Loading, WorldLoad, build_world};
 use bevy::prelude::*;
 use kenshi_data::{GameDataContainer, ItemType};
-use kenshi_gui::{Built, GuiClick, GuiRes, SetCaption, SetVisible};
+use kenshi_gui::{Built, GuiClick, GuiRes, GuiScroll, SetCaption, SetVisible};
 use kenshi_io::mods::Install;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -117,6 +118,19 @@ pub struct Menu {
     loading: Mutex<Option<Receiver<WorldLoad>>>,
     /// A save being loaded (its state is put on the world as it is made).
     restoring: bool,
+    /// The new game's advanced options, and their window when open (its rows' value texts).
+    advanced: kenshi_game::advanced::Advanced,
+    advanced_ui: Option<AdvancedUi>,
+}
+
+/// The advanced options window: its widgets, each slider's value text and scroll bar, the
+/// tooltip's text.
+#[derive(Clone)]
+struct AdvancedUi {
+    ui: Built,
+    values: Vec<Entity>,
+    sliders: Vec<Entity>,
+    tip: Option<Entity>,
 }
 
 impl Menu {
@@ -126,7 +140,7 @@ impl Menu {
         super::spawn_worker(move || {
             let _ = tx.send(starts(&r));
         });
-        Menu { root, ui: Built::default(), panel: None, starts: Vec::new(), starts_rx: Mutex::new(Some(rx)), pick: 0, loading: Mutex::new(None), restoring: false }
+        Menu { root, ui: Built::default(), panel: None, starts: Vec::new(), starts_rx: Mutex::new(Some(rx)), pick: 0, loading: Mutex::new(None), restoring: false, advanced: Default::default(), advanced_ui: None }
     }
 }
 
@@ -331,7 +345,7 @@ pub fn buttons(
                     commands.queue(SetCaption(b, "CANCEL".to_string()));
                 }
                 if let Some(b) = panel.get("AdvancedButton") {
-                    commands.entity(b).insert(kenshi_gui::ui::Disabled);
+                    commands.queue(SetCaption(b, "ADVANCED".to_string()));
                 }
                 panel.roots = vec![holder];
                 menu.panel = Some(panel);
@@ -387,8 +401,9 @@ pub fn buttons(
                 eprintln!("new game: {} ({} people) in zone {}.{}", start.name, start.members, zone.0, zone.1);
                 let (tx, rx) = channel();
                 let root = menu.root.clone();
+                let advanced = menu.advanced.to_extra();
                 super::spawn_worker(move || {
-                    let mut extras = vec![format!("player:{}", start.members), format!("money:{}", start.money)];
+                    let mut extras = vec![format!("player:{}", start.members), format!("money:{}", start.money), advanced];
                     extras.extend(start.squad.map(|t| format!("kit:{t}")));
                     extras.extend(start.relations.iter().map(|(f, v)| format!("relation:{f}={v}")));
                     extras.extend(start.research.iter().map(|r| format!("research:{r}")));
@@ -403,6 +418,176 @@ pub fn buttons(
             }
             _ => {}
         }
+    }
+}
+
+/// An advanced options row (its index: the sliders, then the ticks).
+#[derive(Component)]
+pub struct AdvancedRow(usize);
+
+fn row_def(kind: &str, skin: &str, name: &str, caption: &str, pos: [f32; 4], props: &[(&str, &str)]) -> kenshi_gui::WidgetDef {
+    let mut p: Vec<(String, String)> = props.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    if !caption.is_empty() {
+        p.push(("Caption".into(), caption.into()));
+    }
+    kenshi_gui::WidgetDef { kind: kind.into(), skin: skin.into(), pos: kenshi_gui::res::Pos::Px(pos), align: Default::default(), name: name.into(), layer: None, props: p, user: Vec::new(), children: Vec::new() }
+}
+
+/// @fn F048535
+///
+/// The advanced options window (Kenshi_AdvancedOptionsWindow.layout, "Advanced options"), opened
+/// and closed by the new game panel's ADVANCED: a row per option in its Datapanel, a slider
+/// with its value for each number, a tick box for each choice (`kenshi_game::advanced`), the
+/// hovered one's tooltip in its TooltipPanel; Esc closes it.
+/// (assumption) The rows are laid out as the options window's (`options_ui`), the game making
+/// both with its options panel.
+#[allow(clippy::too_many_arguments)]
+pub fn advanced(
+    mut commands: Commands,
+    mut clicks: MessageReader<GuiClick>,
+    mut scrolls: MessageReader<GuiScroll>,
+    gui: Res<GuiRes>,
+    assets: Res<AssetServer>,
+    mut menu: ResMut<Menu>,
+    windows: Query<&Window>,
+    keys: Res<ButtonInput<KeyCode>>,
+    rows: Query<(&Interaction, &AdvancedRow)>,
+) {
+    use kenshi_game::advanced::{SLIDERS, TICKS};
+    let size = window_size(&windows);
+    let mut toggle = false;
+    let mut ticked = None;
+    for c in clicks.read() {
+        if c.name == "AdvancedButton" {
+            toggle = true;
+        }
+        if let Some(k) = c.name.strip_prefix("AdvancedTick").and_then(|k| k.parse::<usize>().ok()) {
+            ticked = Some((k, c.widget));
+        }
+    }
+    let close = menu.advanced_ui.is_some() && (toggle || keys.just_pressed(KeyCode::Escape) || menu.panel.is_none());
+    if close {
+        let a = menu.advanced_ui.take().unwrap();
+        for r in a.ui.roots {
+            commands.entity(r).try_despawn();
+        }
+        return;
+    }
+    if toggle && menu.advanced_ui.is_none() {
+        let mut defs = gui.0.layout("Kenshi_AdvancedOptionsWindow.layout");
+        if let Some(d) = defs.first_mut()
+            && let kenshi_gui::res::Pos::Real(r) = d.pos
+        {
+            d.pos = kenshi_gui::res::Pos::Real([0.5 - r[2] * 0.5, 0.5 - r[3] * 0.5, r[2], r[3]]);
+            d.props.retain(|(k, _)| k != "Caption");
+            d.props.push(("Caption".into(), "Advanced options".into()));
+        }
+        let ui = kenshi_gui::ui::spawn(&mut commands, &gui.0, &assets, &defs, None, size);
+        for r in &ui.roots {
+            commands.entity(*r).insert(GlobalZIndex(120));
+        }
+        let mut values = Vec::new();
+        let mut sliders = Vec::new();
+        let mut tip = None;
+        if let Some(panel) = ui.get("Datapanel") {
+            let width = ui.sizes.get(&panel).map_or(500.0, |s| s[0]);
+            let scale = kenshi_gui::res::ui_scale();
+            let row_h = 38.0 * scale;
+            let text = |name: &str, caption: &str, pos: [f32; 4], align: &str| {
+                row_def("TextBox", "Kenshi_TextboxStandardText", name, caption, pos, &[("TextAlign", align), ("FontName", "Kenshi_StandardFont_Large"), ("TextColour", "0.85 0.8 0.7")])
+            };
+            let a = menu.advanced.clone();
+            let mut a2 = a.clone();
+            for k in 0..SLIDERS.len() + TICKS.len() {
+                let holder = commands
+                    .spawn((
+                        Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(k as f32 * row_h), width: Val::Px(width), height: Val::Px(row_h), ..default() },
+                        Interaction::default(),
+                        AdvancedRow(k),
+                        ZIndex(3),
+                    ))
+                    .id();
+                commands.entity(panel).add_child(holder);
+                let cx = width * 0.52;
+                let defs = if k < SLIDERS.len() {
+                    let (name, _, min, max) = SLIDERS[k];
+                    let v = a2.slider(k).copied().unwrap_or(1.0);
+                    let pos = ((v - min) / (max - min) * 1000.0).round().to_string();
+                    vec![
+                        text("Label", name, [8.0 * scale, 0.0, width * 0.5, row_h], "Left VCenter"),
+                        row_def("ScrollBar", "Kenshi_ScrollBar", &format!("AdvancedSlider{k}"), "", [cx, 4.0 * scale, width * 0.32, row_h - 8.0 * scale], &[("Range", "1000"), ("ScrollPosition", &pos)]),
+                        text("Number", &format!("{v:.2}"), [cx + width * 0.34, 0.0, width * 0.13, row_h], "Center"),
+                    ]
+                } else {
+                    let t = k - SLIDERS.len();
+                    vec![
+                        text("Label", TICKS[t].0, [8.0 * scale, 0.0, width * 0.5, row_h], "Left VCenter"),
+                        row_def("Button", "Kenshi_TickBoxSkin", &format!("AdvancedTick{t}"), "", [cx, (row_h - 33.0 * scale) * 0.5, 35.0 * scale, 33.0 * scale], &[]),
+                    ]
+                };
+                let built = kenshi_gui::ui::spawn(&mut commands, &gui.0, &assets, &defs, Some(holder), [width, row_h]);
+                if let Some(s) = built.get(&format!("AdvancedSlider{k}"))
+                    && let Some(v) = a2.slider(k)
+                {
+                    let (_, _, min, max) = SLIDERS[k];
+                    commands.queue(kenshi_gui::ui::SetScroll(s, ((*v - min) / (max - min) * 1000.0).clamp(0.0, 1000.0)));
+                }
+                if k >= SLIDERS.len()
+                    && let Some(b) = built.get(&format!("AdvancedTick{}", k - SLIDERS.len()))
+                {
+                    commands.entity(b).insert(kenshi_gui::ui::Checked(a2.tick(k - SLIDERS.len()).copied().unwrap_or(false)));
+                }
+                values.push(built.get("Number").unwrap_or(Entity::PLACEHOLDER));
+                if k < SLIDERS.len() {
+                    sliders.push(built.get(&format!("AdvancedSlider{k}")).unwrap_or(Entity::PLACEHOLDER));
+                }
+            }
+            let _ = a;
+        }
+        if let Some(t) = ui.get("TooltipPanel") {
+            let font = gui.0.fonts.get("Kenshi_StandardFont_Medium").map_or((Handle::default(), 14.0), |f| (assets.load(f.file.clone()), f.screen_px()));
+            let e = commands
+                .spawn((
+                    Node { position_type: PositionType::Absolute, left: Val::Px(10.0), right: Val::Px(10.0), top: Val::Px(8.0), ..default() },
+                    Text::new(String::new()),
+                    TextFont { font: bevy::text::FontSource::Handle(font.0), font_size: bevy::text::FontSize::Px(font.1), ..default() },
+                    TextColor(Color::srgb(0.078, 0.031, 0.024)),
+                    ZIndex(3),
+                ))
+                .id();
+            commands.entity(e).insert(kenshi_gui::Caption(e));
+            commands.entity(t).add_child(e);
+            tip = Some(e);
+        }
+        menu.advanced_ui = Some(AdvancedUi { ui, values, sliders, tip });
+        return;
+    }
+    let Some(AdvancedUi { values, sliders, tip, .. }) = menu.advanced_ui.clone() else { return };
+    // a slider moved: its value (kept to the slider's range) and its number
+    for s in scrolls.read() {
+        let Some(k) = sliders.iter().position(|e| *e == s.widget) else { continue };
+        let (_, _, min, max) = SLIDERS[k];
+        let v = min + (s.pos / 1000.0).clamp(0.0, 1.0) * (max - min);
+        // to the hundredth, as shown
+        let v = (v * 100.0).round() / 100.0;
+        if let Some(f) = menu.advanced.slider(k) {
+            *f = v;
+        }
+        if let Some(&n) = values.get(k) {
+            commands.queue(SetCaption(n, format!("{v:.2}")));
+        }
+    }
+    if let Some((t, b)) = ticked
+        && let Some(v) = menu.advanced.tick(t)
+    {
+        *v = !*v;
+        let now = *v;
+        commands.entity(b).insert(kenshi_gui::ui::Checked(now));
+    }
+    if let Some(t) = tip {
+        let hovered = rows.iter().find(|(i, _)| **i != Interaction::None).map(|(_, r)| r.0);
+        let text = hovered.map_or("", |k| if k < SLIDERS.len() { SLIDERS[k].1 } else { TICKS[k - SLIDERS.len()].1 });
+        commands.queue(SetCaption(t, text.to_string()));
     }
 }
 

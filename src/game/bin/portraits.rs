@@ -19,8 +19,13 @@ use std::collections::HashMap;
 /// The render layer only portrait cameras see (with the main scene's 0 on every character mesh).
 pub const PORTRAIT_LAYER: usize = 3;
 /// (stand-in for the HDR chain's exposure, EXPOSURE_KEY 0.55 over the adapted luminance) the
-/// portrait's colours scaled by this when shown.
-pub const EXPOSURE: f32 = 0.45;
+/// portrait's colours scaled by this when shown. (Measured: at 0.45 the picture was clipped at
+/// 1 first, so it came out dull and dark beside the game's lit portraits; 1 keeps it whole.)
+pub const EXPOSURE: f32 = 1.0;
+/// (measured) The backdrop's brightness in the portrait's scene that shows it as the layout's
+/// image (Kenshi_UI.png 456, 335: (183, 159, 128) at its middle, darker to its edges): the
+/// portrait's view draws an unlit quad at about a third of its texture.
+const BACKDROP_GAIN: f32 = 3.5;
 /// A portrait's backdrop quad.
 #[derive(Component)]
 pub struct Backdrop;
@@ -70,7 +75,7 @@ pub fn update(
 ) {
     // (stand-in for the image's alpha, which the UI does not keep) the layout's backdrop
     // (Kenshi_PortraitImage's Background "Normal": Kenshi_UI.png 456, 335, 60 x 60) drawn in the
-    // portrait's scene, behind the head, unlit, brightened by 1 / EXPOSURE
+    // portrait's scene, behind the head, unlit, at BACKDROP_GAIN / EXPOSURE
     if portraits.backdrop.is_none() {
         let mut mesh = Mesh::from(Rectangle::new(1.0, 1.0));
         if let Some(bevy::mesh::VertexAttributeValues::Float32x2(uv)) = mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0) {
@@ -81,7 +86,7 @@ pub fn update(
         }
         let tex = gui.0.file("Kenshi_UI.png").map(|f| assets.load(f.to_string()));
         let mat = StandardMaterial {
-            base_color: Color::linear_rgb(1.0 / EXPOSURE, 1.0 / EXPOSURE, 1.0 / EXPOSURE),
+            base_color: Color::linear_rgb(BACKDROP_GAIN / EXPOSURE, BACKDROP_GAIN / EXPOSURE, BACKDROP_GAIN / EXPOSURE),
             base_color_texture: tex,
             unlit: true,
             ..default()
@@ -141,7 +146,10 @@ pub fn update(
                     },
                     ..default()
                 },
-                // raw HDR, as the main view draws it before Kenshi's exposure (see EXPOSURE)
+                // raw HDR, as the main view draws it before Kenshi's exposure (see EXPOSURE): a
+                // float view (without it the picture was clipped at 1 before the exposure, all of
+                // it dull and dark)
+                bevy::camera::Hdr,
                 bevy::core_pipeline::tonemapping::Tonemapping::None,
                 bevy::core_pipeline::tonemapping::DebandDither::Disabled,
                 RenderTarget::Image(image.clone().into()),

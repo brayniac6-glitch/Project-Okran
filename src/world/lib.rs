@@ -192,9 +192,24 @@ pub struct Placement {
     /// Per door (the building's "doors" in order): locked ("locked{n}") and lock level
     /// ("lock lvl{n}").
     pub locks: Vec<(bool, i32)>,
+    /// Per door: its saved state (DoorStuff::_loadFromSerialise, F029398: "state{n}", "doa{n}",
+    /// "broken{n}", "wants lock{n}"), when the zone keeps one.
+    pub door_saved: Vec<Option<SavedDoor>>,
     /// The state record's "destroyed" (the building is a ruin: its parts draw their
     /// "destroyed mesh", F037846 / F037849 via the building's +0x1a1).
     pub destroyed: bool,
+}
+
+/// A door's state as a zone or save keeps it (DoorStuff, F029397 / F029398).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SavedDoor {
+    /// DoorStuff +0x380: 0 closed, 1 open, 2 opening, 3 closing.
+    pub state: i32,
+    /// How far open, 0 .. 1 (+0x37c, "doa").
+    pub open: f32,
+    pub broken: bool,
+    /// Locks itself once shut ("wants lock", from the door's "always locks").
+    pub wants_lock: bool,
 }
 
 /// Building placements of one zone file: `buildinglist` instances that target game data (not empty,
@@ -242,6 +257,22 @@ pub fn placements(zone: &kenshi_io::fcs::File) -> Vec<Placement> {
                 destroyed: st
                     .and_then(|r| r.bools.iter().find(|(k, _)| k == "destroyed").map(|(_, v)| *v))
                     .unwrap_or(false),
+                door_saved: (0..16)
+                    .map(|n| {
+                        let state = int(st, &format!("state{n}"))?;
+                        let r = st?;
+                        let float = |k: String| r.floats.iter().find(|(x, _)| *x == k).map(|(_, v)| *v);
+                        let flag = |k: String| r.bools.iter().find(|(x, _)| *x == k).is_some_and(|(_, v)| *v);
+                        Some(SavedDoor { state, open: float(format!("doa{n}")).unwrap_or(0.0), broken: flag(format!("broken{n}")), wants_lock: flag(format!("wants lock{n}")) })
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .skip_while(Option::is_none)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect(),
                 locks: (0..16)
                     .map_while(|n| {
                         let lvl = int(st, &format!("lock lvl{n}"))?;

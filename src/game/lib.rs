@@ -2,6 +2,8 @@
 
 pub mod sim;
 pub mod base;
+pub mod doors;
+pub mod upkeep;
 pub mod law;
 pub mod slavery;
 pub mod limbs;
@@ -19,4 +21,6 @@ pub mod loot;
 pub mod artifacts;
 pub mod turrets;
 pub mod nests;
+pub mod prospect;
+pub mod advanced;
 pub use kenshi_io::cfg as settings;

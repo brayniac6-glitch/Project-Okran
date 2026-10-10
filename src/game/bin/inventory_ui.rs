@@ -8,7 +8,7 @@
 //! has the money.
 //!
 //! (stand-in) items without an icon image (Kenshi draws those from their mesh: "auto icon
-//! image") show their name; prices show on the items (the game shows them in a tooltip).
+//! image") show their name; an item's price shows in its tooltip (`item_tip`), as the game's.
 use super::icons::ItemIcons;
 use super::Game;
 use bevy::prelude::*;
@@ -157,16 +157,71 @@ pub fn limbs_window(
     o.dirty = true;
 }
 
+/// Which window a building's inventory shows in (F024434 / F024437 / F024440): a research bench's
+/// in the research inventory window, a machine's (a production building, not a farm) in the
+/// generic building window (its inputs and output), any other's in the generic inventory window.
+fn storage_layout(game: &Game, owner: usize) -> &'static str {
+    let Some(b) = owner.checked_sub(kenshi_game::base::BUILDING_OWNER) else { return "Kenshi_InventoryGenericWindow.layout" };
+    if game.sim.research_bench(b).is_some() {
+        return "Kenshi_InventoryResearchWindow.layout";
+    }
+    let rec = game.sim.buildings.get(b).and_then(|pb| game.sim.data.get(&pb.record));
+    if game.sim.is_production(b) && rec.is_some_and(|r| !kenshi_game::base::is_farm(r)) {
+        return "Kenshi_GenericBuildingWindow.layout";
+    }
+    "Kenshi_InventoryGenericWindow.layout"
+}
+
+/// @fn F024417
+///
+/// A storage's capacity line: "Max Capacity: {n}" and " (Full)" when no more fits; shown for a
+/// storage kept to one item ("limit inventory"), n its cells times that item's "stackable".
+fn capacity_text(game: &Game, owner: usize) -> Option<String> {
+    let pb = game.sim.buildings.get(owner.checked_sub(kenshi_game::base::BUILDING_OWNER)?)?;
+    let rec = game.sim.data.get(&pb.record)?;
+    let item = rec.refs("limit inventory").first().and_then(|(s, _)| game.sim.data.get(s))?;
+    let sec = pb.storage.as_ref()?.sections.first()?;
+    let stack = item.ints.get("stackable").copied().unwrap_or(1).max(1) as u32;
+    let cap = sec.w * sec.h * stack;
+    let held: u32 = sec.items.iter().map(|i| i.item.quantity).sum();
+    Some(if held >= cap { format!("Max Capacity: {cap} (Full)") } else { format!("Max Capacity: {cap}") })
+}
+
 #[allow(clippy::too_many_arguments)]
-/// A building's storage window (Kenshi_InventoryGenericWindow.layout): its grid sized to the
-/// storage at the character window's cell size, by the screen's right edge, the building's
-/// name over it.
+/// A building's storage window (Kenshi_InventoryGenericWindow.layout, or the research or the
+/// generic building window, `storage_layout`): its grid sized to the storage at the character
+/// window's cell size, by the screen's right edge, the building's name over it, the capacity
+/// line (`capacity_text`).
 /// (assumption) The window's size from its grid as the game's generic window grows to its
-/// inventory; the capacity line is not filled.
+/// inventory.
 fn open_storage(commands: &mut Commands, gui: &kenshi_gui::Gui, assets: &AssetServer, game: &Game, owner: usize, size: [f32; 2]) -> Built {
     let (_, _, name, (w, h)) = game.sim.storage_info(owner).unwrap_or(([0.0; 3], 0.0, "Storage".into(), (8, 8)));
     let name = name.to_uppercase();
-    let mut defs = gui.layout("Kenshi_InventoryGenericWindow.layout");
+    let layout = storage_layout(game, owner);
+    if layout == "Kenshi_GenericBuildingWindow.layout" {
+        let mut defs = gui.layout(layout);
+        if let Some(d) = defs.first_mut()
+            && let kenshi_gui::res::Pos::Real(r) = d.pos
+        {
+            d.pos = kenshi_gui::res::Pos::Real([0.98 - r[2], 0.12, r[2], r[3]]);
+            d.props.retain(|(k, _)| k != "Caption");
+            d.props.push(("Caption".into(), name.clone()));
+        }
+        let ui = kenshi_gui::ui::spawn(commands, gui, assets, &defs, None, size);
+        for r in &ui.roots {
+            commands.entity(*r).insert(GlobalZIndex(60));
+        }
+        if let Some(e) = ui.get("out") {
+            commands.entity(e).insert((SectionNode(LOOT), RelativeCursorPosition::default()));
+        }
+        for (n, t) in [("InputTitleText", "INPUTS"), ("OutputTitleText", "OUTPUT")] {
+            if let Some(e) = ui.get(n) {
+                commands.queue(kenshi_gui::SetCaption(e, t.to_string()));
+            }
+        }
+        return ui;
+    }
+    let mut defs = gui.layout(layout);
     if let Some(d) = defs.first_mut() {
         // the grid is 83% x 55% of the window: cells of 2.2% of the screen height
         let cell = 0.022 * size[1];
@@ -187,9 +242,91 @@ fn open_storage(commands: &mut Commands, gui: &kenshi_gui::Gui, assets: &AssetSe
         commands.queue(kenshi_gui::SetCaption(e, name));
     }
     if let Some(e) = ui.get("CapacityText") {
-        commands.queue(kenshi_gui::SetCaption(e, String::new()));
+        match capacity_text(game, owner) {
+            Some(t) => {
+                commands.queue(kenshi_gui::SetCaption(e, t));
+                // (assumption) the capacity line takes the arrange button's place (they overlap in
+                // the layout)
+                if let Some(a) = ui.get("ArrangeButton") {
+                    commands.queue(kenshi_gui::SetVisible(a, false));
+                }
+            }
+            None => commands.queue(kenshi_gui::SetVisible(e, false)),
+        }
+    }
+    if let Some(e) = ui.get("ResearchButton") {
+        commands.queue(kenshi_gui::SetCaption(e, "SHOW RESEARCH".into()));
     }
     ui
+}
+
+/// @fn F024440
+///
+/// A machine's window kept up to date: what it is crafting (a crafting bench, with its
+/// "QUEUE..." button), its ingredients ("consumes", up to two: each with what of it the
+/// player's storage holds, and how much of the next one it has taken), its product
+/// ("produces", or the queue's first) with how far the next one is made, its output in its
+/// grid.
+/// (assumption) Kenshi's machines are filled by hand through their input slots; the rewrite's
+/// take what they need from the player's storage, so the slots show what there is to take.
+pub fn machine_window(mut commands: Commands, win: Res<InventoryWindow>, mut game: ResMut<Game>, mut clicks: MessageReader<GuiClick>) {
+    let Some(o) = &win.open else { return };
+    let Some((who, ui)) = &o.other else { return };
+    let Some(b) = who.checked_sub(kenshi_game::base::BUILDING_OWNER) else { return };
+    if ui.get("InputOutputPanel").is_none() {
+        return;
+    }
+    for c in clicks.read() {
+        if c.name == "QueueButton" && ui.get("QueueButton") == Some(c.widget) {
+            game.crafting_request = Some(b);
+        }
+    }
+    let sim = &game.sim;
+    let Some(pb) = sim.buildings.get(b) else { return };
+    let Some(rec) = sim.data.get(&pb.record) else { return };
+    let Some((f, _)) = kenshi_game::production::function_of(&sim.data, rec) else { return };
+    let crafting = !f.refs("item crafts").is_empty();
+    let name = |s: &str| sim.data.get(s).map_or(s.to_string(), |r| r.name.clone());
+    let set = |commands: &mut Commands, w: &str, t: String| {
+        if let Some(e) = ui.get(w) {
+            commands.queue(kenshi_gui::SetCaption(e, t));
+        }
+    };
+    let bar = |commands: &mut Commands, w: &str, frac: f32| {
+        if let Some(e) = ui.get(w) {
+            commands.queue(kenshi_gui::SetProgress(e, frac));
+        }
+    };
+    // what it makes
+    let product = if crafting { pb.craft_queue.first().cloned() } else { f.refs("produces").first().map(|(s, _)| s.clone()) };
+    set(&mut commands, "CraftingName", if crafting { product.as_deref().map_or("Nothing".to_string(), name) } else { String::new() });
+    if let Some(e) = ui.get("CraftingPanel") {
+        commands.queue(kenshi_gui::SetVisible(e, crafting));
+    }
+    set(&mut commands, "QueueButton", "QUEUE...".into());
+    set(&mut commands, "OutputText", product.as_deref().map_or(String::new(), name));
+    bar(&mut commands, "OutputProgressBar", pb.made.first().copied().unwrap_or(0.0));
+    // its ingredients
+    let consumes = f.refs("consumes");
+    for k in 0..2 {
+        let (t, st, p, panel) = (format!("Input{}Text", k + 1), format!("Input{}StatusText", k + 1), format!("Input{}ProgressBar", k + 1), format!("Input{}Panel", k + 1));
+        match consumes.get(k) {
+            Some((item, _)) => {
+                let have = sim.count_material(b, b, item);
+                set(&mut commands, &t, name(item));
+                set(&mut commands, &st, if have == 0 { "Missing".to_string() } else { format!("{have} in storage") });
+                bar(&mut commands, &p, pb.taken.get(k).copied().unwrap_or(0.0).fract());
+                if let Some(e) = ui.get(&panel) {
+                    commands.queue(kenshi_gui::SetVisible(e, true));
+                }
+            }
+            None => {
+                if let Some(e) = ui.get(&panel) {
+                    commands.queue(kenshi_gui::SetVisible(e, false));
+                }
+            }
+        }
+    }
 }
 
 fn open_character(
@@ -255,34 +392,28 @@ fn open_trader(commands: &mut Commands, gui: &kenshi_gui::Gui, assets: &AssetSer
         let name = game.sim.folk[id].name.clone();
         d.props.retain(|(k, _)| k != "Caption");
         d.props.push(("Caption".into(), if name.is_empty() { "TRADER".into() } else { name.to_uppercase() }));
+        fn no_caption(d: &mut kenshi_gui::WidgetDef) {
+            if d.name == "datapanel" {
+                d.props.retain(|(k, _)| k != "Caption");
+            }
+            d.children.iter_mut().for_each(no_caption);
+        }
+        no_caption(d);
     }
     let ui = kenshi_gui::ui::spawn(commands, gui, assets, &defs, None, size);
     for r in &ui.roots {
         commands.entity(*r).insert(GlobalZIndex(60));
     }
-    // the grid: Kenshi puts the slot panel inside the scroll view; here the items go on the
-    // scroll view itself, which lies over the panel
-    if let Some(e) = ui.get("scrollview_backpack_content").or(ui.get("backpack_content")) {
+    // the grid: the slot panel (its cells the character inventory's; the scroll view over it
+    // is wider, its scroll bar's room)
+    if let Some(e) = ui.get("backpack_content").or(ui.get("scrollview_backpack_content")) {
         commands.entity(e).insert((SectionNode(TRADER), RelativeCursorPosition::default()));
     }
     if let Some(e) = ui.get("ArrangeButton") {
         commands.queue(SetCaption(e, "ARRANGE".into()));
     }
-    let money = ui.get("datapanel").map(|panel| {
-        let t = commands
-            .spawn((
-                Text::new(""),
-                TextFont {
-                    font: gui.fonts.get("Kenshi_StandardFont_Medium").map_or_else(Default::default, |f| bevy::text::FontSource::Handle(assets.load(f.file.clone()))),
-                    font_size: bevy::text::FontSize::Px(gui.fonts.get("Kenshi_StandardFont_Medium").map_or(16.0, |f| f.screen_px())),
-                    ..default()
-                },
-                TextColor(Color::srgb(0.85, 0.8, 0.65)),
-            ))
-            .id();
-        commands.entity(panel).add_child(t);
-        t
-    });
+    // the money: a datapanel line ("Money", "c. 3,000"; `draw`)
+    let money = ui.get("datapanel");
     Trader { id, ui, scroll: 0, money }
 }
 
@@ -371,25 +502,6 @@ pub fn toggle(
 #[derive(Component)]
 pub struct ItemTip(pub String);
 
-/// An item's tooltip: its name (a weapon with its model, armour with its grade), a weapon's
-/// maker, its weight and value.
-fn tip_text(game: &Game, item: &kenshi_char::inventory::Item) -> String {
-    let data = &game.sim.data;
-    let mut lines = vec![item.shown_name(data)];
-    if item.kind == Some(kenshi_data::ItemType::Weapon)
-        && let Some(m) = item.maker.as_ref().and_then(|m| data.get(m))
-    {
-        lines.push(format!("Manufacturer: {}", m.name));
-    }
-    if item.kind == Some(kenshi_data::ItemType::Armour) && kenshi_char::quality::graded(data, &item.record) {
-        lines.push(format!("Quality: {}", kenshi_char::quality::grade_name(item.quality)));
-    }
-    lines.push(format!("Weight: {:.1} kg", item.weight));
-    lines.push(format!("Value: c.{}", item.value));
-    lines.join("
-")
-}
-
 /// The tooltip of the item under the pointer, beside it.
 pub fn tooltip(
     mut commands: Commands,
@@ -415,20 +527,12 @@ pub fn tooltip(
                     commands.entity(e).despawn();
                 }
                 let font = gui.0.fonts.get("Kenshi_StandardFont_Medium").map(|f| (assets.load(f.file.clone()), f.screen_px()));
-                let mut tf = TextFont { font_size: bevy::text::FontSize::Px(font.as_ref().map_or(14.0, |f| f.1)), ..default() };
+                let px = font.as_ref().map_or(14.0, |f| f.1);
+                let mut tf = TextFont { font_size: bevy::text::FontSize::Px(px), ..default() };
                 if let Some((h, _)) = font {
                     tf.font = bevy::text::FontSource::Handle(h);
                 }
-                let e = commands
-                    .spawn((
-                        Node { position_type: PositionType::Absolute, padding: UiRect::all(Val::Px(6.0)), ..default() },
-                        BackgroundColor(Color::srgba(0.08, 0.07, 0.06, 0.92)),
-                        BorderColor::all(Color::srgb(0.45, 0.4, 0.3)),
-                        GlobalZIndex(300),
-                        Pickable::IGNORE,
-                    ))
-                    .with_child((Text::new(text.clone()), tf, TextColor(Color::srgb(0.88, 0.84, 0.74))))
-                    .id();
+                let e = tip_node(&mut commands, &text, &tf, px);
                 *shown = Some((e, text));
             }
             if let Some((e, _)) = shown.as_ref()
@@ -444,6 +548,44 @@ pub fn tooltip(
             }
         }
     }
+}
+
+/// A tooltip's box: its first line the title, then its lines (`item_tip`'s "label\tvalue\tcolour",
+/// a label on the left and its value on the right; a line without a tab, a paragraph).
+fn tip_node(commands: &mut Commands, text: &str, tf: &TextFont, px: f32) -> Entity {
+    const PLAIN: Color = Color::srgb(0.88, 0.84, 0.74);
+    let colour = |c: &str| match c {
+        "t" => Color::srgb(0.97, 0.93, 0.82),
+        "c" => Color::srgb(0.72, 0.68, 0.58),
+        "g" => Color::srgb(0.45, 0.8, 0.35),
+        "r" => Color::srgb(0.9, 0.35, 0.3),
+        _ => PLAIN,
+    };
+    let e = commands
+        .spawn((
+            Node { position_type: PositionType::Absolute, padding: UiRect::all(Val::Px(6.0)), flex_direction: FlexDirection::Column, min_width: Val::Px(px * 14.0), max_width: Val::Px(px * 26.0), ..default() },
+            BackgroundColor(Color::srgba(0.08, 0.07, 0.06, 0.92)),
+            BorderColor::all(Color::srgb(0.45, 0.4, 0.3)),
+            GlobalZIndex(300),
+            Pickable::IGNORE,
+        ))
+        .id();
+    for (k, line) in text.lines().enumerate() {
+        let row = match line.split('\t').collect::<Vec<_>>().as_slice() {
+            [label, value, c] if k > 0 => {
+                let row = commands.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: Val::Px(px), ..default() }).id();
+                // a separator line, dim
+                let lc = if label.starts_with("---") { Color::srgb(0.45, 0.42, 0.36) } else if *c == "c" || value.is_empty() { colour(c) } else { PLAIN };
+                let l = commands.spawn((Text::new(label.to_string()), tf.clone(), TextColor(lc))).id();
+                let v = commands.spawn((Text::new(value.to_string()), tf.clone(), TextColor(colour(c)))).id();
+                commands.entity(row).add_children(&[l, v]);
+                row
+            }
+            _ => commands.spawn((Text::new(line.to_string()), tf.clone(), TextColor(if k == 0 { colour("t") } else { PLAIN }))).id(),
+        };
+        commands.entity(e).add_child(row);
+    }
+    e
 }
 
 fn draw_item(
@@ -480,7 +622,7 @@ fn draw_item(
             Button,
             Interaction::default(),
             node,
-            ItemTip(tip_text(game, &p.item)),
+            ItemTip(super::item_tip::tip(game, &p.item, price)),
         ))
         .id();
     let image = icons.icon(game, assets, &p.item);
@@ -527,18 +669,6 @@ fn draw_item(
             .id();
         commands.entity(e).add_child(bar);
     }
-    if let Some(c) = price {
-        let t = commands
-            .spawn((
-                Text::new(format!("c.{c}")),
-                TextFont { font: bevy::text::FontSource::Handle(font.0.clone()), font_size: bevy::text::FontSize::Px(font.1 * 0.85), ..default() },
-                TextColor(Color::srgb(0.95, 0.85, 0.45)),
-                TextShadow { offset: Vec2::new(1.0, 1.0), color: Color::BLACK },
-                Node { position_type: PositionType::Absolute, left: Val::Px(2.0), top: Val::Px(0.0), ..default() },
-            ))
-            .id();
-        commands.entity(e).add_child(t);
-    }
     commands.entity(widget).add_child(e);
     e
 }
@@ -552,7 +682,6 @@ pub fn draw(
     assets: Res<AssetServer>,
     gui: Res<GuiRes>,
     mut icons: ResMut<ItemIcons>,
-    mut texts: Query<&mut Text>,
 ) {
     let font = gui.0.fonts.get("Kenshi_StandardFont_Medium").map_or((Handle::default(), 14.0), |f| (assets.load(f.file.clone()), f.screen_px()));
     // icons still being drawn: draw again once they are
@@ -596,7 +725,11 @@ pub fn draw(
         && let Some(inv) = sim.inv(*who)
     {
         // a building's storage: its one section in the generic window's grid
-        let names: &[&str] = if *who >= kenshi_game::base::BUILDING_OWNER { &["backpack_content"] } else { &SECTIONS };
+        let names: &[&str] = if *who >= kenshi_game::base::BUILDING_OWNER {
+            if ui.get("out").is_some() { &["out"] } else { &["backpack_content"] }
+        } else {
+            &SECTIONS
+        };
         for (k, name) in names.iter().enumerate() {
             let (Some(widget), Some(sec)) = (ui.get(name), inv.sections.get(k)) else { continue };
             let size = ui.sizes.get(&widget).copied().unwrap_or([100.0, 100.0]);
@@ -607,7 +740,7 @@ pub fn draw(
         }
     }
     if let Some((t, shop)) = trading {
-        if let Some(widget) = t.ui.get("scrollview_backpack_content").or(t.ui.get("backpack_content")) {
+        if let Some(widget) = t.ui.get("backpack_content").or(t.ui.get("scrollview_backpack_content")) {
             let size = t.ui.sizes.get(&widget).copied().unwrap_or([100.0, 100.0]);
             let sec = &shop.stock.sections[0];
             let rows = kenshi_game::trade::SHOP_H;
@@ -622,10 +755,14 @@ pub fn draw(
                 o.items.push(e);
             }
         }
-        if let Some(m) = t.money
-            && let Ok(mut text) = texts.get_mut(m)
-        {
-            text.0 = format!("        c.{}", shop.money);
+        if let Some(m) = t.money {
+            commands.queue(super::hud_ui::SetRows {
+                panel: m,
+                rows: vec![super::hud_ui::row("Money", format!("c.{}", super::hud_ui::num(shop.money as i64)))],
+                font: font.clone(),
+                label_colour: super::hud_ui::LIGHT,
+                centre: false,
+            });
         }
     }
 }

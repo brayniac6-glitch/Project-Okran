@@ -85,6 +85,8 @@ pub fn update(
         }
     }
     for (who, text) in std::mem::take(&mut game.sim.said) {
+        let line = format!("{}: {text}", game.sim.display_name(who));
+        super::log(&mut game.log, line);
         if std::env::var("KENSHI_SPEECH_DEBUG").is_ok() {
             eprintln!("speech: {} says {text:?}", game.sim.display_name(who));
         }

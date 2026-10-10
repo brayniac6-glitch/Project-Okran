@@ -208,6 +208,21 @@ impl Sim {
             .map(|(k, _, _)| k)
     }
 
+    /// Whether `at` (units) is in the player's outpost (the HUD's town panel shows there,
+    /// F043067: the player's nearest town, within its radius).
+    /// (stand-in) The outpost is the built buildings: its centre their middle, its radius the
+    /// farthest one's edge from there plus 1000 units (the game's town radius is its own field).
+    pub fn in_outpost(&self, at: [f32; 3]) -> bool {
+        let built: Vec<&PlayerBuilding> = self.buildings.iter().filter(|b| b.done).collect();
+        if built.is_empty() {
+            return false;
+        }
+        let n = built.len() as f32;
+        let c = [built.iter().map(|b| b.at[0]).sum::<f32>() / n, built.iter().map(|b| b.at[2]).sum::<f32>() / n];
+        let r = built.iter().map(|b| (b.at[0] - c[0]).hypot(b.at[2] - c[1]) + b.radius).fold(0.0, f32::max) + 1000.0;
+        (at[0] - c[0]).hypot(at[2] - c[1]) < r
+    }
+
     /// Take one of item `record` for building work: from the builder's inventory, else from a
     /// built storage building of the player's. Whether there was one.
     pub(crate) fn take_material(&mut self, builder: usize, record: &str) -> bool {
@@ -225,13 +240,21 @@ impl Sim {
         let hour = self.hour_secs as f32;
         for id in 0..self.folk.len() {
             let Some(b) = self.folk[id].build else { continue };
-            if self.folk[id].down || b >= self.buildings.len() || self.buildings[b].done {
+            if self.folk[id].down || b >= self.buildings.len() || (self.buildings[b].done && !self.needs_repair(b)) {
                 self.folk[id].build = None;
                 continue;
             }
             let (site, r) = (self.buildings[b].at, self.buildings[b].radius);
             let me = self.folk[id].mover.position_units();
             if (me[0] - site[0]).hypot(me[2] - site[2]) > r + 15.0 {
+                continue;
+            }
+            // a built one damaged: repaired (crate::upkeep)
+            if self.buildings[b].done {
+                if self.repair_work(id, b, dt) {
+                    self.folk[id].build = None;
+                }
+                self.arena.f[id].skills.train(kenshi_char::StatsEnumerated::StatEngineering, dt * 0.05, 1.0);
                 continue;
             }
             // the next material's worth needs that material in hand
@@ -246,7 +269,7 @@ impl Sim {
             }
             let rate = builder_rate(self.arena.f[id].level(kenshi_char::StatsEnumerated::StatEngineering));
             let site_b = &mut self.buildings[b];
-            site_b.progress = (site_b.progress + rate * site_b.speed * dt / hour).min(site_b.used as f32);
+            site_b.progress = (site_b.progress + rate * site_b.speed * self.advanced.building * dt / hour).min(site_b.used as f32);
             if site_b.progress >= site_b.total() as f32 - 1e-4 {
                 site_b.done = true;
                 site_b.progress = site_b.total() as f32;

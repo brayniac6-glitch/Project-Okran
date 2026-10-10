@@ -107,25 +107,54 @@ pub fn under(game: &Game, at: Vec3) -> Option<u64> {
     game.sim.ground_item_near(w.to_array(), 12.0)
 }
 
-/// Kenshi's "highlight" (controls.cfg: Left Alt) held: the items on the ground within sight
-/// glow and show their names. (stand-in) Kenshi's own highlight look is not ported: a glow on
-/// their material and a label over each.
+/// The item lying under the cursor on screen (within 22 pixels of it, the nearest): items on a
+/// floor or a platform over the ground included, which the ground under the cursor misses.
+pub fn under_cursor(cam: &Camera, at: &GlobalTransform, game: &Game, cursor: Vec2) -> Option<u64> {
+    let eye = at.translation();
+    game.sim
+        .ground
+        .iter()
+        .filter_map(|g| {
+            let p = Vec3::from(g.at) - game.zone.origin + Vec3::Y * 1.0;
+            if p.distance(eye) > 3000.0 {
+                return None;
+            }
+            let d = cam.world_to_viewport(at, p).ok()?.distance(cursor);
+            (d < 22.0).then_some((g.id, d))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(id, _)| id)
+}
+
+/// An item drop label (Kenshi_ItemDropLabel): the ground item it names.
+#[derive(Component)]
+pub struct DropLabel(pub u64);
+
+/// @fn F024557
+///
+/// Kenshi's "highlight" (controls.cfg: Left Alt) held: an item drop label
+/// (Kenshi_ItemDropLabel.layout) over each item on the ground in sight, its name and, for more
+/// than one, the count in brackets ("{1,num}"), the label as wide as its text; the items glow.
+/// Clicking a label (F024551) sends the first selected character to pick the item up.
+/// (assumption) Kenshi shades an owned item's label apart (taking it is theft, "Hold down the ALT
+/// key to steal items"); the rewrite's ground items belong to no one, so all show alike. The
+/// glow is the object shader's emissive, Kenshi's own highlight look not being ported.
 #[allow(clippy::too_many_arguments)]
 pub fn highlight(
     mut commands: Commands,
     act: super::bindings::Actions,
-    game: Res<Game>,
+    mut game: ResMut<Game>,
     items: Res<GroundItems>,
     mut objects: ResMut<Assets<KenshiObjectMaterial>>,
     cams: Query<(&Camera, &GlobalTransform), super::MainCam>,
-    mut labels: Local<Vec<Entity>>,
+    mut labels: Local<HashMap<u64, Entity>>,
     mut glowing: Local<bool>,
     gui: Res<kenshi_gui::GuiRes>,
     assets: Res<AssetServer>,
+    windows: Query<&Window>,
+    mut nodes: Query<&mut Node>,
+    pressed: Query<(&Interaction, &DropLabel), Changed<Interaction>>,
 ) {
-    for e in labels.drain(..) {
-        commands.entity(e).despawn();
-    }
     // (testing) KENSHI_HIGHLIGHT: held on
     let on = act.held("highlight") || std::env::var("KENSHI_HIGHLIGHT").is_ok();
     if on != *glowing {
@@ -138,32 +167,59 @@ pub fn highlight(
             }
         }
     }
-    if !on {
-        return;
+    // a label clicked: picked up (F024551)
+    if on
+        && let Some(id) = pressed.iter().find(|(i, _)| **i == Interaction::Pressed).map(|(_, l)| l.0)
+    {
+        let selected = game.selected.clone();
+        game.sim.order_pick_item(&selected, id);
     }
     let Ok((cam, at)) = cams.single() else { return };
-    let font = gui.0.fonts.get("Kenshi_StandardFont_Medium").map(|f| (assets.load(f.file.clone()), f.screen_px()));
+    let size = windows.iter().next().map_or([1600.0, 900.0], |w| [w.width(), w.height()]);
     let origin = game.zone.origin;
-    for g in &game.sim.ground {
-        let p = Vec3::from(g.at) - origin + Vec3::Y * 4.0;
-        if p.distance(at.translation()) > 2500.0 {
-            continue;
+    let mut seen = std::collections::HashSet::new();
+    if on {
+        for g in &game.sim.ground {
+            let p = Vec3::from(g.at) - origin + Vec3::Y * 4.0;
+            if p.distance(at.translation()) > 2500.0 {
+                continue;
+            }
+            let Ok(v) = cam.world_to_viewport(at, p) else { continue };
+            seen.insert(g.id);
+            let e = *labels.entry(g.id).or_insert_with(|| {
+                let text = if g.item.quantity > 1 { format!("{} ({})", g.item.name, g.item.quantity) } else { g.item.name.clone() };
+                let mut defs = gui.0.layout("Kenshi_ItemDropLabel.layout");
+                // as wide as its text (the layout's height kept)
+                let px = gui.0.fonts.get("Kenshi_StandardFont_Medium").map_or(14.0, |f| f.screen_px());
+                let w = (text.chars().count() as f32 * px * 0.52 + px) / size[0];
+                if let Some(d) = defs.first_mut()
+                    && let kenshi_gui::res::Pos::Real(r) = d.pos
+                {
+                    d.pos = kenshi_gui::res::Pos::Real([0.0, 0.0, w.max(r[2] * 0.5), r[3]]);
+                }
+                let ui = kenshi_gui::ui::spawn(&mut commands, &gui.0, &assets, &defs, None, size);
+                if let Some(t) = ui.get("ItemNameText") {
+                    commands.queue(kenshi_gui::SetCaption(t, text));
+                }
+                let root = ui.roots[0];
+                commands.entity(root).insert((DropLabel(g.id), Interaction::default(), Button, GlobalZIndex(4)));
+                root
+            });
+            if let Ok(mut n) = nodes.get_mut(e) {
+                let w = match n.width {
+                    Val::Px(w) => w,
+                    _ => 60.0,
+                };
+                n.left = Val::Px(v.x - w * 0.5);
+                n.top = Val::Px(v.y - 12.0);
+            }
         }
-        let Ok(v) = cam.world_to_viewport(at, p) else { continue };
-        let mut text = TextFont { font_size: bevy::text::FontSize::Px(font.as_ref().map_or(14.0, |f| f.1)), ..default() };
-        if let Some((h, _)) = &font {
-            text.font = bevy::text::FontSource::Handle(h.clone());
-        }
-        let e = commands
-            .spawn((
-                Node { position_type: PositionType::Absolute, left: Val::Px(v.x - 40.0), top: Val::Px(v.y - 10.0), ..default() },
-                Text::new(g.item.name.clone()),
-                text,
-                TextColor(Color::srgb(0.95, 0.88, 0.55)),
-                TextShadow::default(),
-                GlobalZIndex(4),
-            ))
-            .id();
-        labels.push(e);
     }
+    labels.retain(|id, e| {
+        let keep = seen.contains(id);
+        if !keep {
+            commands.entity(*e).despawn();
+        }
+        keep
+    });
 }

@@ -38,7 +38,7 @@ pub struct BuildMode {
     open: Option<Open>,
     /// Each building record's meshes: (mesh, look, has vertex colours) and its footprint
     /// (half extents in x and z, building frame).
-    meshes: HashMap<String, (Vec<(Handle<Mesh>, ObjectLook, bool)>, Vec2, f32)>,
+    meshes: HashMap<String, (Vec<PartMesh>, Vec2, f32)>,
     /// The player's buildings drawn: per building, its root, the state it was drawn in and its
     /// construction materials (updated with its progress).
     shown: Vec<(Entity, DrawnAs, Vec<Handle<KenshiObjectMaterial>>)>,
@@ -53,12 +53,23 @@ struct Looks {
     bad: Handle<StandardMaterial>,
 }
 
+/// The "zone" the player's buildings' parts are marked with (BuildingFloor: their building is
+/// the player's building's number).
+pub const PLAYER_ZONE: (i32, i32) = (i32::MIN, i32::MIN);
+
+/// A door of one of the player's buildings (its gate): the door state it shows, moved as it
+/// opens (kenshi_game::doors), in its building's frame.
+#[derive(Component)]
+pub struct PlayerDoorPiece(pub usize);
+
 #[derive(Clone, PartialEq)]
 struct DrawnAs {
     record: String,
     at: [f32; 3],
     yaw: f32,
     done: bool,
+    /// How many door states it has (its doors drawn once they exist).
+    doors: usize,
 }
 
 struct Open {
@@ -76,6 +87,8 @@ struct Open {
     /// The message shown and its time left.
     message: Option<(Entity, f32)>,
     fonts: ((Handle<Font>, f32), (Handle<Font>, f32)),
+    /// A wall being laid (PreviewBuilding_Wall): where the line starts (scene units).
+    wall_start: Option<Vec3>,
 }
 
 impl BuildMode {
@@ -88,30 +101,56 @@ impl BuildMode {
 #[derive(Component)]
 pub struct ListRow(pub u8, pub usize);
 
-/// Load a building's part meshes once.
+/// One mesh of a building: its handle, look, whether it has vertex colours, its "building
+/// floor", whether one of its "interior" parts, and its bounds in the building's frame.
+#[derive(Clone)]
+pub struct PartMesh {
+    pub mesh: Handle<Mesh>,
+    pub look: ObjectLook,
+    pub colours: bool,
+    pub floor: i32,
+    pub interior: bool,
+    pub lo: Vec3,
+    pub hi: Vec3,
+}
+
+/// Load a building's part meshes once (its parts, and its interior's).
 fn meshes_of<'a>(
-    cache: &'a mut HashMap<String, (Vec<(Handle<Mesh>, ObjectLook, bool)>, Vec2, f32)>,
+    cache: &'a mut HashMap<String, (Vec<PartMesh>, Vec2, f32)>,
     game: &Game,
     record: &str,
     meshes: &mut Assets<Mesh>,
-) -> &'a (Vec<(Handle<Mesh>, ObjectLook, bool)>, Vec2, f32) {
+) -> &'a (Vec<PartMesh>, Vec2, f32) {
     cache.entry(record.to_string()).or_insert_with(|| {
         let mut out = Vec::new();
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
         if let Some(b) = game.sim.data.get(record) {
-            // each part baked where its offsets put it (a turret's head at rest)
-            for part in kenshi_render::zone::part_meshes_placed(&game.sim.data, b, false) {
-                let Some(path) = game.res.find(part.mesh) else { continue };
+            let floors = kenshi_render::zone::mesh_floors(&game.sim.data, b);
+            // each part baked where its offsets put it (a turret's head at rest), then the
+            // interior's parts (shown once someone is inside)
+            let mut parts: Vec<(&str, Option<&kenshi_data::GameData>, Transform, bool)> =
+                kenshi_render::zone::part_meshes_placed(&game.sim.data, b, false).into_iter().map(|p| (p.mesh, p.material, p.local, false)).collect();
+            for (sid, _) in b.refs("interior") {
+                if let Some(r) = game.sim.data.get(sid) {
+                    parts.extend(kenshi_render::zone::record_meshes(&game.sim.data, r).into_iter().map(|(m, mat)| (m, mat, Transform::IDENTITY, true)));
+                }
+            }
+            for (name, material, local, interior) in parts {
+                let Some(path) = game.res.find(name) else { continue };
                 let Ok(mesh) = kenshi_io::ogre_mesh::read(&game.root.join(&path)) else { continue };
-                let look = ObjectLook::from_record(part.material, |f| game.res.find(f)).for_building();
+                let look = ObjectLook::from_record(material, |f| game.res.find(f)).for_building();
                 for (_, m) in kenshi_render::to_bevy(&mesh) {
-                    let m = if part.local == Transform::IDENTITY { m } else { m.transformed_by(part.local) };
+                    let m = if local == Transform::IDENTITY { m } else { m.transformed_by(local) };
+                    let (mut plo, mut phi) = (Vec3::ZERO, Vec3::ZERO);
                     if let Some(a) = m.compute_aabb() {
-                        lo = lo.min(Vec3::from(a.min()));
-                        hi = hi.max(Vec3::from(a.max()));
+                        (plo, phi) = (Vec3::from(a.min()), Vec3::from(a.max()));
+                        if !interior {
+                            lo = lo.min(plo);
+                            hi = hi.max(phi);
+                        }
                     }
                     let colours = m.attribute(Mesh::ATTRIBUTE_COLOR).is_some();
-                    out.push((meshes.add(m), look.clone(), colours));
+                    out.push(PartMesh { mesh: meshes.add(m), look: look.clone(), colours, floor: floors.get(name).copied().unwrap_or(0), interior, lo: plo, hi: phi });
                 }
             }
         }
@@ -172,6 +211,8 @@ pub(super) fn list_rows(commands: &mut Commands, list: Entity, which: u8, rows: 
                 Text::new(name.clone()),
                 TextFont { font: bevy::text::FontSource::Handle(font.0.clone()), font_size: bevy::text::FontSize::Px(font.1), ..default() },
                 TextColor(colour),
+                // one line a row (a long name cut at the list's edge, as MyGUI's list does)
+                TextLayout::new(Justify::Left, bevy::text::LineBreak::NoWrap),
             ))
             .id();
         commands.entity(row).add_child(t);
@@ -344,6 +385,7 @@ pub fn toggle(
         yaw: 0.0,
         message: None,
         fonts: (font("Kenshi_StandardFont_Medium"), font("Kenshi_PaintedTextFont_Small")),
+        wall_start: None,
     };
     refill(&mut commands, &mut o, &game);
     mode.open = Some(o);
@@ -368,6 +410,84 @@ fn host_shell(game: &Game, at: Vec3) -> Option<usize> {
         let o = &game.sim.buildings[k];
         o.done && game.sim.data.get(&o.record).is_some_and(|r| !r.refs("interior").is_empty()) && (o.at[0] - w.x).hypot(o.at[2] - w.z) < o.radius * 0.6
     })
+}
+
+/// Whether building record `b` links together (a wall section or gate, "links together").
+fn links(b: &kenshi_data::GameData) -> bool {
+    b.bools.get("links together").copied().unwrap_or(false)
+}
+
+/// A wall record's "link type" (WallSection: 0 NORMAL, 1 CONNECTOR, 2 LOWER_WEDGE, 3 SINGLE,
+/// 4 SHORT) and its length between its link points ("link length" x its "scale", F033634).
+fn link_of(b: &kenshi_data::GameData) -> (i32, f32) {
+    let scale = b.floats.get("scale").copied().unwrap_or(1.0);
+    (b.ints.get("link type").copied().unwrap_or(0), b.floats.get("link length").copied().unwrap_or(0.0) * scale)
+}
+
+/// A turn about the vertical that points a building's x axis (its link axis) along `d`.
+fn yaw_along(d: Vec3) -> f32 {
+    (-d.z).atan2(d.x)
+}
+
+/// The ends of the player's walls (scene units): each end, the way out of it along its wall,
+/// and its wall's turn.
+fn wall_ends(game: &Game) -> Vec<(Vec3, Vec3, f32)> {
+    let mut out = Vec::new();
+    for b in &game.sim.buildings {
+        let Some(r) = game.sim.data.get(&b.record) else { continue };
+        if !links(r) {
+            continue;
+        }
+        let half = link_of(r).1 * 0.5;
+        if half <= 0.0 {
+            continue;
+        }
+        let x = Quat::from_rotation_y(b.yaw) * Vec3::X;
+        let at = Vec3::from(b.at) - game.zone.origin;
+        out.push((at + x * half, x, b.yaw));
+        out.push((at - x * half, -x, b.yaw));
+    }
+    out
+}
+
+/// The wall end within `reach` of `p`, nearest first.
+fn snap_end(game: &Game, p: Vec3, reach: f32) -> Option<(Vec3, Vec3, f32)> {
+    wall_ends(game).into_iter().filter(|(e, _, _)| (e.x - p.x).hypot(e.z - p.z) < reach).min_by(|a, b| (a.0 - p).length().total_cmp(&(b.0 - p).length()))
+}
+
+/// @fn F033634
+///
+/// The sections of wall `b` laid from `from` to `to` (scene units): the wall and its "wall
+/// subsections" of link type NORMAL or SHORT, longest first, each where it fits, until what is
+/// left is under half the shortest. (assumption) Kenshi also sets CONNECTOR pieces at turns and
+/// LOWER_WEDGE ones on slopes; here the line is laid with the straight pieces only.
+fn wall_run(data: &kenshi_data::GameDataContainer, b: &kenshi_data::GameData, from: Vec3, to: Vec3) -> Vec<(String, Vec3, f32)> {
+    let mut pieces: Vec<(String, f32)> = std::iter::once(b)
+        .chain(b.refs("wall subsections").iter().filter_map(|(s, _)| data.get(s)))
+        .filter_map(|r| {
+            let (kind, len) = link_of(r);
+            (matches!(kind, 0 | 4) && len > 1.0).then(|| (r.string_id.clone(), len))
+        })
+        .collect();
+    pieces.sort_by(|a, c| c.1.total_cmp(&a.1));
+    let Some(shortest) = pieces.last().map(|p| p.1) else { return Vec::new() };
+    let d = Vec3::new(to.x - from.x, 0.0, to.z - from.z);
+    let length = d.length();
+    if length < 1.0 {
+        return Vec::new();
+    }
+    let dir = d / length;
+    let yaw = yaw_along(dir);
+    let mut out = Vec::new();
+    let mut done = 0.0;
+    while length - done > shortest * 0.5 && out.len() < 64 {
+        let left = length - done;
+        let (rec, len) = pieces.iter().find(|p| p.1 <= left + shortest * 0.25).or(pieces.last()).cloned().unwrap();
+        let mid = from + dir * (done + len * 0.5);
+        out.push((rec, mid, yaw));
+        done += len;
+    }
+    out
 }
 
 /// Whether building record `b` is interior furniture.
@@ -412,7 +532,11 @@ fn may_place(game: &Game, b: &kenshi_data::GameData, at: Vec3, yaw: f32, half: V
     }
     let r = half.length();
     let w = at + game.zone.origin;
-    if game.sim.buildings.iter().any(|o| (o.at[0] - w.x).hypot(o.at[2] - w.z) < (o.radius + r) * 0.7) {
+    let wall = links(b);
+    if game.sim.buildings.iter().any(|o| {
+        let both_walls = wall && game.sim.data.get(&o.record).is_some_and(links);
+        !both_walls && (o.at[0] - w.x).hypot(o.at[2] - w.z) < (o.radius + r) * 0.7
+    }) {
         return false;
     }
     let near = std::iter::once(&game.zone).chain(game.zones.values()).flat_map(|z| z.occupied.iter());
@@ -516,8 +640,8 @@ pub fn update(
         if let Some(rec) = &chosen {
             let parts = meshes_of(cache, &game, rec, &mut meshes).0.clone();
             let root = commands.spawn((Transform::default(), Visibility::Hidden)).id();
-            for (m, _, _) in parts {
-                let e = commands.spawn((Mesh3d(m), MeshMaterial3d(looks.ok.clone()), Transform::default(), bevy::light::NotShadowCaster)).id();
+            for pm in parts.into_iter().filter(|p| !p.interior) {
+                let e = commands.spawn((Mesh3d(pm.mesh), MeshMaterial3d(looks.ok.clone()), Transform::default(), bevy::light::NotShadowCaster)).id();
                 commands.entity(root).add_child(e);
             }
             o.ghost = Some((root, rec.clone(), true));
@@ -531,7 +655,25 @@ pub fn update(
         let half = meshes_of(cache, &game, rec, &mut meshes).1;
         match (point, game.sim.data.get(rec)) {
             (Some(p), Some(b)) => {
-                let p = placed_at(&game, b, p);
+                let mut p = placed_at(&game, b, p);
+                // a wall or gate: its end on a wall end near the cursor, lined up with it
+                let (kind, len) = link_of(b);
+                if links(b) && len > 0.0 {
+                    if let Some((end, out, _)) = snap_end(&game, p, 60.0) {
+                        if o.wall_start.is_none() && kind == 3 {
+                            p = end + out * (len * 0.5);
+                            p.y = game.ground(p.x, p.z);
+                            o.yaw = yaw_along(out);
+                        } else {
+                            p = Vec3::new(end.x, game.ground(end.x, end.z), end.z);
+                        }
+                    }
+                    if let Some(s) = o.wall_start
+                        && (p - s).length() > 1.0
+                    {
+                        o.yaw = yaw_along(p - s);
+                    }
+                }
                 let valid = may_place(&game, b, p, o.yaw, half);
                 if valid != *ok {
                     *ok = valid;
@@ -541,7 +683,35 @@ pub fn update(
                 if let Ok(mut t) = transforms.get_mut(*g) {
                     *t = Transform::from_translation(p).with_rotation(Quat::from_rotation_y(o.yaw));
                 }
-                if buttons.just_pressed(MouseButton::Left) {
+                // a wall laid in a line: the first click starts it, the second lays its sections
+                let line = links(b) && kind != 3 && len > 0.0;
+                if line && buttons.just_pressed(MouseButton::Left) {
+                    match o.wall_start.take() {
+                        None => o.wall_start = Some(p),
+                        Some(s) => {
+                            let run = wall_run(&game.sim.data, b, s, p);
+                            let mut placed = 0;
+                            for (rec, mid, yaw) in run {
+                                let Some(r) = game.sim.data.get(&rec).cloned() else { continue };
+                                let mid = Vec3::new(mid.x, game.ground(mid.x, mid.z), mid.z);
+                                let half = meshes_of(cache, &game, &rec, &mut meshes).1;
+                                if !may_place(&game, &r, mid, yaw, half) {
+                                    continue;
+                                }
+                                let w = mid + game.zone.origin;
+                                let mut pb = PlayerBuilding::new(&r, [w.x, w.y, w.z], yaw);
+                                pb.radius = half.length();
+                                game.sim.buildings.push(pb);
+                                placed += 1;
+                            }
+                            if placed == 0 {
+                                message(&mut commands, o, CANT_PLACE);
+                            }
+                            // the next line goes on from this one's end
+                            o.wall_start = Some(p);
+                        }
+                    }
+                } else if buttons.just_pressed(MouseButton::Left) {
                     if valid {
                         let w = p + game.zone.origin;
                         let mut pb = PlayerBuilding::new(b, [w.x, w.y, w.z], o.yaw);
@@ -560,7 +730,10 @@ pub fn update(
             }
         }
     }
-    // right click: clear the placed (unconfirmed) building there
+    // right click: a wall line given up, else clear the placed (unconfirmed) building there
+    if buttons.just_pressed(MouseButton::Right) && o.wall_start.take().is_some() {
+        return;
+    }
     if buttons.just_pressed(MouseButton::Right)
         && let Some(p) = point
     {
@@ -621,11 +794,13 @@ pub fn draw(
         .sim
         .buildings
         .iter()
-        .map(|b| DrawnAs {
+        .enumerate()
+        .map(|(k, b)| DrawnAs {
             record: b.record.clone(),
             at: b.at,
             yaw: b.yaw,
             done: b.done,
+            doors: game.sim.door_states.iter().filter(|d| d.player_building == Some(k)).count(),
         })
         .collect();
     let BuildMode { meshes: cache, shown, .. } = &mut *mode;
@@ -654,7 +829,13 @@ pub fn draw(
         let at = Vec3::from(w.at) - origin;
         let root = commands.spawn((Transform::from_translation(at).with_rotation(Quat::from_rotation_y(w.yaw)), Visibility::default())).id();
         let mut sites = Vec::new();
-        for (m, o, colours) in parts {
+        let rot = Quat::from_rotation_y(w.yaw);
+        for pm in parts {
+            // a site shows no interior
+            if pm.interior && !w.done {
+                continue;
+            }
+            let (m, o, colours) = (pm.mesh.clone(), pm.look.clone(), pm.colours);
             let ground = look.ground_colour(w.at[0], w.at[2]);
             let mut mat = look.object(&assets, &o, origin, colours, ground);
             if !w.done {
@@ -666,7 +847,52 @@ pub fn draw(
                 sites.push(h.clone());
             }
             let e = commands.spawn((Mesh3d(m), MeshMaterial3d(h), Transform::default())).id();
+            // its floor and bounds, for the roofs hidden while someone is inside (hide_roofs)
+            if w.done {
+                let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                for c in 0..8 {
+                    let p = Vec3::new(if c & 1 == 0 { pm.lo.x } else { pm.hi.x }, if c & 2 == 0 { pm.lo.y } else { pm.hi.y }, if c & 4 == 0 { pm.lo.z } else { pm.hi.z });
+                    let q = rot * p + at;
+                    lo = lo.min(q);
+                    hi = hi.max(q);
+                }
+                commands.entity(e).insert((
+                    kenshi_render::zone::BuildingPiece { lo, hi },
+                    kenshi_render::zone::BuildingFloor { zone: PLAYER_ZONE, building: k, floor: pm.floor, interior: pm.interior },
+                ));
+            }
             commands.entity(root).add_child(e);
+        }
+        // its lamps, torches and fires (kenshi_render::local_lights), once built
+        if w.done
+            && let Some(rec) = game.sim.data.get(&w.record)
+        {
+            for (light, lat, lrot) in kenshi_render::zone::placed_lights(&game.sim.data, rec, None) {
+                if let Some(e) = kenshi_render::local_lights::spawn_light(&mut commands, &game.sim.data, &light, lat, lrot) {
+                    commands.entity(root).add_child(e);
+                }
+            }
+        }
+        // a gate's doors, each moved with its door
+        if w.done
+            && let Some(rec) = game.sim.data.get(&w.record)
+        {
+            let doors: Vec<usize> = (0..game.sim.door_states.len()).filter(|&d| game.sim.door_states[d].player_building == Some(k)).collect();
+            for (n, (sid, _)) in rec.refs("doors").iter().enumerate() {
+                let (Some(d), Some(dr)) = (doors.get(n).copied(), game.sim.data.get(sid)) else { continue };
+                for (mesh, mat) in kenshi_render::zone::record_meshes(&game.sim.data, dr) {
+                    let Some(path) = game.res.find(mesh) else { continue };
+                    let Ok(om) = kenshi_io::ogre_mesh::read(&game.root.join(&path)) else { continue };
+                    let o = ObjectLook::from_record(mat, |f| game.res.find(f)).for_building();
+                    for (_, m) in kenshi_render::to_bevy(&om) {
+                        let colours = m.attribute(Mesh::ATTRIBUTE_COLOR).is_some();
+                        let ground = look.ground_colour(w.at[0], w.at[2]);
+                        let h = objects.add(look.object(&assets, &o, origin, colours, ground));
+                        let e = commands.spawn((Mesh3d(meshes.add(m)), MeshMaterial3d(h), Transform::default(), PlayerDoorPiece(d))).id();
+                        commands.entity(root).add_child(e);
+                    }
+                }
+            }
         }
         if k < shown.len() {
             commands.entity(shown[k].0).despawn();
@@ -783,7 +1009,7 @@ pub fn order_at(game: &mut Game, inv: &mut super::inventory_ui::InventoryWindow,
 /// the (first) building chosen; each named one is placed by the first selected character, the
 /// first offset (dx, dz), the next ones further along x; 30 frames on they are confirmed and the
 /// mode closed, then the squad is ordered to build the first. KENSHI_BUILD_DONE: they are built
-/// at once and the squad operates the first that produces. KENSHI_STORAGE_AT=frame: the squad
+/// at once and the squad operates the first it can work. KENSHI_STORAGE_AT=frame: the squad
 /// opens the first built storage then; KENSHI_LABOUR=level sets the squad's labouring;
 /// KENSHI_UNLOCK=all: all research done first (crafting benches then make their first item).
 #[allow(clippy::too_many_arguments)]
@@ -803,6 +1029,17 @@ pub fn script(
     {
         let at = Vec3::from(game.sim.buildings[b].at);
         order_at(&mut game, &mut inv, at);
+    }
+    // (testing) KENSHI_MACHINE_AT=frame: the first built production building's window
+    if let Ok(v) = std::env::var("KENSHI_MACHINE_AT")
+        && v.parse::<u32>().ok() == Some(*frames)
+        && let Some(b) = (0..game.sim.buildings.len()).find(|&b| game.sim.buildings[b].done && game.sim.buildings[b].storage.is_some())
+    {
+        if let Some(&me) = game.selected.first() {
+            let at = game.sim.buildings[b].at;
+            game.sim.folk[me].mover.position = [at[0] / 10.0 + 3.0, at[1] / 10.0, at[2] / 10.0];
+        }
+        inv.pending_loot = Some(base::BUILDING_OWNER + b);
     }
     // (testing) KENSHI_BOX_AT=frame: the first selected is put by the nearest container with
     // something in it and opens it
@@ -888,6 +1125,14 @@ pub fn script(
     if *frames == at + 40 {
         let sel = game.selected.clone();
         if done {
+            // KENSHI_SKILL=stat:level (StatsEnumerated's number): that skill of the squad's set first
+            if let Some((st, l)) = std::env::var("KENSHI_SKILL").ok().and_then(|v| v.split_once(':').and_then(|(a, b)| Some((a.parse::<i32>().ok()?, b.parse::<f32>().ok()?))))
+                && let Some(stat) = kenshi_char::StatsEnumerated::from_i32(st)
+            {
+                for &id in &sel {
+                    game.sim.arena.f[id].skills.levels.insert(stat, l);
+                }
+            }
             // KENSHI_LABOUR=level: the squad's labouring set first
             if let Some(l) = std::env::var("KENSHI_LABOUR").ok().and_then(|v| v.parse::<f32>().ok()) {
                 for &id in &sel {
@@ -969,10 +1214,10 @@ pub fn draw_nests(
             let place = commands
                 .spawn((Transform::from_translation(Vec3::from(*at) - origin).with_rotation(Quat::from_rotation_y(*yaw)), Visibility::default()))
                 .id();
-            for (m, o, colours) in parts {
+            for pm in parts.into_iter().filter(|p| !p.interior) {
                 let ground = look.ground_colour(at[0], at[2]);
-                let h = objects.add(look.object(&assets, &o, origin, colours, ground));
-                let e = commands.spawn((Mesh3d(m), MeshMaterial3d(h), Transform::default())).id();
+                let h = objects.add(look.object(&assets, &pm.look, origin, pm.colours, ground));
+                let e = commands.spawn((Mesh3d(pm.mesh), MeshMaterial3d(h), Transform::default())).id();
                 commands.entity(place).add_child(e);
             }
             commands.entity(root).add_child(place);

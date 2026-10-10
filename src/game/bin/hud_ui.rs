@@ -1,10 +1,11 @@
 //! The game's main panel (Kenshi_MainPanel.layout): the time and money, game speed buttons and
 //! the paused banner, the selected character's name, status and body part life bars, the
 //! squad's members to pick from, and the shortcut and order buttons that are ported (inventory,
-//! sneak). Panels for systems not ported yet (towns, building, bounties, tooltips) stay hidden.
+//! sneak), the outpost's town panel (F043058) and the bounty panel; the status box and the
+//! state box tell more on hover (F047087's descriptions, `status_line`).
 use super::{Game, SPEEDS};
 use bevy::prelude::*;
-use kenshi_gui::{Built, GuiClick, GuiRes, SetAlpha, SetCaption, SetVisible};
+use kenshi_gui::{Built, EditText, GuiClick, GuiEdit, GuiRes, SetAlpha, SetCaption, SetProgress, SetVisible};
 use std::collections::HashMap;
 
 #[derive(Resource)]
@@ -146,7 +147,7 @@ impl Hud {
 }
 
 /// A number as Kenshi's "{1,num}" formats it: thousands separated by commas.
-fn num(v: i64) -> String {
+pub(super) fn num(v: i64) -> String {
     let s = v.unsigned_abs().to_string();
     let mut out = String::new();
     for (k, ch) in s.chars().enumerate() {
@@ -205,6 +206,7 @@ pub fn open(mut commands: Commands, gui: Res<GuiRes>, assets: Res<AssetServer>, 
     for r in &ui.roots {
         commands.entity(*r).insert(GlobalZIndex(40));
     }
+    // (TooltipPanel: an empty frame no code of the game's fills)
     for hidden in ["TownPanel", "TooltipPanel", "BountyPanel", "LoadingPanel"] {
         if let Some(e) = ui.get(hidden) {
             commands.queue(SetVisible(e, false));
@@ -244,29 +246,147 @@ fn part_order(q: &kenshi_char::medical::BodyPart, data: &kenshi_data::GameDataCo
     (rank, side, name)
 }
 
-/// The medical state the status box shows (F047087's list, (assumption) in this order).
-fn health_status(p: &kenshi_game::sim::Person, f: &kenshi_combat::arena::Fighter) -> &'static str {
+/// @fn F047087
+///
+/// The status box's state and what hovering it tells (the game's title and description), in the
+/// game's order: dead, the recovery coma, out cold, starving, bleeding, critical; then a blown
+/// disguise ("Disguise Blown!", with its cooldown) or an escaped slave found out
+/// ("Discovered!"), a disguise ("In Disguise": "You are currently disguised as {1}"), hunger,
+/// wounds, else "Normal".
+/// (assumption) The titles' colours (strings the game makes at start) are not read; the
+/// unconscious states the rewrite has no flag for (playing dead, blood loss KO, crippled) are
+/// not told apart.
+fn status_line(sim: &kenshi_game::sim::Sim, id: usize) -> (&'static str, String) {
+    let (p, f) = (&sim.folk[id], &sim.arena.f[id]);
     let m = &f.medical;
+    let hurt = |k: f32| m.parts.iter().any(|q| q.flesh - q.stun < q.max_health() * k);
     if m.dead {
-        "Dead"
-    } else if m.coma {
-        "Recovery coma"
-    } else if p.down {
-        "Unconscious"
-    } else if m.hunger.starving() {
-        "Starving"
-    } else if 0.0 < m.bleed_rate {
-        "Bleeding"
-    } else if m.parts.iter().any(|q| q.flesh - q.stun < 0.0) {
-        "Critical"
-    } else if m.hunger.level < 1.0 {
-        "Hungry"
-    } else if m.parts.iter().any(|q| q.flesh - q.stun < q.max_health() * 0.5) {
-        "Wounded"
-    } else if m.parts.iter().any(|q| q.flesh - q.stun < q.max_health() * 0.95) {
-        "Slightly Injured"
+        return ("Dead", "Gone forever. RIP.".into());
+    }
+    if m.coma {
+        return ("Recovery coma", "You've suffered too much damage. You won't be getting up again until all critical body parts have recovered above 0.".into());
+    }
+    if p.down {
+        return ("Unconscious", "Knocked out cold.".into());
+    }
+    if m.hunger.starving() {
+        return ("Starving", "You are starving to death. Get some food fast.".into());
+    }
+    if 0.0 < m.bleed_rate {
+        return ("Bleeding", "Losing blood, will collapse if blood goes below 0.".into());
+    }
+    if m.parts.iter().any(|q| q.flesh - q.stun < 0.0) {
+        return ("Critical", "Critical injuries will continue to degenerate without medical attention.".into());
+    }
+    if 0.0 < p.disguise_blown {
+        let n = p.disguise_blown.ceil() as i32;
+        let cool = if n == 1 { "Cooldown 1 second".to_string() } else { format!("Cooldown {n} seconds") };
+        return ("Disguise Blown!", format!("You've been discovered, somebody has seen through your disguise.\n{cool}"));
+    }
+    if let Some(s) = p.slave.as_ref().filter(|s| !s.obedient && p.prison.is_none())
+        && 0 < sim.bounty_with(id, &s.faction)
+    {
+        return ("Discovered!", "You've been discovered, somebody has noticed that you are an escaped slave.".into());
+    }
+    if let Some(d) = &p.disguised {
+        let name = sim.data.get(d).map_or(d.clone(), |r| r.name.clone());
+        return ("In Disguise", format!("You are currently disguised as {name}"));
+    }
+    if m.hunger.level < 1.0 {
+        return ("Hungry", "You are hungry and suffering from malnutrition. Your stats and strength will be affected, you need to get some food as soon as possible.".into());
+    }
+    if hurt(0.7) {
+        ("Wounded", String::new())
+    } else if hurt(0.9) {
+        ("Slightly Injured", String::new())
     } else {
-        "Normal"
+        ("Normal", "You are kind of healthy for now.".into())
+    }
+}
+
+/// @fn F039272
+///
+/// The state box's state (the first row) and what hovering it tells: a slave's, an escaped
+/// slave's and an ex-slave's with how much it looks like a slave ("Looks like a slave:",
+/// `Sim::looks_like_slave`), whether it has been seen ("Situation:") and an escapee's time left.
+/// (assumption) The slave lines come from the game's strings in their order (the function is too
+/// large to decompile); "Seen!" is a bounty with its masters.
+fn state_line(sim: &kenshi_game::sim::Sim, id: usize) -> (&'static str, String) {
+    let p = &sim.folk[id];
+    let m = &sim.arena.f[id].medical;
+    let faction = |f: &str| sim.data.get(f).map_or(f.to_string(), |r| r.name.clone());
+    let looks = |s: &kenshi_game::slavery::Slavery| {
+        let seen = if 0 < sim.bounty_with(id, &s.faction) { "Seen!" } else { "Undiscovered" };
+        format!("\nLooks like a slave: {}%\nSituation: {seen}", (sim.looks_like_slave(id) * 100.0).round() as i32)
+    };
+    if m.dead {
+        return ("Dead", "This guy is dead and gone.".into());
+    }
+    if let Some(s) = p.slave.as_ref() {
+        if p.prison.as_ref().is_some_and(|q| q.slave) || s.obedient {
+            return (
+                "Slave",
+                format!(
+                    "A slave belonging to {}. Not considered a person with rights, a slave works for his master until death and nothing more. {}",
+                    faction(&s.faction),
+                    "Your character will have a permanent job assigned called [Obedient slave]. While this is active he will automatically work for his master. You can remove this job, but beware of the consequences..."
+                ),
+            );
+        }
+        if p.prison.is_none() {
+            if s.fled || p.escaped.is_some() {
+                let left = p.escaped.as_ref().map_or(0.0, |e| (e.1 - sim.hours_gone()).max(0.0)).ceil() as i64;
+                let hours = if left == 1 { "1 hour".to_string() } else { format!("{left} hours") };
+                return (
+                    "Escaped slave",
+                    format!(
+                        "A slave of {} that has been seen escaping. Needs to lay low for a day and avoid getting spotted. {}\nTime remaining: {hours}{}",
+                        faction(&s.faction),
+                        "Keep your [Looks Like A Slave] level as low as possible, wear clothing or disguises and find a plastic surgeon to restore your hair. Don't get spotted.",
+                        looks(s)
+                    ),
+                );
+            }
+            return (
+                "Ex-slave",
+                format!(
+                    "Was once a slave of {} but has now escaped. The heat has died down but he still needs to avoid getting found out. {}{}",
+                    faction(&s.faction),
+                    "Keep your [Looks Like A Slave] level as low as possible, wear clothing or disguises and find a plastic surgeon to restore your hair. You should be safe if you stay out of towns.",
+                    looks(s)
+                ),
+            );
+        }
+    }
+    if p.prison.is_some() {
+        return ("Imprisoned", String::new());
+    }
+    if p.down {
+        return ("Unconscious", "This guy is unconscious and probably needs medical attention and rest.".into());
+    }
+    if let Some(c) = &p.crime {
+        // (assumption) the crime named from its enum (CrimeTheft: "theft")
+        let what = format!("{:?}", c.kind).trim_start_matches("Crime").to_lowercase();
+        return ("Committing Crime!", format!("This character is currently committing {what}, make sure nobody witnesses it."));
+    }
+    if let Some((_, until)) = &p.escaped {
+        let left = (until - sim.hours_gone()).max(0.0).ceil() as i64;
+        return ("Escaped Prisoner", format!("This character broke out of prison, if he gets spotted by any guards he is in trouble. Leave town to clear this status. Expires in {left} hours"));
+    }
+    if p.bed.is_some() {
+        return ("Sleeping...", String::new());
+    }
+    ("Normal", String::new())
+}
+
+/// A hover tip on a widget (the inventory's tooltip shows it): "title\ndescription", none
+/// without a description.
+fn tip(commands: &mut Commands, e: Option<Entity>, title: &str, text: &str) {
+    let Some(e) = e else { return };
+    if text.is_empty() {
+        commands.entity(e).remove::<super::inventory_ui::ItemTip>();
+    } else {
+        commands.entity(e).insert((Interaction::default(), super::inventory_ui::ItemTip(format!("{title}\n{text}"))));
     }
 }
 
@@ -281,7 +401,16 @@ pub fn update(
     mut nodes: Query<&mut Node>,
     time: Res<Time>,
     mut open: ResMut<super::OpenBuildings>,
+    mut edits: MessageReader<GuiEdit>,
+    boxes: Query<&EditText>,
 ) {
+    // the outpost's name typed (TownPanel's OutpostNameEditBox)
+    let name_box = hud.ui.get("OutpostNameEditBox");
+    for ev in edits.read() {
+        if Some(ev.widget) == name_box && !ev.text.trim().is_empty() {
+            game.sim.outpost_name = ev.text.clone();
+        }
+    }
     for c in clicks.read() {
         match c.name.as_str() {
             // the floor arrows: another floor of the opened building shown (0 - 3)
@@ -298,6 +427,11 @@ pub fn update(
             }
             "ShortcutInventoryButton" => keys.press(binds.key("toggle_inventory").unwrap_or(KeyCode::KeyI)),
             "ShortcutStatsButton" => keys.press(binds.key("toggle_stats").unwrap_or(KeyCode::KeyC)),
+            "OpenToPublicCheckBox" => game.sim.outpost_public = !game.sim.outpost_public,
+            "OrdersProspectButton" => {
+                let sel = game.selected.clone();
+                game.sim.order_prospect(&sel);
+            }
             "OrdersSneakButton" => {
                 let sel = game.selected.clone();
                 game.sim.toggle_sneak(&sel);
@@ -336,40 +470,27 @@ pub fn update(
         let f = if open.open_any() { open.floor } else { 0 };
         commands.queue(SetCaption(e, format!("Floor {f}")));
     }
+    town_panel(&mut commands, &ui, &game, &boxes);
     // the selected character
     if let Some(&id) = game.selected.first() {
         let sim = &game.sim;
         let p = &sim.folk[id];
         let f = &sim.arena.f[id];
         let m = &f.medical;
-        let name = if p.name.is_empty() { format!("Character {id}") } else { p.name.clone() };
+        let name = sim.display_name(id);
         let faction = p.faction.as_deref().and_then(|s| sim.data.get(s)).map_or(String::new(), |r| r.name.clone());
         // the name, and its faction faded at the right
         let name_row = vec![Row { label: name, value: faction, colour: FADED }];
         // the medical state (F047087's status list), on the status box
-        let status = health_status(p, f);
+        let (status, about) = status_line(sim, id);
         if let Some(e) = ui.get("HealthText") {
             commands.queue(SetCaption(e, status.to_string()));
         }
+        tip(&mut commands, ui.get("StatusPanel"), status, &about);
         // the character's state, goal and encumbrance (F039272)
-        // F039272's crime and prison states first
-        let state = if m.dead {
-            "Dead"
-        } else if p.prison.as_ref().is_some_and(|q| q.slave) {
-            "Slave"
-        } else if p.prison.is_some() {
-            "Imprisoned"
-        } else if p.down {
-            "Unconscious"
-        } else if p.crime.is_some() {
-            "Committing Crime!"
-        } else if p.escaped.is_some() {
-            "Escaped Prisoner"
-        } else if p.bed.is_some() {
-            "Sleeping..."
-        } else {
-            "Normal"
-        };
+        // F039272's slave, crime and prison states first
+        let (state, about) = state_line(sim, id);
+        tip(&mut commands, ui.get("StateText"), state, &about);
         let goal = p
             .ai
             .current
@@ -502,6 +623,55 @@ pub fn update(
     let _ = &mut game;
 }
 
+/// @fn F043058
+///
+/// The town panel (TownPanel, F043042): shown while the selected character is in the player's
+/// outpost (F043067; `Sim::in_outpost`): its name to edit, open to the public, the research
+/// ("None", or the first queued with how far it is), the power (drawn of supplied, "{1,num}/{2,num}")
+/// and the batteries' charge of their capacity, "<< " before it while they drain, " >>" after it
+/// while they charge.
+fn town_panel(commands: &mut Commands, ui: &Built, game: &Game, boxes: &Query<&EditText>) {
+    let sim = &game.sim;
+    let show = game.selected.first().is_some_and(|&id| sim.in_outpost(sim.folk[id].mover.position_units()));
+    let Some(panel) = ui.get("TownPanel") else { return };
+    commands.queue(SetVisible(panel, show));
+    if !show {
+        return;
+    }
+    if let Some(e) = ui.get("OutpostNameEditBox")
+        && !boxes.get(e).is_ok_and(|t| t.focused)
+    {
+        commands.queue(SetCaption(e, sim.outpost_name.clone()));
+    }
+    if let Some(e) = ui.get("OpenToPublicCheckBox") {
+        commands.entity(e).insert(kenshi_gui::ui::Checked(sim.outpost_public));
+    }
+    let set = |commands: &mut Commands, w: &str, t: String| {
+        if let Some(e) = ui.get(w) {
+            commands.queue(SetCaption(e, t));
+        }
+    };
+    let bar = |commands: &mut Commands, w: &str, frac: f32| {
+        if let Some(e) = ui.get(w) {
+            commands.queue(SetProgress(e, frac));
+        }
+    };
+    let first = sim.research_queue.first().and_then(|r| sim.data.get(r));
+    set(commands, "ResearchProgressBarCaption", first.map_or("None".to_string(), |r| r.name.clone()));
+    bar(commands, "ResearchProgressBar", first.map_or(0.0, |r| sim.research_progress / kenshi_game::production::research_time(r).max(0.01)));
+    let (supply, demand) = (sim.power_supply, sim.power_demand);
+    bar(commands, "PowerProgressBar", if supply <= 0.0 { if demand > 0.0 { 1.0 } else { 0.0 } } else { demand / supply });
+    set(commands, "PowerProgressBarCaption", format!("{}/{}", num(demand as i64), num(supply as i64)));
+    let mut charge = format!("{}/{}", num(sim.battery as i64), num(sim.battery_capacity as i64));
+    if supply > demand && sim.battery < sim.battery_capacity {
+        charge.push_str(" >>");
+    } else if supply < demand && sim.battery > 0.0 {
+        charge.insert_str(0, "<< ");
+    }
+    set(commands, "BatteryProgressBarCaption", charge);
+    bar(commands, "BatteryProgressBar", if sim.battery_capacity > 0.0 { sim.battery / sim.battery_capacity } else { 0.0 });
+}
+
 /// The squad panel: the squad's tab (Kenshi_SquadTabButton, ButtonWidth 200, the squad's name)
 /// and a portrait (Kenshi_PortraitCharacter.layout) per member in the squad's area, its face
 /// drawn live (`portraits`), its name over it; clicking one selects it.
@@ -548,7 +718,7 @@ pub fn squad_panel(
         }
         let Some(area) = hud.ui.get("SquadTabItem") else { return };
         let area_size = hud.ui.sizes.get(&area).copied().unwrap_or([600.0, 160.0]);
-        let side = 92.0 * scale;
+        let side = 136.0 * scale;
         for (k, &id) in squad.iter().enumerate() {
             let mut defs = gui.0.layout("Kenshi_PortraitCharacter.layout");
             if let Some(d) = defs.first_mut() {
@@ -564,11 +734,19 @@ pub fn squad_panel(
                     d.children.iter_mut().for_each(read_only);
                 }
                 read_only(d);
+                // the layout's parts are in its design pixels (136 square): at the screen's
+                // scale, as the root is
+                fn scaled(d: &mut kenshi_gui::WidgetDef, k: f32) {
+                    if let kenshi_gui::res::Pos::Px(p) = &mut d.pos {
+                        p.iter_mut().for_each(|v| *v *= k);
+                    }
+                    d.children.iter_mut().for_each(|c| scaled(c, k));
+                }
+                d.children.iter_mut().for_each(|c| scaled(c, scale));
             }
             let b = kenshi_gui::ui::spawn(&mut commands, &gui.0, &assets, &defs, Some(area), area_size);
-            let p = &game.sim.folk[id];
             if let Some(e) = b.get("NameText") {
-                commands.queue(SetCaption(e, if p.name.is_empty() { format!("#{id}") } else { p.name.clone() }));
+                commands.queue(SetCaption(e, game.sim.display_name(id)));
             }
             let button = b.get("BorderPanel").unwrap_or(b.roots[0]);
             // (assumption) the status overlays (Kenshi_PortraitImage's BackOverlay and
@@ -642,36 +820,3 @@ pub fn banner(mut commands: Commands, mut hud: ResMut<Hud>, game: Res<Game>, wea
     b.shown = Some(region);
 }
 
-/// The game's messages (the law's: caught, imprisoned, released, escaped, knocked out): each
-/// shown at the top of the screen for 6 seconds, newest at the bottom.
-/// (stand-in) Kenshi's notification popups' look is not ported: light text with a shadow.
-pub fn messages(mut commands: Commands, mut game: ResMut<Game>, hud: Res<Hud>, time: Res<Time>, mut shown: Local<Vec<(Entity, f32)>>) {
-    for m in game.sim.messages.drain(..) {
-        eprintln!("message: {m}");
-        let font = hud.fonts.medium.clone();
-        let e = commands
-            .spawn((
-                Text::new(m),
-                TextFont { font: bevy::text::FontSource::Handle(font.0), font_size: bevy::text::FontSize::Px(font.1 * 1.2), ..default() },
-                TextColor(LIGHT),
-                TextShadow::default(),
-                Node { position_type: PositionType::Absolute, left: Val::Percent(30.0), width: Val::Percent(40.0), justify_content: JustifyContent::Center, ..default() },
-                GlobalZIndex(90),
-            ))
-            .id();
-        shown.push((e, 6.0));
-    }
-    let dt = time.delta_secs();
-    shown.retain_mut(|(e, t)| {
-        *t -= dt;
-        if *t <= 0.0 {
-            commands.entity(*e).despawn();
-            return false;
-        }
-        true
-    });
-    let n = shown.len();
-    for (k, (e, _)) in shown.iter().enumerate() {
-        commands.entity(*e).entry::<Node>().and_modify(move |mut node| node.top = Val::Percent(8.0 + 3.0 * (k as f32 - n as f32 + 6.0).max(0.0)));
-    }
-}

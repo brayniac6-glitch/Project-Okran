@@ -77,6 +77,21 @@ pub struct Phs {
     pub version: f32,
     pub actors: Vec<Actor>,
     pub joints: Vec<Joint>,
+    /// The file's lights (PhysicsCollection::LightEnt, the 300-byte records after the static
+    /// shapes, F025944).
+    pub lights: Vec<PhsLight>,
+}
+
+/// A light a `.phs` file places (PhysicsCollection::LightEnt): its frame, then a float, eight
+/// floats, its name and three more floats, as the file lays them out (their meanings are read
+/// where the game uses them).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhsLight {
+    pub frame: Frame,
+    pub value: f32,
+    pub params: [f32; 8],
+    pub name: String,
+    pub extra: [f32; 3],
 }
 
 struct R<'a> {
@@ -266,7 +281,33 @@ pub fn parse(b: &[u8]) -> io::Result<Phs> {
         };
         joints.push(Joint { frame: Frame { pos, rows }, kind, high, low, swing, actors: [a, b2] });
     }
-    Ok(Phs { version, actors, joints })
+    // what follows: 0x38c-byte records, static shapes, the lights, 0x7c-byte records (the
+    // older files end sooner)
+    let mut lights = Vec::new();
+    let rest = (|| -> io::Result<()> {
+        let n = r.count()?;
+        r.skip(n * 0x38c)?;
+        for _ in 0..r.count()? {
+            shape(&mut r, version)?;
+        }
+        for _ in 0..r.count()? {
+            let rows = [r.v3()?, r.v3()?, r.v3()?];
+            let pos = r.v3()?;
+            let value = r.f32()?;
+            let mut params = [0.0; 8];
+            for p in &mut params {
+                *p = r.f32()?;
+            }
+            let name = r.string()?;
+            let extra = r.v3()?;
+            lights.push(PhsLight { frame: Frame { pos, rows }, value, params, name, extra });
+        }
+        Ok(())
+    })();
+    if rest.is_err() {
+        lights.clear();
+    }
+    Ok(Phs { version, actors, joints, lights })
 }
 
 pub fn read(path: &Path) -> io::Result<Phs> {

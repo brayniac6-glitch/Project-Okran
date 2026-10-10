@@ -333,6 +333,8 @@ pub struct Shared {
     pub max_slots: i32,
     pub chance_factor: f32,
     pub unarmed_mult: f32,
+    /// The global damage factor (the advanced options' "Global damage multiplier", 0x142133580).
+    pub damage_mult: f32,
     pub xp: XpConstants,
     pub rng: Rng,
     pub t: f32,
@@ -1043,7 +1045,7 @@ impl Fighting for Ctx<'_> {
             low_strike: tech.low_strike,
             direction: dir,
             robot: false,
-            damage_mult: 1.0,
+            damage_mult: self.sh.damage_mult,
             race_bleed: 1.0,
         };
         let rng = &mut self.sh.rng;
@@ -1988,6 +1990,7 @@ impl Shared {
             max_slots: g("max num attack slots").unwrap_or(1.0) as i32,
             chance_factor: g("attack chance factor").unwrap_or(0.0),
             unarmed_mult: g("unarmed damage mult").unwrap_or(1.0),
+            damage_mult: 1.0,
             xp: XpConstants::from_record(|k| g(k)),
             hits: Vec::new(),
             cues: Vec::new(),
@@ -2411,7 +2414,7 @@ impl Arena {
                 Some(BoltHit::Character(v)) => {
                     let b = &bolts[k];
                     let hit = crate::hit::Hit { pierce: b.damage, bleed: BOLT_BLEED, ..Default::default() };
-                    let ctx = HitContext { low_strike: false, direction: 6, robot: false, damage_mult: 1.0, race_bleed: 1.0 };
+                    let ctx = HitContext { low_strike: false, direction: 6, robot: false, damage_mult: sh.damage_mult, race_bleed: 1.0 };
                     let victim = &mut f[v];
                     let rng = &mut sh.rng;
                     let r = resolve_hit(&mut victim.medical, hit, &victim.armour, &victim.stats, &ctx, &sh.hc, &sh.mc, |a, c| rng.range(a, c));

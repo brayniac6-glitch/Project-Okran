@@ -5,6 +5,7 @@ pub mod character;
 pub mod character_material;
 pub mod fog_volume;
 pub mod hdr;
+pub mod local_lights;
 pub mod mipmaps;
 pub mod moons;
 pub mod object_material;

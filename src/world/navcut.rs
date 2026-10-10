@@ -201,6 +201,7 @@ impl NavWorld {
         }
         for c in cutters {
             let i = self.cutters.len();
+            self.key_cutters.entry(key).or_default().push(i);
             for gx in (c.min[0] / CELL).floor() as i32..=(c.max[0] / CELL).floor() as i32 {
                 for gz in (c.min[1] / CELL).floor() as i32..=(c.max[1] / CELL).floor() as i32 {
                     self.cutter_grid.entry((gx, gz)).or_default().push(i);
@@ -222,6 +223,29 @@ impl NavWorld {
     /// Whether cutter `i` stands in the way at ground height `y` (metres): reaching from below
     /// 1.5 m to above 0.6 m over it, and at least 0.4 m tall (lower things, floor plates and
     /// steps, are walked over).
+    /// The cutters of `key` taken away (a building dismantled, destroyed or moved): the
+    /// ground they stood on cut again from the faces as loaded, without them.
+    pub fn remove_cutters(&mut self, key: (i64, i64)) {
+        self.cut_keys.remove(&key);
+        let Some(ids) = self.key_cutters.remove(&key) else { return };
+        let mut touched = HashSet::new();
+        for i in ids {
+            let c = &mut self.cutters[i];
+            for p in [[c.min[0], 0.0, c.min[1]], [c.max[0], 0.0, c.max[1]], [c.min[0], 0.0, c.max[1]], [c.max[0], 0.0, c.min[1]]] {
+                let (x, y) = tile_of(p);
+                touched.insert(tile_uid(x, y));
+            }
+            // left in place but standing on nothing
+            c.lo = f32::MAX;
+            c.hi = f32::MAX;
+        }
+        for uid in touched {
+            if self.pristine.contains_key(&uid) {
+                self.cut_section(uid);
+            }
+        }
+    }
+
     fn stands_on(&self, i: usize, y: f32) -> bool {
         let c = &self.cutters[i];
         c.lo < y + 1.5 && c.hi > y + 0.6 && c.hi - c.lo > 0.4

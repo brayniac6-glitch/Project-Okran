@@ -5,6 +5,7 @@
 
 #import bevy_pbr::mesh_view_bindings as view_bindings
 #import bevy_pbr::mesh_view_types
+#import bevy_pbr::clustered_forward as clustering
 
 const PI: f32 = 3.14159265;
 const DIELECTRIC_SPEC: f32 = 0.04;
@@ -105,6 +106,59 @@ fn main_light(
     env.specular = env.specular * ambient_mult.rgb * env_w;
     return sun_light.specular + env.specular + (sun_light.diffuse + env.diffuse) * albedo
         + albedo * emissive;
+}
+
+// deferred.hlsl light_fs: the lamps, torches and fires near the surface (Bevy's clustered
+// point and spot lights, made from Kenshi's LIGHT records by local_lights.rs). Each lights
+// what faces it within its radius, falling off by Kenshi's curve: (1 - x)^3 x 0.8 + 0.2 to
+// x = 0.649, then -3 (x - 0.6)^2 + 0.242 to 0.8, then 3 (x - 1)^2 (x the distance over the
+// radius); a spot also by its cone ((a - cos outer) / (cos inner - cos outer), its "falloff"
+// taken as 1). `scene_pos` is the Bevy world position (the scene's), `frag_coord` the pixel's.
+fn local_lights(scene_pos: vec3<f32>, frag_coord: vec2<f32>, normal: vec3<f32>, view_dir: vec3<f32>,
+                albedo_in: vec3<f32>, gloss: f32, metalness: f32) -> vec3<f32> {
+    let view_z = dot(vec4<f32>(
+        view_bindings::view.view_from_world[0].z,
+        view_bindings::view.view_from_world[1].z,
+        view_bindings::view.view_from_world[2].z,
+        view_bindings::view.view_from_world[3].z
+    ), vec4<f32>(scene_pos, 1.0));
+    let cluster = clustering::view_fragment_cluster_index(frag_coord, view_z, false);
+    let ranges = clustering::unpack_clusterable_object_index_ranges(cluster);
+    let spec = mix(vec3<f32>(DIELECTRIC_SPEC), albedo_in, metalness);
+    let albedo = mix(albedo_in, vec3<f32>(0.0), metalness);
+    var out = vec3<f32>(0.0);
+    for (var i: u32 = ranges.first_point_light_index_offset; i < ranges.first_reflection_probe_index_offset; i = i + 1u) {
+        let id = clustering::get_clusterable_object_id(i);
+        let light = &view_bindings::clustered_lights.data[id];
+        let to_light = (*light).position_radius.xyz - scene_pos;
+        let dist = length(to_light);
+        let radius = inverseSqrt(max((*light).color_inverse_square_range.w, 1e-12));
+        if (dist >= radius) {
+            continue;
+        }
+        let l = to_light / max(dist, 1e-4);
+        if (dot(normal, l) < 0.01) {
+            continue;
+        }
+        let x = clamp(dist / radius, 0.0, 1.0);
+        let start = pow(1.0 - x, 3.0) * 0.8 + 0.2;
+        let vb = -3.0 * pow(x - 0.6, 2.0) + 0.242;
+        let vc = 3.0 * pow(x - 1.0, 2.0);
+        var attenuation = select(vb, start, x < 0.649);
+        attenuation = select(vc, attenuation, x < 0.8);
+        if (i >= ranges.first_spot_light_index_offset) {
+            var dir = vec3<f32>((*light).light_custom_data.x, 0.0, (*light).light_custom_data.y);
+            dir.y = sqrt(max(0.0, 1.0 - dir.x * dir.x - dir.z * dir.z));
+            if (((*light).flags & mesh_view_types::POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE) != 0u) {
+                dir.y = -dir.y;
+            }
+            let a = dot(dir, -l);
+            attenuation = attenuation * clamp(a * (*light).light_custom_data.z + (*light).light_custom_data.w, 0.0, 1.0);
+        }
+        let lit = punctual(normal, l, view_dir, gloss, spec, (*light).color_inverse_square_range.rgb, 0.0);
+        out = out + (lit.specular + lit.diffuse * albedo) * attenuation;
+    }
+    return out;
 }
 
 // wet.hlsl makeWet

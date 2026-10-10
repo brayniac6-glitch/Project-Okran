@@ -55,6 +55,15 @@ pub enum Action {
     Surrender,
     /// Pick the lock of someone else's cage from outside ("Free Prisoner").
     Free,
+    /// Town training equipment: train on it ("Training", Task_UseTrainingDummy).
+    Train,
+    /// A door or gate: open or close it (F037658), bash it in (BASH_DOOR_PLAYER_ORDER).
+    DoorToggle,
+    Bash,
+    /// A building of the player's: Repair (order 0x5f, Task_Build on it damaged) and Dismantle
+    /// (0x60, Task_Dismantle).
+    Repair,
+    Dismantle,
 }
 
 /// Someone with wounds open, bleeding, or flesh short of its full health and not yet treated
@@ -68,6 +77,10 @@ fn needs_treatment(game: &Game, id: usize) -> bool {
 pub struct ContextMenu {
     /// Someone held on long enough: the menu opens for them next frame.
     pub request: Option<usize>,
+    /// (testing, `rclick_script`) the cursor the right click is at, and an option to take, in
+    /// place of the mouse's (the player's own pointer is never moved).
+    pub test_cursor: Option<Vec2>,
+    pub test_pick: Option<usize>,
     open: Option<Open>,
 }
 
@@ -84,13 +97,34 @@ pub struct OptionRow;
 /// game's labels.
 pub fn options(game: &Game, target: usize) -> Vec<(String, Action)> {
     let sim = &game.sim;
+    // town training equipment (targets from FURN_TARGET)
+    if let Some(f) = target.checked_sub(kenshi_game::production::FURN_TARGET) {
+        return if sim.furniture_training(f).is_some() { vec![("Training".to_string(), Action::Train)] } else { Vec::new() };
+    }
+    // a door (targets from DOOR_TARGET)
+    if let Some(d) = target.checked_sub(kenshi_game::doors::DOOR_TARGET) {
+        let Some(s) = sim.door_states.get(d) else { return Vec::new() };
+        let mut out = Vec::new();
+        if !s.broken {
+            let open = s.phase == kenshi_game::sim::DOOR_OPEN || s.phase == kenshi_game::sim::DOOR_OPENING;
+            out.push((if open { "Close" } else { "Open" }.to_string(), Action::DoorToggle));
+            if !open {
+                out.push(("Bash door".to_string(), Action::Bash));
+            }
+        }
+        return out;
+    }
     // a building of the player's (targets from BUILDING_OWNER)
     if let Some(b) = target.checked_sub(kenshi_game::base::BUILDING_OWNER) {
         let Some(pb) = sim.buildings.get(b) else { return Vec::new() };
         let mut out = Vec::new();
         if !pb.done {
             out.push(("Build".to_string(), Action::Build));
+            out.push(("Dismantle".to_string(), Action::Dismantle));
             return out;
+        }
+        if sim.needs_repair(b) {
+            out.push(("Repair".to_string(), Action::Repair));
         }
         if sim.is_operated(b) {
             out.push(("Operate".to_string(), Action::Operate));
@@ -102,6 +136,7 @@ pub fn options(game: &Game, target: usize) -> Vec<(String, Action)> {
         if !sim.crafts(b).is_empty() {
             out.push(("Crafting".to_string(), Action::Crafting));
         }
+        out.push(("Dismantle".to_string(), Action::Dismantle));
         return out;
     }
     let t = &sim.folk[target];
@@ -141,11 +176,11 @@ pub fn options(game: &Game, target: usize) -> Vec<(String, Action)> {
         return out;
     }
     if t.down || t.dead {
-        // (assumption) someone alive and unconscious is kidnapped, a body picked up
+        // picked up (F044603's order 0xe1 on someone down, a body too); someone alive and
+        // unconscious can also be kidnapped (0xf6)
         if t.carried_by.is_none() {
-            if t.dead {
-                out.push(("Pick Up".to_string(), Action::PickUp));
-            } else {
+            out.push(("Pick Up".to_string(), Action::PickUp));
+            if !t.dead {
                 out.push(("Kidnap".to_string(), Action::Kidnap));
             }
         }
@@ -193,6 +228,24 @@ pub fn act(game: &mut Game, inv: &mut inventory_ui::InventoryWindow, talk: &mut 
     if selected.is_empty() {
         return;
     }
+    if let Some(f) = target.checked_sub(kenshi_game::production::FURN_TARGET) {
+        if a == Action::Train {
+            game.sim.order_train_at(&selected, f);
+        }
+        return;
+    }
+    if let Some(d) = target.checked_sub(kenshi_game::doors::DOOR_TARGET) {
+        match a {
+            Action::DoorToggle => {
+                if let Some(say) = game.sim.toggle_door(d) {
+                    game.sim.messages.push(say.to_string());
+                }
+            }
+            Action::Bash => game.sim.order_bash(&selected, d),
+            _ => {}
+        }
+        return;
+    }
     if let Some(b) = target.checked_sub(kenshi_game::base::BUILDING_OWNER) {
         match a {
             Action::Build => game.sim.order_build(&selected, b),
@@ -203,6 +256,8 @@ pub fn act(game: &mut Game, inv: &mut inventory_ui::InventoryWindow, talk: &mut 
                 inv.pending_loot = Some(target);
             }
             Action::Crafting => game.crafting_request = Some(b),
+            Action::Repair => game.sim.order_repair(&selected, b),
+            Action::Dismantle => game.dismantle_request = Some((selected.clone(), b)),
             _ => {}
         }
         return;
@@ -247,7 +302,7 @@ pub fn act(game: &mut Game, inv: &mut inventory_ui::InventoryWindow, talk: &mut 
             }
         }
         Action::Surrender => game.sim.folk[target].surrendered = true,
-        Action::Build | Action::Operate | Action::Open | Action::Crafting => {}
+        Action::Build | Action::Operate | Action::Open | Action::Crafting | Action::DoorToggle | Action::Bash | Action::Train | Action::Repair | Action::Dismantle => {}
     }
 }
 
@@ -275,14 +330,24 @@ pub fn update(
     // a choice
     if let Some(o) = &menu.open {
         let picked = o.rows.iter().find(|(e, _)| rows.get(*e).is_ok_and(|i| *i == Interaction::Pressed)).map(|(_, a)| *a);
+        let picked = picked.or_else(|| menu.test_pick.and_then(|k| o.rows.get(k)).map(|r| r.1));
         if let Some(a) = picked {
+            if std::env::var("KENSHI_RCLICK_AT").is_ok() {
+                eprintln!("rclick: picked {a:?}");
+            }
             let target = o.target;
             close(&mut commands, o);
             menu.open = None;
+            menu.test_pick = None;
             act(&mut game, &mut inv, &mut talk, target, a);
             return;
         }
-        let elsewhere = mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right);
+        // (a click on one of its rows is a choice, the row pressed by the next frame at the latest)
+        let on_row = o.rows.iter().any(|(e, _)| rows.get(*e).is_ok_and(|i| *i != Interaction::None));
+        let elsewhere = !on_row && (mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right));
+        if elsewhere && std::env::var("KENSHI_RCLICK_AT").is_ok() {
+            eprintln!("rclick: closed by a click elsewhere at {:?}", windows.iter().next().and_then(|w| w.cursor_position()));
+        }
         if elsewhere || keys.just_pressed(KeyCode::Escape) || menu.request.is_some() {
             close(&mut commands, o);
             menu.open = None;
@@ -346,7 +411,11 @@ pub fn update(
     for r in &ui.roots {
         commands.entity(*r).insert(GlobalZIndex(150));
     }
-    let name = if let Some(b) = target.checked_sub(kenshi_game::base::BUILDING_OWNER) {
+    let name = if let Some(f) = target.checked_sub(kenshi_game::production::FURN_TARGET) {
+        game.sim.furn.get(f).map_or(String::new(), |k| k.name.clone())
+    } else if let Some(d) = target.checked_sub(kenshi_game::doors::DOOR_TARGET) {
+        game.sim.door_states.get(d).and_then(|s| game.sim.data.get(&s.door.record)).map_or(String::new(), |r| r.name.clone())
+    } else if let Some(b) = target.checked_sub(kenshi_game::base::BUILDING_OWNER) {
         game.sim.buildings.get(b).and_then(|pb| game.sim.data.get(&pb.record)).map_or(String::new(), |r| r.name.clone())
     } else if let p = &game.sim.folk[target]
         && !p.name.is_empty()
@@ -529,5 +598,78 @@ pub fn law_script(mut frames: Local<u32>, mut game: ResMut<Game>) {
             }
             _ => {}
         }
+    }
+}
+
+/// (testing) KENSHI_RCLICK_AT=<frame>[@<option number>]: a right click on the nearest person not
+/// of the squad (on the head, or on the body lying on the ground), as the mouse's (its place given to the click as `ContextMenu::test_cursor`,
+/// the player's own pointer left alone), the right button held from that frame for 40 frames
+/// (the menu opens after `HOLD`); with an option number (from 0), that option taken 20 frames
+/// later. KENSHI_RCLICK_DUMMY: the click is on the nearest town training equipment instead (the
+/// first selected put a little way from it first); KENSHI_SKILL=stat:level then sets a skill.
+#[allow(clippy::too_many_arguments)]
+pub fn rclick_script(
+    mut frames: Local<u32>,
+    mut buttons: ResMut<ButtonInput<MouseButton>>,
+    cams: Query<(&Camera, &GlobalTransform), super::MainCam>,
+    mut game: ResMut<Game>,
+    mut menu: ResMut<ContextMenu>,
+) {
+    *frames += 1;
+    let Ok(v) = std::env::var("KENSHI_RCLICK_AT") else { return };
+    let (at, pick) = match v.split_once('@') {
+        Some((a, b)) => (a.parse::<u32>().unwrap_or(0), b.parse::<usize>().ok()),
+        None => (v.parse::<u32>().unwrap_or(0), None),
+    };
+    let Some(&me) = game.selected.first() else { return };
+    let dummy = std::env::var("KENSHI_RCLICK_DUMMY").is_ok();
+    let here = game.sim.folk[me].mover.position_units();
+    let nearest_dummy = |game: &Game| {
+        (0..game.sim.furn.len()).filter(|&k| game.sim.furniture_training(k).is_some()).min_by(|&a, &b| {
+            let d = |k: usize| (game.sim.furn[k].position[0] - here[0]).hypot(game.sim.furn[k].position[2] - here[2]);
+            d(a).total_cmp(&d(b))
+        })
+    };
+    if dummy && *frames + 400 == at {
+        if let Some(f) = nearest_dummy(&game) {
+            let p = game.sim.furn[f].position;
+            game.sim.folk[me].mover.position = [p[0] / 10.0 + 20.0, p[1] / 10.0, p[2] / 10.0];
+            game.focus = Vec3::from(p) - game.zone.origin;
+            eprintln!("rclick: by {} ({f})", game.sim.furn[f].name);
+            if let Some((st, l)) = std::env::var("KENSHI_SKILL").ok().and_then(|v| v.split_once(':').and_then(|(a, b)| Some((a.parse::<i32>().ok()?, b.parse::<f32>().ok()?))))
+                && let Some(stat) = kenshi_char::StatsEnumerated::from_i32(st)
+            {
+                game.sim.arena.f[me].skills.levels.insert(stat, l);
+            }
+        }
+    }
+    if *frames >= at && *frames < at + 40 {
+        let Ok((cam, ct)) = cams.single() else { return };
+        let target = if dummy {
+            nearest_dummy(&game).map(|f| (format!("{} ({f})", game.sim.furn[f].name), Vec3::from(game.sim.furn[f].position) - game.zone.origin + Vec3::Y * 8.0))
+        } else {
+            let d = |p: &kenshi_game::sim::Person| {
+                let q = p.mover.position_units();
+                (q[0] - here[0]).hypot(q[2] - here[2])
+            };
+            game.sim.folk.iter().filter(|p| !p.player && !p.dead).min_by(|a, b| d(a).total_cmp(&d(b))).map(|t| (format!("{} ({})", game.sim.display_name(t.id), t.id), Vec3::from(t.mover.position_units()) - game.zone.origin + Vec3::Y * if t.down { 1.0 } else { 17.0 }))
+        };
+        let Some((name, p)) = target else { return };
+        menu.test_cursor = cam.world_to_viewport(ct, p).ok();
+        if *frames == at {
+            eprintln!("rclick: on {name}");
+            buttons.press(MouseButton::Right);
+        }
+    }
+    if *frames == at + 40 {
+        buttons.release(MouseButton::Right);
+        menu.test_cursor = None;
+        eprintln!("rclick: menu open {}: {:?}", menu.open.is_some(), menu.open.as_ref().map(|o| o.rows.iter().map(|r| r.1).collect::<Vec<_>>()));
+    }
+    if let Some(k) = pick
+        && *frames == at + 60
+    {
+        eprintln!("rclick: taking option {k}");
+        menu.test_pick = Some(k);
     }
 }

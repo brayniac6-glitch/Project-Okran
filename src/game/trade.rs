@@ -14,10 +14,11 @@ use kenshi_char::inventory::{Inventory, Item, Section};
 use kenshi_data::{GameData, GameDataContainer, ItemType};
 use std::collections::HashMap;
 
-/// The trader window's grid (Kenshi_InventoryTraderWindow.layout's 450 x 600 canvas at the
-/// inventory's 45-unit cells, (assumption)).
-pub const SHOP_W: u32 = 10;
-pub const SHOP_H: u32 = 13;
+/// The trader window's grid: its slot panel (Kenshi_InventoryTraderWindow.layout's
+/// backpack_content, 455 x 486 design pixels) in Kenshi_InventorySlotSkin's 25-pixel cells, the
+/// cells of the character's own inventory: 18 across, 19 rows in view (more scroll).
+pub const SHOP_W: u32 = 18;
+pub const SHOP_H: u32 = 19;
 
 /// The GLOBAL CONSTANTS prices read (F046688; shipped values as defaults).
 #[derive(Debug, Clone, Copy, PartialEq)]

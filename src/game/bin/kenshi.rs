@@ -70,10 +70,22 @@ mod speech_ui;
 mod portraits;
 #[path = "research_ui.rs"]
 mod research_ui;
+#[path = "prospect_ui.rs"]
+mod prospect_ui;
+#[path = "tutorial_table.rs"]
+mod tutorial_table;
+#[path = "tutorial_ui.rs"]
+mod tutorial_ui;
+#[path = "item_tip.rs"]
+mod item_tip;
 #[path = "stats_ui.rs"]
 mod stats_ui;
 #[path = "saves_ui.rs"]
 mod saves_ui;
+#[path = "popup_ui.rs"]
+mod popup_ui;
+#[path = "message_box.rs"]
+mod message_box;
 
 use bevy::math::Affine3A;
 use kenshi_physics::ragdoll::Ragdoll;
@@ -235,6 +247,13 @@ struct Game {
     selected: Vec<usize>,
     /// A crafting bench asked for in the overview's crafting tab (its menu's "Crafting").
     crafting_request: Option<usize>,
+    /// A question for Kenshi's message box (message_box), asked next frame.
+    ask: Option<message_box::Ask>,
+    /// The message log (the overview window's DIALOGUE tab): what was said (speech, the
+    /// dialogue window's lines) and the game's messages, oldest first.
+    log: Vec<String>,
+    /// The selection to dismantle a building (asked first, message_box::ask_dismantle).
+    dismantle_request: Option<(Vec<usize>, usize)>,
     paused: bool,
     speed: f32,
     carry: f32,
@@ -298,6 +317,15 @@ fn need_kenshi(why: &str) {
         unsafe {
             MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), 0x10);
         }
+    }
+}
+
+/// A line onto the message log (`Game::log`), its oldest dropped past 500.
+fn log(log: &mut Vec<String>, line: String) {
+    log.push(line);
+    if log.len() > 500 {
+        let n = log.len() - 500;
+        log.drain(..n);
     }
 }
 
@@ -377,6 +405,10 @@ fn main() -> AppExit {
         .init_resource::<context_ui::ContextMenu>()
         .init_resource::<build_ui::BuildMode>()
         .init_resource::<research_ui::ResearchWindow>()
+        .init_resource::<prospect_ui::ProspectWindow>()
+        .add_systems(Update, prospect_ui::update.run_if(resource_exists::<WorldReady>))
+        .init_resource::<tutorial_ui::Tutorials>()
+        .add_systems(Update, tutorial_ui::update.run_if(resource_exists::<WorldReady>.and_then(resource_exists::<hud_ui::Hud>)))
         .add_systems(Update, (research_ui::script, research_ui::update).chain().run_if(resource_exists::<WorldReady>))
         .add_systems(
             Update,
@@ -394,7 +426,12 @@ fn main() -> AppExit {
             (dialogue_ui::script, dialogue_ui::update).chain().before(inventory_ui::toggle).distributive_run_if(resource_exists::<WorldReady>),
         )
         .add_systems(Update, (key_script, save_keys).chain().run_if(resource_exists::<WorldReady>))
+        .add_systems(Update, (move_doors, move_player_doors, sound::doors, sound::dismantled, cut_player_buildings).run_if(resource_exists::<WorldReady>))
+        .add_systems(Update, kenshi_render::local_lights::animate.run_if(resource_exists::<WorldReady>))
         .init_resource::<saves_ui::SavesPanel>()
+        .init_resource::<popup_ui::Popup>()
+        .init_resource::<message_box::MessageBoxes>()
+        .add_systems(Update, message_box::update)
         .init_resource::<Autosave>()
         .add_message::<saves_ui::SavesDone>()
         .add_systems(Update, saves_ui::update.after(options_ui::update))
@@ -411,6 +448,7 @@ fn main() -> AppExit {
         .init_resource::<ground_items::GroundItems>()
         .add_systems(Update, (ground_items::update, ground_items::highlight).chain().run_if(resource_exists::<WorldReady>))
         .add_systems(Update, move_marker::update.after(command).run_if(resource_exists::<WorldReady>))
+        .add_systems(Update, context_ui::rclick_script.before(command).run_if(resource_exists::<WorldReady>.and_then(resource_exists::<Game>)))
         .add_systems(Update, options_ui::update.run_if(resource_exists::<WorldReady>))
         .add_systems(Update, (slave_ui::test_hook, slave_ui::update).chain().run_if(resource_exists::<WorldReady>))
         .add_systems(Update, pickbar::update.run_if(resource_exists::<WorldReady>))
@@ -450,7 +488,7 @@ fn main() -> AppExit {
                 ),
                 hud_ui::update.run_if(resource_exists::<hud_ui::Hud>.and_then(resource_exists::<WorldReady>)),
                 hud_ui::banner.run_if(resource_exists::<hud_ui::Hud>.and_then(resource_exists::<WorldReady>)),
-                hud_ui::messages.run_if(resource_exists::<hud_ui::Hud>.and_then(resource_exists::<WorldReady>)),
+                popup_ui::update.run_if(resource_exists::<WorldReady>),
                 hud_ui::squad_panel.run_if(resource_exists::<hud_ui::Hud>.and_then(resource_exists::<WorldReady>)),
                 debug_text.run_if(resource_exists::<WorldReady>),
             ),
@@ -464,6 +502,7 @@ fn main() -> AppExit {
                 inventory_ui::trade_buy_script.after(inventory_ui::toggle).before(inventory_ui::draw),
                 inventory_ui::toggle,
                 inventory_ui::limbs_window.after(inventory_ui::toggle),
+                inventory_ui::machine_window.after(inventory_ui::toggle),
                 inventory_ui::drag.after(inventory_ui::toggle),
                 inventory_ui::draw.after(inventory_ui::drag),
                 inventory_ui::tooltip.after(inventory_ui::draw),
@@ -524,7 +563,7 @@ fn main() -> AppExit {
             )
             .add_systems(
                 Update,
-                (menu::buttons, menu::arrive).distributive_run_if(resource_exists::<menu::Menu>),
+                (menu::buttons, menu::advanced, menu::arrive).distributive_run_if(resource_exists::<menu::Menu>),
             );
     } else {
         let load = build_world(root.clone(), args.clone(), zone_xy, extras, Loading::New);
@@ -624,7 +663,8 @@ fn save_and_tell(game: &mut Game, name: &str) {
         }
         Err(e) => {
             eprintln!("save failed: {e}");
-            game.sim.messages.push(format!("Save Error: {e}"));
+            // F034848: an error box
+            game.ask = Some(message_box::Ask { title: "Error".into(), text: format!("Failed to save game\n{e}"), question: message_box::Question::Note });
         }
     }
 }
@@ -910,6 +950,9 @@ fn build_world(root: PathBuf, args: Vec<String>, zone_xy: (i32, i32), extras: Ve
             sword: None,
             selected,
             crafting_request: None,
+            ask: None,
+            log: Vec::new(),
+            dismantle_request: None,
             paused: false,
             speed: std::env::var("KENSHI_SPEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
             carry: 0.0,
@@ -1008,6 +1051,9 @@ fn setup(
         &mut look,
     );
     rebuild_statics(game);
+    // the home zone's lamps, torches and fires
+    let (lights, tag) = (game.zone.lights.clone(), game.zone.zone);
+    spawn_zone_lights(&mut commands, &game.sim.data, &lights, tag);
     // the home zone's building effects
     let o = game.zone.origin;
     let fx: Vec<_> = game.zone.effects.iter().map(|(e, at, r)| (e.clone(), *at + o, *r)).collect();
@@ -1335,7 +1381,30 @@ fn on_screen(cam: &Camera, at: &GlobalTransform, game: &Game, i: usize) -> Optio
     cam.world_to_viewport(at, p).ok()
 }
 
-/// The person under the cursor (nearest within `PICK_PX`).
+/// How far the cursor is outside person `i`'s body on screen (pixels; 0 or less: on it): a
+/// standing body the stroke from the feet to the head (19 units up) a fifth of its height wide;
+/// one lying down a disc over the ground where it lies, 9 units round. None when out of view.
+/// (The game picks by the body's collision; this is its outline on screen.)
+fn body_distance(cam: &Camera, at: &GlobalTransform, game: &Game, i: usize, cursor: Vec2) -> Option<f32> {
+    let p = &game.sim.folk[i];
+    let base = Vec3::from(p.mover.position_units()) - game.zone.origin;
+    if p.down {
+        let c = cam.world_to_viewport(at, base + Vec3::Y * 2.0).ok()?;
+        // the body's reach on screen: 9 units across the view
+        let right = at.right().as_vec3();
+        let edge = cam.world_to_viewport(at, base + Vec3::Y * 2.0 + right * 9.0).ok()?;
+        return Some(c.distance(cursor) - c.distance(edge).max(10.0));
+    }
+    let feet = cam.world_to_viewport(at, base + Vec3::Y * 1.0).ok()?;
+    let head = cam.world_to_viewport(at, base + Vec3::Y * 19.0).ok()?;
+    let seg = head - feet;
+    let t = if seg.length_squared() > 0.0 { ((cursor - feet).dot(seg) / seg.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+    let d = cursor.distance(feet + seg * t);
+    Some(d - (seg.length() * 0.2).max(8.0))
+}
+
+/// The person under the cursor: on their body on screen (`body_distance`, a few pixels' slack),
+/// else the nearest whose middle is within `PICK_PX` (a small, far one); the nearest of them.
 fn pick(
     cam: &Camera,
     at: &GlobalTransform,
@@ -1346,9 +1415,12 @@ fn pick(
     game.sim
         .folk
         .iter()
-        .filter(|p| p.player == players)
-        .filter_map(|p| Some((p.id, on_screen(cam, at, game, p.id)?.distance(cursor))))
-        .filter(|(_, d)| *d < PICK_PX)
+        .filter(|p| p.player == players && p.carried_by.is_none())
+        .filter_map(|p| {
+            let body = body_distance(cam, at, game, p.id, cursor)?;
+            let middle = on_screen(cam, at, game, p.id)?.distance(cursor);
+            (body < 4.0 || middle < PICK_PX).then_some((p.id, body.min(middle - PICK_PX)))
+        })
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(i, _)| i)
 }
@@ -1507,7 +1579,8 @@ fn command(
     let (Ok(win), Ok((cam, at))) = (windows.single(), cams.single()) else {
         return;
     };
-    let Some(cursor) = win.cursor_position() else {
+    // (the testing click's place, else the mouse's)
+    let Some(cursor) = menu.test_cursor.or_else(|| win.cursor_position()) else {
         return;
     };
     // held on the ground: the squad's move order follows the cursor, re-aimed every 0.2 s
@@ -1546,7 +1619,7 @@ fn command(
         default_order(&mut game, &mut inv, &mut talk, target);
         return;
     }
-    if !buttons.just_pressed(MouseButton::Right) || game.selected.is_empty() || on_ui(&ui) {
+    if !buttons.just_pressed(MouseButton::Right) || game.selected.is_empty() || (on_ui(&ui) && menu.test_cursor.is_none()) {
         return;
     }
     // someone standing, else someone down (anyone's)
@@ -1568,8 +1641,24 @@ fn command(
         .or_else(|| down(true))
         .or_else(|| pick(cam, at, &game, cursor, true).filter(|&e| caged(e)))
         .or_else(in_cage);
+    if menu.test_cursor.is_some() {
+        eprintln!("rclick: cursor {cursor}: person {someone:?}, training {:?}", pick_training(cam, at, &game, cursor));
+    }
     if let Some(e) = someone {
         *press = Some((e, 0.0));
+        return;
+    }
+    // on an item lying on the ground or a floor (picked on screen): the selection goes and
+    // picks it up
+    if let Some(item) = ground_items::under_cursor(cam, at, &game, cursor) {
+        let selected = game.selected.clone();
+        game.sim.order_pick_item(&selected, item);
+        return;
+    }
+    // on town training equipment (picked on screen: it may stand on a floor over the ground):
+    // train on it on release, its menu held
+    if let Some(f) = pick_training(cam, at, &game, cursor) {
+        *press = Some((kenshi_game::production::FURN_TARGET + f, 0.0));
         return;
     }
     let Some(q) = ground_at_shown(cam, at, &game, cursor, &shown) else {
@@ -1591,6 +1680,11 @@ fn command(
         inv.pending_loot = Some(owner);
         return;
     }
+    // on a door or gate: open or close it on release, its menu held
+    if let Some(d) = game.sim.door_near([w.x, w.y, w.z], 60.0) {
+        *press = Some((kenshi_game::doors::DOOR_TARGET + d, 0.0));
+        return;
+    }
     // on a building of the player's: its default order on release, its menu held
     if let Some(b) = game.sim.building_at([w.x, w.y, w.z]) {
         *press = Some((kenshi_game::base::BUILDING_OWNER + b, 0.0));
@@ -1601,11 +1695,38 @@ fn command(
     *held = Some(0.0);
 }
 
+/// The town training equipment under the cursor: its middle (8 units up) within 30 pixels of it
+/// on screen, the nearest to the camera of those.
+fn pick_training(cam: &Camera, at: &GlobalTransform, game: &Game, cursor: Vec2) -> Option<usize> {
+    let eye = at.translation();
+    (0..game.sim.furn.len())
+        .filter(|&k| game.sim.furn[k].function == kenshi_game::production::FUNCTION_TRAINING)
+        .filter_map(|k| {
+            let p = Vec3::from(game.sim.furn[k].position) - game.zone.origin + Vec3::Y * 8.0;
+            let d = p.distance(eye);
+            if d > 3000.0 {
+                return None;
+            }
+            let s = cam.world_to_viewport(at, p).ok()?;
+            (s.distance(cursor) < 30.0).then_some((k, d))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(k, _)| k)
+}
+
 /// A quick right click on someone: someone down is picked up; someone not fighting with
 /// something to say is walked to and talked to (a trader with nothing to say traded with);
 /// anyone else attacked.
 fn default_order(game: &mut Game, inv: &mut inventory_ui::InventoryWindow, talk: &mut dialogue_ui::DialogueWindow, e: usize) {
     use context_ui::Action;
+    if e >= kenshi_game::production::FURN_TARGET {
+        context_ui::act(game, inv, talk, e, Action::Train);
+        return;
+    }
+    if e >= kenshi_game::doors::DOOR_TARGET {
+        context_ui::act(game, inv, talk, e, Action::DoorToggle);
+        return;
+    }
     if let Some(b) = e.checked_sub(kenshi_game::base::BUILDING_OWNER) {
         if let Some(pb) = game.sim.buildings.get(b) {
             let at = Vec3::from(pb.at);
@@ -1780,6 +1901,83 @@ fn rebuild_statics(game: &mut Game) {
             eprintln!("navcut: zone at {key:?}: {n} cutters, {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
         }
     }
+}
+
+/// The player's buildings cut out of the navmesh (as the zones' are, `rebuild_statics`): each
+/// built wall, gate and obstacle (a building that "links together", or "path mode" 1 / 2) by its
+/// footprint, its parts' bounds turned with it; a gate's doorway left for its door (whose
+/// barrier shuts it, kenshi_game::doors). Cut again whenever the buildings change.
+/// (stand-in) Kenshi cuts by the building's physics silhouette; here by its meshes' bounding
+/// box. A building with a navmesh of its own ("path mode" 3, a house) is not cut: its inside
+/// is not walkable without its interior navmesh, which the game makes and this does not.
+fn cut_player_buildings(mut game: ResMut<Game>, mut was: Local<(Vec<(String, [i32; 3], i32, bool)>, usize)>, mut bounds: Local<HashMap<String, Option<(Vec3, Vec3)>>>) {
+    let now: Vec<(String, [i32; 3], i32, bool)> = game
+        .sim
+        .buildings
+        .iter()
+        .map(|b| (b.record.clone(), b.at.map(|v| v as i32), (b.yaw * 1000.0) as i32, b.done))
+        .collect();
+    if now == was.0 && !game.sim.buildings_changed {
+        return;
+    }
+    game.sim.buildings_changed = false;
+    for k in 0..was.1 {
+        game.sim.nav.remove_cutters((-2, k as i64));
+    }
+    was.0 = now;
+    let m = kenshi_world::navmesh::METRES;
+    let mut n = 0;
+    for b in 0..game.sim.buildings.len() {
+        let pb = game.sim.buildings[b].clone();
+        let Some(rec) = game.sim.data.get(&pb.record).cloned() else { continue };
+        let links = rec.bools.get("links together").copied().unwrap_or(false);
+        let mode = rec.ints.get("path mode").copied().unwrap_or(2);
+        if !pb.done || !(links || mode == 1 || mode == 2) {
+            continue;
+        }
+        let bb = *bounds.entry(pb.record.clone()).or_insert_with(|| {
+            let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+            for part in kenshi_render::zone::part_meshes_placed(&game.sim.data, &rec, false) {
+                let Some(path) = game.res.path(part.mesh) else { continue };
+                let Ok(mesh) = ogre_mesh::read(&path) else { continue };
+                let Some((mn, mx, _)) = mesh.bounds else { continue };
+                for c in 0..8 {
+                    let p = Vec3::new(if c & 1 == 0 { mn[0] } else { mx[0] }, if c & 2 == 0 { mn[1] } else { mx[1] }, if c & 4 == 0 { mn[2] } else { mx[2] });
+                    let q = part.local.transform_point(p);
+                    lo = lo.min(q);
+                    hi = hi.max(q);
+                }
+            }
+            (lo.x <= hi.x).then_some((lo, hi))
+        });
+        let Some((lo, hi)) = bb else { continue };
+        let rot = Quat::from_rotation_y(pb.yaw);
+        let at = Vec3::from(pb.at);
+        // a gate's doorway (in its frame, across x): the door's ends
+        let mut spans = vec![(lo.x, hi.x)];
+        for d in game.sim.door_states.iter().filter(|d| d.player_building == Some(b) && !d.gone) {
+            let local = |p: [f32; 2]| (rot.inverse() * (Vec3::new(p[0], at.y, p[1]) - at)).x;
+            let (a, c) = (local(d.door.ends[0]), local(d.door.ends[1]));
+            let (a, c) = (a.min(c), a.max(c));
+            spans = spans.into_iter().flat_map(|(s, e)| [(s, e.min(a)), (s.max(c), e)]).filter(|(s, e)| e - s > 1.0).collect();
+        }
+        let mut cutters = Vec::new();
+        for (s, e) in spans {
+            let corners: Vec<[f32; 3]> = (0..8)
+                .map(|c| {
+                    let p = Vec3::new(if c & 1 == 0 { s } else { e }, if c & 2 == 0 { lo.y } else { hi.y }, if c & 4 == 0 { lo.z } else { hi.z });
+                    ((rot * p + at) * m).to_array()
+                })
+                .collect();
+            cutters.extend(kenshi_world::navcut::Cutter::from_points(&corners, kenshi_world::navcut::PAD));
+        }
+        for (k, c) in cutters.iter_mut().enumerate() {
+            c.group = k as u32;
+        }
+        game.sim.nav.add_cutters((-2, n as i64), cutters);
+        n += 1;
+    }
+    was.1 = n;
 }
 
 /// A body gone limp: its ragdoll, and the pose it fell from (for the bones without a body).
@@ -2616,6 +2814,18 @@ fn activity_anim(game: &Game, p: &kenshi_game::sim::Person) -> Option<String> {
     if let Some(f) = p.operating {
         return Some(furniture(f, false).unwrap_or_else(|| "stonemine".into()));
     }
+    // a building of the player's being worked (a training dummy's "chop down static", a
+    // locksmith's box "medic"): its functionality's "animation"
+    if let Some(b) = p.operate
+        && let Some(pb) = game.sim.buildings.get(b)
+        && (p.mover.position_units()[0] - pb.at[0]).hypot(p.mover.position_units()[2] - pb.at[2]) <= pb.radius + 40.0
+        && let Some(rec) = data.get(&pb.record)
+        && let Some(func) = kenshi_game::production::functionality(rec).and_then(|f| data.get(f))
+        && let Some((sid, _)) = func.refs("animation").first()
+        && let Some(a) = data.get(sid)
+    {
+        return Some(a.name.clone());
+    }
     if p.build.is_some() || p.first_aid.is_some() {
         return Some("medic".into());
     }
@@ -3224,6 +3434,67 @@ fn testing(
     }
 }
 
+/// @fn F029335
+///
+/// Each door's mesh where its door is: slid along its "door axis" (the building's x, y or z) by
+/// how far open it is times its "door move dist"; one that "comes out" first moves out of its
+/// frame, for the part |out| / (|dist| / 4 + |out|) of its opening, then slides.
+/// (assumption) Kenshi takes both directions from the door's physics actor; here the slide is
+/// the axis's positive way and "out" is across it (x <-> z), away from the building's middle.
+fn move_doors(game: Res<Game>, mut doors: Query<(&kenshi_render::zone::DoorPiece, &mut Transform)>, mut index: Local<(usize, HashMap<(usize, usize), usize>)>) {
+    let sim = &game.sim;
+    if index.0 != sim.door_states.len() {
+        index.1 = sim.door_states.iter().enumerate().map(|(k, d)| ((d.door.placement, d.door.index), k)).collect();
+        index.0 = sim.door_states.len();
+    }
+    for (dp, mut t) in &mut doors {
+        let Some(&off) = sim.zone_offsets.get(&dp.zone) else { continue };
+        let Some(d) = index.1.get(&(off + dp.building, dp.index)).map(|&k| &sim.door_states[k]) else { continue };
+        let axis = match d.door.axis {
+            1 => Vec3::Y,
+            2 => Vec3::Z,
+            _ => Vec3::X,
+        };
+        let (dist, out, open) = (d.door.dist, d.door.out, d.open);
+        let local = if out == 0.0 {
+            axis * dist * open
+        } else {
+            let across = if d.door.axis == 2 { Vec3::X } else { Vec3::Z };
+            // away from the building's middle
+            let place = sim.placed.get(off + dp.building).map_or(Vec3::ZERO, |p| Vec3::from(p.position));
+            let door_local = dp.rest.rotation.inverse() * (Vec3::from(d.door.position) - place);
+            let out_dir = if door_local.dot(across) < 0.0 { -across } else { across };
+            let f = out.abs() / (dist.abs() * 0.25 + out.abs());
+            if open >= f {
+                out_dir * out + axis * dist * ((open - f) / (1.0 - f))
+            } else {
+                out_dir * (out * open / f)
+            }
+        };
+        let to = dp.rest.translation + dp.rest.rotation * local;
+        if t.translation != to {
+            t.translation = to;
+        }
+    }
+}
+
+/// The player's gates' doors where their doors are (in their building's frame; F029335 as
+/// `move_doors`, without the "comes out" step).
+fn move_player_doors(game: Res<Game>, mut doors: Query<(&build_ui::PlayerDoorPiece, &mut Transform)>) {
+    for (pd, mut t) in &mut doors {
+        let Some(d) = game.sim.door_states.get(pd.0) else { continue };
+        let axis = match d.door.axis {
+            1 => Vec3::Y,
+            2 => Vec3::Z,
+            _ => Vec3::X,
+        };
+        let to = axis * d.door.dist * d.open;
+        if t.translation != to {
+            t.translation = to;
+        }
+    }
+}
+
 /// The buildings opened (zone, placement) and the floor they show (F045556 / F045512).
 #[derive(Resource, Default)]
 pub struct OpenBuildings {
@@ -3286,6 +3557,17 @@ fn hide_roofs(
         }
         if let Some((b, _)) = at {
             open.insert(b);
+        }
+        // inside one of the player's buildings with an interior (within its inner footprint,
+        // as interior furniture is placed; (assumption) on its ground floor)
+        for (k, pb) in game.sim.buildings.iter().enumerate() {
+            if pb.done
+                && (pb.at[0] - p[0]).hypot(pb.at[2] - p[2]) < pb.radius * 0.6
+                && (p[1] - pb.at[1]).abs() < 60.0
+                && game.sim.data.get(&pb.record).is_some_and(|r| !r.refs("interior").is_empty())
+            {
+                open.insert((build_ui::PLAYER_ZONE, k));
+            }
         }
     }
     // F045556: those with a selected character inside held open 10 s; the others' timers run
@@ -3529,6 +3811,7 @@ fn stream_zones(
                     &mut look,
                 );
                 eprintln!("zone {}.{} streamed in", key.0, key.1);
+                spawn_zone_lights(&mut commands, &game.sim.data, &zs.lights, zs.zone);
                 let o = zs.origin;
                 game.new_effects.extend(zs.effects.iter().map(|(e, at, r)| (e.clone(), *at + o, *r)));
                 spawn_zone_water(&mut commands, &assets, &mut meshes, &mut waters, &mut look, &zs, key);
@@ -3540,6 +3823,20 @@ fn stream_zones(
             }
             Err(e) => eprintln!("zone {}.{}: {e}", key.0, key.1),
         }
+    }
+}
+
+/// A zone's lights (kenshi_render::local_lights), gone with the zone.
+fn spawn_zone_lights(commands: &mut Commands, data: &kenshi_data::GameDataContainer, lights: &[(String, Vec3, Quat)], zone: (i32, i32)) {
+    let mut n = 0;
+    for (light, at, rot) in lights {
+        if let Some(e) = kenshi_render::local_lights::spawn_light(commands, data, light, *at, *rot) {
+            commands.entity(e).insert(ZoneTag(zone));
+            n += 1;
+        }
+    }
+    if n > 0 {
+        eprintln!("zone {}.{}: {n} lights", zone.0, zone.1);
     }
 }
 

@@ -423,6 +423,30 @@ fn widget(
                 vertical,
             });
         }
+        // a progress bar ("TrackFill"): its track, in the "TrackSkin" skin, fills its track
+        // place from the left, as far as `SetProgress` says (none at first)
+        if target == "ProgressBar"
+            && let Some(place) = parts.0.get("TrackPlace").copied()
+            && let Some(skin) = t.user.iter().find(|(k, _)| k == "TrackSkin").and_then(|(_, v)| ctx.gui.skins.get(v))
+        {
+            let fill = ctx
+                .commands
+                .spawn(Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(0.0), width: Val::Percent(0.0), height: Val::Percent(100.0), ..default() })
+                .id();
+            ctx.commands.entity(place).add_child(fill);
+            let tex = skin.texture.as_ref().map(|t| ctx.assets.load::<Image>(t.clone()));
+            if let (Some(tex), Some(st)) = (tex, skin.parts.iter().find_map(|p| p.state("normal").and_then(|s| s.rect))) {
+                let img = ctx
+                    .commands
+                    .spawn((
+                        Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+                        ImageNode { image: tex, rect: Some(rect(st)), image_mode: NodeImageMode::Stretch, color: tint, ..default() },
+                    ))
+                    .id();
+                ctx.commands.entity(fill).add_child(img);
+            }
+            ctx.commands.entity(e).insert(Progress { fill });
+        }
         ctx.commands.entity(e).insert(parts);
     }
     let child_design = match def.pos {
@@ -578,6 +602,25 @@ fn scrolls(
             } else {
                 n.left = Val::Px(x);
             }
+        }
+    }
+}
+
+/// A progress bar's track (the fill).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct Progress {
+    fill: Entity,
+}
+
+/// Set a progress bar's fill, 0 ..= 1 of its track place.
+pub struct SetProgress(pub Entity, pub f32);
+
+impl Command for SetProgress {
+    type Out = ();
+    fn apply(self, world: &mut World) {
+        let Some(p) = world.get::<Progress>(self.0).copied() else { return };
+        if let Some(mut n) = world.get_mut::<Node>(p.fill) {
+            n.width = Val::Percent(self.1.clamp(0.0, 1.0) * 100.0);
         }
     }
 }

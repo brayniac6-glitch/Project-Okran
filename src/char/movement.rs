@@ -349,6 +349,8 @@ pub struct Pathing {
     pub last_goal: Option<[f32; 3]>,
     pub pending: bool,
     pub follow: Option<PathFollow>,
+    /// Which shut gates this character may pass (its faction's, kenshi_world::navmesh::Pass).
+    pub pass: kenshi_world::navmesh::Pass,
 }
 
 impl Pathing {
@@ -373,14 +375,7 @@ impl Pathing {
         ) {
             return false;
         }
-        manager.submit(
-            owner,
-            mover.position,
-            dest.map(|v| v * TO_METRES),
-            mover.radius,
-            mover.water_cost,
-            urgent,
-        );
+        manager.submit_as(owner, mover.position, dest.map(|v| v * TO_METRES), mover.radius, mover.water_cost, urgent, self.pass);
         self.pending = true;
         self.last_goal = Some(dest);
         true

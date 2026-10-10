@@ -162,6 +162,9 @@ pub struct SavedWorld {
     pub roaming: Vec<(Vec<usize>, (i32, i32), String)>,
     pub machine_stock: Vec<(usize, Vec<f32>, Vec<SavedItem>)>,
     pub doors_locked: Vec<bool>,
+    /// Each door's movement, how far open and whether broken (crate::doors).
+    #[serde(default)]
+    pub doors: Vec<(i32, f32, bool)>,
     pub dialog_unlocked: Vec<(usize, String)>,
     pub dialog_locked: Vec<(usize, String)>,
     pub dialog_spoken: Vec<((usize, String), f64)>,
@@ -184,6 +187,15 @@ pub struct SavedResearch {
     pub queue: Vec<String>,
     pub progress: f32,
     pub paid: bool,
+    /// The base's town panel settings (its name, open to the public), kept with its research.
+    #[serde(default)]
+    pub outpost_name: String,
+    #[serde(default)]
+    pub outpost_public: bool,
+    #[serde(default)]
+    pub ai_options: crate::sim::AiOptions,
+    #[serde(default)]
+    pub advanced: crate::advanced::Advanced,
 }
 
 /// An inventory's items where they lie.
@@ -483,6 +495,10 @@ impl Sim {
             queue: self.research_queue.clone(),
             progress: self.research_progress,
             paid: self.research_paid,
+            outpost_name: self.outpost_name.clone(),
+            outpost_public: self.outpost_public,
+            ai_options: self.ai_options.clone(),
+            advanced: self.advanced.clone(),
         };
         let mut dead_uniques: Vec<String> = self.world.dead_uniques.iter().cloned().collect();
         dead_uniques.sort();
@@ -629,6 +645,7 @@ impl Sim {
             roaming: self.population.as_ref().map(|p| p.squads.clone()).unwrap_or_default(),
             machine_stock,
             doors_locked: self.door_states.iter().map(|d| d.locked).collect(),
+            doors: self.door_states.iter().map(|d| (d.phase, d.open, d.broken)).collect(),
             dialog_unlocked: m.unlocked.iter().cloned().collect(),
             dialog_locked: m.locked.iter().cloned().collect(),
             dialog_spoken: m.spoken.iter().map(|(k, v)| (k.clone(), *v)).collect(),
@@ -725,6 +742,13 @@ impl Sim {
         self.research_queue = save.research.queue.clone();
         self.research_progress = save.research.progress;
         self.research_paid = save.research.paid;
+        if !save.research.outpost_name.is_empty() {
+            self.outpost_name = save.research.outpost_name.clone();
+        }
+        self.outpost_public = save.research.outpost_public;
+        self.ai_options = save.research.ai_options.clone();
+        self.advanced = save.research.advanced.clone();
+        self.arena.sh.damage_mult = self.advanced.damage;
         for p in self.folk.iter_mut() {
             p.build = None;
             p.operate = None;
@@ -917,6 +941,9 @@ impl Sim {
             for (d, &locked) in self.door_states.iter_mut().zip(&w.doors_locked) {
                 d.locked = locked;
             }
+            for (d, &(phase, open, broken)) in self.door_states.iter_mut().zip(&w.doors) {
+                (d.phase, d.open, d.broken) = (phase, open, broken);
+            }
             let m = &mut self.dialog_memory;
             m.unlocked = w.dialog_unlocked.iter().cloned().collect();
             m.locked = w.dialog_locked.iter().cloned().collect();
@@ -965,6 +992,13 @@ impl Sim {
         self.research_queue = save.research.queue.clone();
         self.research_progress = save.research.progress;
         self.research_paid = save.research.paid;
+        if !save.research.outpost_name.is_empty() {
+            self.outpost_name = save.research.outpost_name.clone();
+        }
+        self.outpost_public = save.research.outpost_public;
+        self.ai_options = save.research.ai_options.clone();
+        self.advanced = save.research.advanced.clone();
+        self.arena.sh.damage_mult = self.advanced.damage;
         // the player's characters (in number order, as saved) with their looks
         let ids: Vec<usize> = self.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
         ids.iter().enumerate().map(|(k, &id)| (id, save.players.get(k).and_then(|sp| sp.look.clone()))).collect()

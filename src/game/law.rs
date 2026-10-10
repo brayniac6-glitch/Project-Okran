@@ -206,11 +206,15 @@ pub fn hear_roll(seer: usize, seen: usize, t: f32, walk: f32, inside: Option<usi
 }
 
 impl Sim {
-    /// A person's name as shown: theirs, else their character's, else "Character n".
+    /// A person's name as shown: theirs, else (not the player's: their template is no name of
+    /// theirs) their character's, else "Character n".
     pub fn display_name(&self, id: usize) -> String {
         let p = &self.folk[id];
         if !p.name.is_empty() {
             return p.name.clone();
+        }
+        if p.player {
+            return format!("Character {id}");
         }
         p.character.as_deref().and_then(|c| self.data.get(c)).map_or(format!("Character {id}"), |r| r.name.clone())
     }

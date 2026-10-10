@@ -155,6 +155,124 @@ pub struct DoorState {
     pub level: i32,
     /// The point just inside the door the character locks it from (units).
     pub inside: [f32; 3],
+    /// DoorStuff +0x380: DOOR_CLOSED, DOOR_OPEN, DOOR_OPENING, DOOR_CLOSING.
+    pub phase: i32,
+    /// How far open, 0 .. 1 (+0x37c).
+    pub open: f32,
+    /// Broken in (bashed): it stays open and takes no lock.
+    pub broken: bool,
+    /// Locks itself once shut ("always locks").
+    pub wants_lock: bool,
+    /// Its health, out of `full`: its record's "build materials" worth (the door's construction,
+    /// Building +0x164, which blows take down, F029386); `paid`: the materials put into
+    /// repairing it so far (crate::doors).
+    pub health: f32,
+    pub full: f32,
+    pub paid: f32,
+    /// The door of the player's building `b` (built by the player, crate::doors), and whether
+    /// it is gone (its building dismantled or destroyed).
+    pub player_building: Option<usize>,
+    pub gone: bool,
+}
+
+pub const DOOR_CLOSED: i32 = 0;
+pub const DOOR_OPEN: i32 = 1;
+pub const DOOR_OPENING: i32 = 2;
+pub const DOOR_CLOSING: i32 = 3;
+
+/// How near a closed door someone walking has to come to open it (units).
+/// (assumption) Kenshi opens a door for a path that crosses it (Task_MoveToDoor, Task_OpenDoor,
+/// F030902 / F030903); here whoever walks within this of a closed door opens it.
+pub const DOOR_OPEN_REACH: f32 = 40.0;
+
+impl DoorState {
+    /// A door as its zone left it (F029398: its saved "state", "doa", "broken", "wants lock"),
+    /// else as its building's squad has it (F037791: the SQUAD_TEMPLATE's "initial door state",
+    /// DoorState CLOSED, OPEN, LOCKED, BROKEN; the building's own squad, else its residents').
+    pub fn new(data: &GameDataContainer, place: &kenshi_world::Placement, door: Door, locked: bool, level: i32, inside: [f32; 3]) -> DoorState {
+        let full = data.get(&door.record).and_then(|d| d.ints.get("build materials").copied()).unwrap_or(1).max(1) as f32;
+        let mut s = DoorState { wants_lock: door.always_locks, door, locked, level, inside, phase: DOOR_CLOSED, open: 0.0, broken: false, health: full, full, paid: full, player_building: None, gone: false };
+        if let Some(Some(saved)) = place.door_saved.get(s.door.index) {
+            s.phase = saved.state.clamp(DOOR_CLOSED, DOOR_CLOSING);
+            s.open = saved.open.clamp(0.0, 1.0);
+            s.broken = saved.broken;
+            s.wants_lock = saved.wants_lock;
+            return s;
+        }
+        let initial = [&place.squad, &place.residents]
+            .into_iter()
+            .flatten()
+            .find_map(|t| data.get(t)?.ints.get("initial door state").copied())
+            .unwrap_or(0);
+        match initial {
+            1 => {
+                s.phase = DOOR_OPEN;
+                s.open = 1.0;
+                s.locked = false;
+            }
+            2 => s.locked = true,
+            3 => {
+                s.broken = true;
+                s.phase = DOOR_OPEN;
+                s.open = 1.0;
+                s.locked = false;
+            }
+            _ => {}
+        }
+        s
+    }
+
+    /// F029271: a closed door starts opening ("Door_Open").
+    pub fn start_open(&mut self) -> bool {
+        if self.phase == DOOR_CLOSED && !(self.locked && self.level >= 1) {
+            self.phase = DOOR_OPENING;
+            return true;
+        }
+        false
+    }
+
+    /// F029334: an open door (not broken) starts closing ("Door_Close").
+    pub fn start_close(&mut self) -> bool {
+        if !self.broken && self.phase == DOOR_OPEN {
+            self.phase = DOOR_CLOSING;
+            return true;
+        }
+        false
+    }
+
+    /// @fn F029337
+    ///
+    /// A door moving: opening by its "door move speed" a second until open, closing until shut
+    /// ("Door_Shut"), then locking itself if it "wants lock". Returns whether it just shut.
+    pub fn step(&mut self, dt: f32) -> bool {
+        match self.phase {
+            DOOR_CLOSING => {
+                self.open -= dt * self.door.speed;
+                if self.open <= 0.0 {
+                    self.open = 0.0;
+                    self.phase = DOOR_CLOSED;
+                    if self.wants_lock {
+                        self.locked = true;
+                    }
+                    return true;
+                }
+            }
+            DOOR_OPENING => {
+                self.open += dt * self.door.speed;
+                if self.open >= 1.0 {
+                    self.open = 1.0;
+                    self.phase = DOOR_OPEN;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Whether people can pass (F029335: the navmesh takes a door 0.6 open as open).
+    pub fn passable(&self) -> bool {
+        self.gone || self.broken || self.open >= 0.6
+    }
 }
 
 /// A squad's Package_HangAroundBar state: its bar and each member's chair.
@@ -317,6 +435,14 @@ pub struct Person {
     pub player: bool,
     /// Think on the next tick (a new order).
     pub rethink: bool,
+    /// A shut gate (door) that stopped this person's last path, and their bashing at it
+    /// (Task_BashDoor, F031240): seconds to the next blow.
+    pub gate_in_way: Option<usize>,
+    /// The player's order to bash a door (BASH_DOOR_PLAYER_ORDER): the door.
+    pub bash_order: Option<usize>,
+    /// The player's building this one is ordered to dismantle (Task_Dismantle, F031298).
+    pub dismantle: Option<usize>,
+    pub bash_timer: f32,
 }
 
 /// What the AI sees while it plans for one person.
@@ -714,6 +840,61 @@ impl Mind for View<'_> {
     }
 }
 
+/// The player's AI options (the overview window's AI tab, F035130: the player's flags at
+/// +0x110 .. +0x117 and the player faction's "squad formation"), each with the game's tooltip:
+/// - ditch items: "If they have nothing else to do, characters will automatically put any excess
+///   materials they are carrying into storage.";
+/// - sleep when injured: "Characters will automatically go to bed if they are injured and have
+///   nothing else to do";
+/// - sit when idle: "Idle characters at home will sit down on chairs and benches, if you have
+///   any";
+/// - heal, help, rescue allies: the medic, any, the rescue job, for allied factions' people too;
+/// - share food: "Characters in a squad will automatically share any of their food that is in a
+///   backpack (if in range).";
+/// - feed animals: "If food is running low, you can elect not to feed your animals.";
+/// - shoot first: "Your turret gunners will shoot at any potentially dangerous but neutral
+///   targets, such as wild animals or bandits, without waiting for them to attack the base first.";
+/// - formation: "Formation used when squad members are following a leader" (0 Random, 1 Caravan,
+///   2 Military).
+///
+/// (stand-in) The defaults are not read from the game (all on but ditching items and shooting
+/// first; Random). Of these the rewrite acts on sharing food (`Sim::share_food`); the others are
+/// kept for the behaviours they steer, not ported yet.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct AiOptions {
+    pub ditch_items: bool,
+    pub sleep_injured: bool,
+    pub sit_idle: bool,
+    pub heal_allies: bool,
+    pub help_allies: bool,
+    pub rescue_allies: bool,
+    pub share_food: bool,
+    pub feed_animals: bool,
+    pub shoot_first: bool,
+    pub formation: i32,
+}
+
+impl Default for AiOptions {
+    fn default() -> AiOptions {
+        AiOptions {
+            ditch_items: false,
+            sleep_injured: true,
+            sit_idle: true,
+            heal_allies: true,
+            help_allies: true,
+            rescue_allies: true,
+            share_food: true,
+            feed_animals: true,
+            shoot_first: false,
+            formation: 0,
+        }
+    }
+}
+
+/// How near a squad mate must be to share its food (units). (stand-in)
+pub const SHARE_FOOD_RANGE: f32 = 300.0;
+
 /// The faction's "squad formation" of a squad template (loose when it has none).
 /// A squad template's faction (string id).
 /// (assumption: from F040415's part states and the game's own help text) whether a knocked-out
@@ -851,6 +1032,18 @@ pub struct Sim {
     /// order they came in (their placements', furniture's and nodes' indices follow it).
     pub zones: std::collections::HashSet<(i32, i32)>,
     pub zone_order: Vec<(i32, i32)>,
+    /// Where each zone's placements start among `placed` (a zone's building n is placement
+    /// offset + n).
+    pub zone_offsets: std::collections::HashMap<(i32, i32), usize>,
+    /// The barriers' owners numbered (crate::doors), each door's barrier (gates only) and each
+    /// barrier's door.
+    pub faction_numbers: std::collections::HashMap<String, u32>,
+    pub barrier_of: Vec<Option<usize>>,
+    pub barrier_door: Vec<usize>,
+    /// Buildings dismantled so far (for the sound), and whether the player's buildings changed
+    /// in a way the navmesh must follow (crate::upkeep).
+    pub dismantled: u32,
+    pub buildings_changed: bool,
     /// Zones come in without their people (a save's people are put back instead).
     pub quiet_zones: bool,
     /// A loaded save's world (squads, towns, relations), put back on the world's first tick.
@@ -863,9 +1056,9 @@ pub struct Sim {
     pub hunger_c: [f32; 5],
     /// The GLOBAL CONSTANTS first aid reads.
     pub first_aid_c: kenshi_char::medical::FirstAidConstants,
-    /// The new game's "Bandits loot the player" (F048535): the world's looters strip the
-    /// player's knocked-out characters too. (assumption) On, as Kenshi's default start.
-    pub bandits_loot_player: bool,
+    /// The new game's advanced options (`crate::advanced`; "Bandits loot the player": the
+    /// world's looters strip the player's knocked-out characters too).
+    pub advanced: crate::advanced::Advanced,
     /// (looter, target) pairs done: the looter's memory of having looted them (tag 6,
     /// TARGET_HAS_BEEN_LOOTED).
     pub looted_by: std::collections::HashSet<(usize, usize)>,
@@ -890,6 +1083,13 @@ pub struct Sim {
     pub battery_capacity: f32,
     /// What is supplied over what is drawn, at most 1 (F037662).
     pub power_eff: f32,
+    /// The base's name and whether it is open to the public (the HUD's town panel, F043042).
+    /// (stand-in) "Outpost" until named; being open to the public changes nothing yet, as no
+    /// visitors come to a player's base.
+    pub outpost_name: String,
+    pub outpost_public: bool,
+    /// The player's AI options (the overview window's AI tab).
+    pub ai_options: AiOptions,
     /// The weather at the base: wind (0 to 1) and rain (set by the game from its weather).
     pub wind: f32,
     pub rain: f32,
@@ -905,6 +1105,12 @@ pub struct Sim {
     /// Lock attempts this tick (who, whether it opened), for the "Pick failed" / "Pick success!"
     /// floaters (Task_PickLock::update, F031344).
     pub pick_events: Vec<(usize, bool)>,
+    /// Those prospecting and how far (`prospect`), and the last results not yet shown.
+    pub prospectors: Vec<(usize, f32)>,
+    /// Those ordered to train on town training equipment (person, furniture, seconds since the
+    /// order; `production`).
+    pub trainees: Vec<(usize, usize, f32)>,
+    pub prospect_result: Option<crate::prospect::ProspectResult>,
     /// Each cage's half size across (units, from its mesh): where its door lets out.
     pub cage_reach: HashMap<usize, f32>,
     /// What the town's machines worked by slaves have made: each furniture's part-made products
@@ -1113,12 +1319,8 @@ impl Sim {
                     }
                     None => door.position,
                 };
-                DoorState {
-                    door,
-                    locked,
-                    level,
-                    inside,
-                }
+                let place = &placed[door.placement];
+                DoorState::new(&data, place, door, locked, level, inside)
             })
             .collect();
         let approach: Vec<[f32; 3]> = general
@@ -1262,6 +1464,10 @@ impl Sim {
                 run_goal: None,
                 player: false,
                 rethink: false,
+                gate_in_way: None,
+                bash_order: None,
+                dismantle: None,
+                bash_timer: 0.0,
             });
             id
         };
@@ -1421,7 +1627,13 @@ impl Sim {
         // the player's money: the game start's "money", (harness) 1000 cats when launched with no
         // start
         let mut money = 1000;
+        // the new game's advanced options (crate::advanced)
+        let mut advanced = crate::advanced::Advanced::default();
         for extra in extras {
+            if let Some(a) = extra.strip_prefix("advanced:") {
+                advanced = crate::advanced::Advanced::from_extra(a);
+                continue;
+            }
             if let Some(m) = extra.strip_prefix("money:") {
                 money = m.parse().unwrap_or(0);
                 continue;
@@ -1796,6 +2008,12 @@ impl Sim {
             }),
             nests: Vec::new(),
             zones: [(zx, zy)].into_iter().collect(),
+            zone_offsets: [((zx, zy), 0)].into_iter().collect(),
+            faction_numbers: Default::default(),
+            barrier_of: Vec::new(),
+            barrier_door: Vec::new(),
+            dismantled: 0,
+            buildings_changed: false,
             zone_order: vec![(zx, zy)],
             quiet_zones: false,
             pending_world: None,
@@ -1803,6 +2021,9 @@ impl Sim {
             money,
             met: HashMap::new(),
             pick_events: Vec::new(),
+            prospectors: Vec::new(),
+            trainees: Vec::new(),
+            prospect_result: None,
             cage_reach: HashMap::new(),
             machine_stock: HashMap::new(),
             slave_squads: kits.iter().filter(|(_, t)| data_arc.get(t).is_some_and(|r| !r.refs("slaves").is_empty())).cloned().collect(),
@@ -1834,10 +2055,13 @@ impl Sim {
             battery: 0.0,
             battery_capacity: 0.0,
             power_eff: 1.0,
+            outpost_name: "Outpost".into(),
+            outpost_public: false,
+            ai_options: AiOptions::default(),
             wind: 0.0,
             rain: 0.0,
             missing_material: None,
-            bandits_loot_player: true,
+            advanced: advanced.clone(),
             looted_by: Default::default(),
             first_aid_c: {
                 let g = |k: &str| data_arc.get("110-gamedata.quack").and_then(|r| r.floats.get(k).copied());
@@ -1854,6 +2078,7 @@ impl Sim {
                 [g("starvation time", 60.0), g("fed recovery rate mult", 3.0), g("bed hunger rate", 0.33), g("encumbrance hunger rate", 0.7), race]
             },
         };
+        sim.arena.sh.damage_mult = sim.advanced.damage;
         for id in 0..sim.folk.len() {
             sim.apply_stats(id);
         }
@@ -2158,7 +2383,7 @@ impl Sim {
         let f = &mut self.arena.f[id];
         f.gun = bow.and_then(|b| {
             let r = data.get(&b.record)?;
-            let mut g = kenshi_combat::ranged::Gun::personal(&data, r, b.quality, 1.0);
+            let mut g = kenshi_combat::ranged::Gun::personal(&data, r, b.quality, self.advanced.damage);
             if let Some(old) = f.gun.as_ref().filter(|o| o.record == g.record) {
                 g.shots = old.shots;
             }
@@ -2583,7 +2808,7 @@ impl Sim {
                     if k == id || q.carried_by.is_some() || self.looted_by.contains(&(id, k)) || q.inventory.sections.iter().all(|s| s.items.is_empty()) {
                         return false;
                     }
-                    if dead != q.dead || (!dead && !q.down) || (!dead && q.player && !self.bandits_loot_player) {
+                    if dead != q.dead || (!dead && !q.down) || (!dead && q.player && !self.advanced.bandits_loot) {
                         return false;
                     }
                     let at = q.mover.position_units();
@@ -2974,6 +3199,8 @@ impl Sim {
             terrain,
             towns,
             population,
+            ai_options,
+            advanced,
             ..
         } = self;
         let mut prof = kenshi_render::prof::Marks::start();
@@ -3443,9 +3670,15 @@ impl Sim {
                     }
                 }
                 LOCKING_DOOR => {
-                    // (assumption) the lock turns at once
+                    // the door shut first (Task_LockDoor, F030911, F029338); (assumption) the
+                    // lock turns at once
                     if let Target::Door(d) = step.target {
-                        door_states[d].locked = true;
+                        let s = &mut door_states[d];
+                        if !s.broken {
+                            s.phase = DOOR_CLOSED;
+                            s.open = 0.0;
+                            s.locked = true;
+                        }
                     }
                     p.ai.queue.remove(0);
                     p.started = false;
@@ -3792,6 +4025,16 @@ impl Sim {
                     other => eprintln!("t {t:.1} person {who} no path: {other:?}"),
                 }
             }
+            // no way through: a shut gate in the way? (the way round it, ignoring gates)
+            if !matches!(result, kenshi_world::navmesh::PathResult::Found(_))
+                && let Some(r) = manager.last.as_ref().filter(|r| !r.pass.ignore)
+                && let kenshi_world::navmesh::PathResult::Found(free) = nav.find_path_as(r.start, r.goal, r.radius, r.water_cost, kenshi_world::navmesh::Pass::ANYONE)
+            {
+                let pts = &free.points;
+                if let Some(k) = (1..pts.len()).find_map(|i| nav.barriers.iter().position(|b| b.stops(r.pass, pts[i - 1], pts[i]))) {
+                    folk[who].gate_in_way = Some(k);
+                }
+            }
             folk[who].pathing.answer(result);
         }
         prof.mark("sim: paths");
@@ -3824,6 +4067,7 @@ impl Sim {
         // everyone's medical tick (F040477): bleeding, the knockout clock, healing, death; the
         // knocked out come round once it allows (wake_ready)
         let mut woken: Vec<usize> = Vec::new();
+        let mut unfed: Vec<(usize, f32)> = Vec::new();
         for p in folk.iter_mut() {
             if p.dead {
                 continue;
@@ -3841,7 +4085,7 @@ impl Sim {
                 asleep: false,
                 size: 1.0,
                 bleeds: true,
-                g: 1.0,
+                g: advanced.death,
             };
             // hunger (F040466 with F047009's rate, F032933's period); (assumption) the
             // starvation time is in game hours. (stand-in) only the player's characters get
@@ -3861,7 +4105,8 @@ impl Sim {
                     Activity::Normal
                 };
                 let rate = hunger_rate(activity, 1.0, race_rate, bed, enc);
-                let period = kenshi_char::hunger::starvation_period(starve, hour_secs as f32);
+                // (the advanced options' "Hunger time" lengthens it)
+                let period = kenshi_char::hunger::starvation_period(starve * advanced.hunger_time, hour_secs as f32);
                 f.medical.hunger.tick(dt, period, rate, 1.0, fed, 1.0);
                 // (stand-in) eating: awake characters eat a bite from what they carry every two
                 // seconds while their hunger shows under 200 (Kenshi's "hungry"); the AI's eat
@@ -3879,6 +4124,8 @@ impl Sim {
                         if p.player || std::env::var("KENSHI_HUNGER_DEBUG").is_ok() {
                             eprintln!("t {t:.1} person {} ate {food} ({bite:.0}), hunger {shown:.0}", p.id);
                         }
+                    } else {
+                        unfed.push((p.id, shown));
                     }
                 }
             }
@@ -3916,6 +4163,26 @@ impl Sim {
                 p.ai.queue.clear();
                 stop(&mut p.mover, &mut p.pathing);
                 eprintln!("t {t:.1} person {} is knocked out", p.id);
+            }
+        }
+        // Share Food (the AI tab): one with nothing to eat eats from a squad mate's near
+        // (stand-in: from anywhere in the mate's inventory, backpacks not being their own
+        // inventories here; "in range" is SHARE_FOOD_RANGE)
+        if ai_options.share_food {
+            for (id, shown) in unfed {
+                let at = folk[id].mover.position_units();
+                let platoon = folk[id].platoon;
+                let mate = (0..folk.len()).find(|&m| {
+                    let q = &folk[m];
+                    let r = q.mover.position_units();
+                    m != id && q.player && !q.dead && q.platoon == platoon && (r[0] - at[0]).hypot(r[2] - at[2]) < SHARE_FOOD_RANGE && q.inventory.sections.iter().any(|s| s.items.iter().any(|i| i.item.food.is_some()))
+                });
+                if let Some(m) = mate
+                    && let Some((food, bite)) = folk[m].inventory.eat(shown)
+                {
+                    arena.f[id].medical.hunger.eat(bite);
+                    eprintln!("t {t:.1} person {id} ate {food} ({bite:.0}) of person {m}'s, hunger {shown:.0}");
+                }
             }
         }
         prof.mark("sim: medical");
@@ -4043,6 +4310,7 @@ impl Sim {
         self.slavery_tick();
         self.slave_work_tick(dt);
         self.disguise_tick(dt);
+        self.prospect_tick(dt);
         self.memory_tick();
         self.cage_push();
         self.medic_tick(dt);
@@ -4052,7 +4320,10 @@ impl Sim {
         self.escort_tick();
         self.pickup_tick();
         self.build_tick(dt);
+        self.doors_tick(dt);
+        self.dismantle_tick(dt);
         self.production_tick(dt);
+        self.training_tick(dt);
         self.research_tick(dt);
         self.farm_tick(dt);
         self.power_tick(dt);
@@ -4204,6 +4475,10 @@ impl Sim {
             run_goal: None,
             player: false,
             rethink: false,
+            gate_in_way: None,
+            bash_order: None,
+            dismantle: None,
+            bash_timer: 0.0,
         });
         self.folk[id].attacks_neutrals = attacks_neutrals;
         self.folk[id].captures = captures;
@@ -4267,6 +4542,7 @@ impl Sim {
             }
         }
         let off = self.placed.len();
+        self.zone_offsets.insert((zx, zy), off);
         let layouts = self.layouts.as_ref().unwrap();
         let near = |nav: &NavWorld, at: [f32; 3], r: f32| {
             nav.closest_point(at.map(|v| v * METRES), r).map_or(at, |(_, q)| q.map(|v| v / METRES))
@@ -4316,7 +4592,8 @@ impl Sim {
                 }
                 None => door.position,
             };
-            self.door_states.push(DoorState { door, locked, level, inside });
+            let state = DoorState::new(&data, &placed[door.placement - off], door, locked, level, inside);
+            self.door_states.push(state);
         }
         // the zone's town, and its bars
         let mid = [c(zx), 0.0, c(zy)];

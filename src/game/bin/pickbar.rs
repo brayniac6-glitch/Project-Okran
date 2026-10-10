@@ -4,6 +4,8 @@
 //! as a floater, "Pick failed" or "Pick success!", from 15 units over them.
 //! (assumption) The bar sits 26 units over the feet (over the name tag) and is as wide as the
 //! layout makes it on screen; the floaters rise as the damage floaters do (crate::floaters).
+//! The same bar shows a prospector's progress, captioned "Prospecting" (F031299), and a trainee's
+//! way to the skill's next level, "Training" (F031296).
 
 use super::{Game, MainCam};
 use bevy::prelude::*;
@@ -46,7 +48,13 @@ pub fn update(
         cam.world_to_viewport(at, p).ok()
     };
     // the bars: one per picker
-    let pickers: Vec<(usize, f32, f32)> = (0..game.sim.folk.len()).filter_map(|i| game.sim.pick_status(i).map(|(c, f)| (i, c, f))).collect();
+    // (and Task_Prospecting's, F031299: "Prospecting")
+    let mut pickers: Vec<(usize, String, f32)> = (0..game.sim.folk.len())
+        .filter_map(|i| game.sim.pick_status(i).map(|(c, f)| (i, format!("Lockpicking (Chance {}%)", (c * 100.0).round() as i32), f)))
+        .collect();
+    pickers.extend(game.sim.prospectors.iter().map(|(i, f)| (*i, "Prospecting".to_string(), *f)));
+    // (and Task_UseTrainingDummy's, F031296: "Training", the skill's way to its next level)
+    pickers.extend((0..game.sim.folk.len()).filter_map(|i| game.sim.training_status(i).map(|f| (i, "Training".to_string(), f))));
     bars.bars.retain(|id, b| {
         let keep = pickers.iter().any(|p| p.0 == *id);
         if !keep {
@@ -58,7 +66,7 @@ pub fn update(
     });
     let defs = gui.0.layout("Kenshi_ProgressBarPanel.layout");
     let (w, h) = (size[0] * 0.112, size[1] * 0.0306);
-    for (id, chance, frac) in pickers {
+    for (id, caption, frac) in pickers {
         let b = bars.bars.entry(id).or_insert_with(|| {
             let mut d = defs.clone();
             if let Some(r) = d.first_mut() {
@@ -71,12 +79,11 @@ pub fn update(
             b
         });
         if let Some(t) = b.get("Text") {
-            commands.queue(SetCaption(t, format!("Lockpicking (Chance {}%)", (chance * 100.0).round() as i32)));
+            commands.queue(SetCaption(t, caption));
         }
-        if let Some(bar) = b.get("ProgressBar")
-            && let Ok(mut n) = nodes.get_mut(bar)
-        {
-            n.width = Val::Percent(97.7 * frac.clamp(0.0, 1.0));
+        // the bar's track filled (kenshi_gui's ProgressBar: Kenshi_ProgressBarFill's TrackSkin)
+        if let Some(bar) = b.get("ProgressBar") {
+            commands.queue(kenshi_gui::SetProgress(bar, frac));
         }
         if let Some(&root) = b.roots.first()
             && let Ok(mut n) = nodes.get_mut(root)

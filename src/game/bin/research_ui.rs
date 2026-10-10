@@ -41,7 +41,8 @@ pub struct ResearchWindow {
 }
 
 impl ResearchWindow {
-    /// The overview window's tab shown (0 research, 1 crafting, 2 map, 3 faction, 4 squads), if
+    /// The overview window's tab shown (0 research, 1 crafting, 2 map, 3 faction, 4 squads,
+    /// 5 dialogue, 6 AI), if
     /// it is open.
     pub fn tab(&self) -> Option<u8> {
         self.open.as_ref().map(|o| o.tab)
@@ -59,7 +60,8 @@ pub(super) struct Open {
     fonts: ((Handle<Font>, f32), (Handle<Font>, f32)),
     /// What was last shown (queue, progress %, done count, message), to redraw on a change.
     shown: (Vec<String>, u32, usize, Option<String>, i32, u32),
-    /// The tab shown: 0 research, 1 crafting, 2 map, 3 faction, 4 squads; the tab buttons.
+    /// The tab shown: 0 research, 1 crafting, 2 map, 3 faction, 4 squads, 5 dialogue, 6 AI; the
+    /// tab buttons.
     tab: u8,
     /// The map: zoom (1: the whole world fits), its centre (world x, z), a drag's last cursor
     /// point, the map image and its markers, when last drawn.
@@ -72,6 +74,9 @@ pub(super) struct Open {
     map_drawn: f32,
     /// The faction tab's lines scrolled past.
     faction_scroll: usize,
+    /// The dialogue tab: the log's length when drawn. The AI tab: its tooltip's text.
+    log_len: usize,
+    ai_tip: Option<Entity>,
     tabs: Option<Built>,
     /// The crafting tab: the stations (building indices), the one chosen, its items, the item
     /// chosen, and what was last shown (queue, progress %, repeat).
@@ -94,12 +99,12 @@ fn redraw(commands: &mut Commands, o: &mut Open, game: &Game) {
     for r in o.rows.drain(..) {
         commands.entity(r).despawn();
     }
-    for (name, on) in [("ResearchTab", o.tab == 0), ("CraftTab", o.tab == 1), ("MapTab", o.tab == 2), ("FactionTab", o.tab == 3), ("SquadsTab", o.tab == 4)] {
+    for (name, on) in [("ResearchTab", o.tab == 0), ("CraftTab", o.tab == 1), ("MapTab", o.tab == 2), ("FactionTab", o.tab == 3), ("SquadsTab", o.tab == 4), ("MessagesTab", o.tab == 5), ("AITab", o.tab == 6)] {
         if let Some(e) = o.ui.get(name) {
             commands.queue(SetVisible(e, on));
         }
     }
-    if let (Some(cap), Some(name)) = (o.ui.get("Root.Caption"), ["", "", "MAP", "FACTION", "SQUADS"].get(o.tab as usize).filter(|n| !n.is_empty())) {
+    if let (Some(cap), Some(name)) = (o.ui.get("Root.Caption"), ["", "", "MAP", "FACTION", "SQUADS", "DIALOGUE", "AI"].get(o.tab as usize).filter(|n| !n.is_empty())) {
         commands.queue(SetCaption(cap, name.to_string()));
     }
     match o.tab {
@@ -109,6 +114,15 @@ fn redraw(commands: &mut Commands, o: &mut Open, game: &Game) {
         }
         3 => {
             redraw_faction(commands, o, game);
+            return;
+        }
+        5 => {
+            redraw_dialogue(commands, o, game);
+            return;
+        }
+        // the AI tab's rows (they need the gui) drawn again next frame
+        6 => {
+            o.map_drawn = -1.0;
             return;
         }
         2 | 4 => return,
@@ -332,6 +346,160 @@ fn redraw_map(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, 
 
 /// The faction tab (F035125, F035113): the player's faction's name and numbers, every faction's
 /// relation with it.
+/// @fn F035167
+///
+/// The dialogue tab (MessagesTab): the message log (`Game::log`, what was said and the game's
+/// messages) in its text box, the newest at the bottom, the wheel scrolling back.
+/// The text black (F035167's "#000000").
+/// (assumption) Kenshi's box scrolls itself; here the lines that fit are shown from the scroll.
+fn redraw_dialogue(commands: &mut Commands, o: &mut Open, game: &Game) {
+    o.log_len = game.log.len();
+    let Some(panel) = o.ui.get("MessagesTextBox") else { return };
+    let height = o.ui.sizes.get(&panel).map_or(400.0, |s| s[1]);
+    let (font, px) = o.fonts.0.clone();
+    let fit = ((height / (px * 1.25)) as usize).max(1);
+    o.faction_scroll = o.faction_scroll.min(game.log.len().saturating_sub(fit));
+    let end = game.log.len() - o.faction_scroll;
+    let start = end.saturating_sub(fit);
+    let text = if game.log.is_empty() { String::new() } else { game.log[start..end].join("\n") };
+    let e = commands
+        .spawn((
+            Node { position_type: PositionType::Absolute, left: Val::Px(8.0), right: Val::Px(8.0), bottom: Val::Px(6.0), max_height: Val::Percent(100.0), overflow: Overflow::clip(), ..default() },
+            Text::new(text),
+            TextFont { font: bevy::text::FontSource::Handle(font), font_size: bevy::text::FontSize::Px(px), ..default() },
+            TextColor(Color::BLACK),
+            ZIndex(3),
+        ))
+        .id();
+    commands.entity(panel).add_child(e);
+    o.rows.push(e);
+}
+
+/// An AI option's row (its index in `AI_OPTIONS`).
+#[derive(Component)]
+pub(super) struct AiRow(usize);
+
+/// The AI tab's options in the game's order (F035130): name, which flag, tooltip; the last row
+/// is the follow formation.
+const AI_OPTIONS: [(&str, u8, &str); 10] = [
+    ("Ditch items", 0, "If they have nothing else to do, characters will automatically put any excess materials they are carrying into storage.  This can help to un-block the base AI when things grind to a halt from over-filled inventories."),
+    ("Sleep when injured", 1, "Characters will automatically go to bed if they are injured and have nothing else to do"),
+    ("Sit when idle", 2, "Idle characters at home will sit down on chairs and benches, if you have any"),
+    ("Heal Allies", 3, "Characters with the medic job will also heal characters of allied factions"),
+    ("Help Allies", 4, "Characters will help out characters from other allied factions if they are under attack"),
+    ("Rescue Allies", 5, "Characters with the rescue job will also rescue allied characters from other factions"),
+    ("Share Food", 6, "Characters in a squad will automatically share any of their food that is in a backpack (if in range)."),
+    ("Feed Animals", 7, "If food is running low, you can elect not to feed your animals."),
+    ("Shoot first, ask later", 8, "Your turret gunners will shoot at any potentially dangerous but neutral targets, such as wild animals or bandits, without waiting for them to attack the base first."),
+    ("Follow Formation", 9, "Formation used when squad members are following a leader"),
+];
+
+/// The AI option flag of row `k`.
+fn ai_flag(a: &mut kenshi_game::sim::AiOptions, k: usize) -> Option<&mut bool> {
+    Some(match AI_OPTIONS.get(k)?.1 {
+        0 => &mut a.ditch_items,
+        1 => &mut a.sleep_injured,
+        2 => &mut a.sit_idle,
+        3 => &mut a.heal_allies,
+        4 => &mut a.help_allies,
+        5 => &mut a.rescue_allies,
+        6 => &mut a.share_food,
+        7 => &mut a.feed_animals,
+        8 => &mut a.shoot_first,
+        _ => return None,
+    })
+}
+
+/// @fn F035130
+///
+/// The AI tab: a row per option in AIOptions (its name, a tick box; the formation a button
+/// naming it: Random, Military, Caravan), the hovered one's tooltip in AIToolTip below.
+/// (assumption) The rows are laid out as the options window's (`options_ui`), the game building
+/// both with its options panel.
+fn redraw_ai(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, assets: &AssetServer) {
+    for r in o.rows.drain(..) {
+        commands.entity(r).despawn();
+    }
+    let Some(panel) = o.ui.get("AIOptions") else { return };
+    let width = o.ui.sizes.get(&panel).map_or(600.0, |s| s[0]);
+    let scale = kenshi_gui::res::ui_scale();
+    let row_h = 40.0 * scale;
+    let mut opts = game.sim.ai_options.clone();
+    let text = |name: &str, caption: &str, pos: [f32; 4]| kenshi_gui::res::WidgetDef {
+        kind: "TextBox".into(),
+        skin: "Kenshi_TextboxStandardText".into(),
+        pos: kenshi_gui::res::Pos::Px(pos),
+        align: Default::default(),
+        name: name.into(),
+        layer: None,
+        props: vec![
+            ("Caption".into(), caption.into()),
+            ("TextAlign".into(), "Left VCenter".into()),
+            ("FontName".into(), "Kenshi_StandardFont_Large".into()),
+            ("TextColour".into(), "0.85 0.8 0.7".into()),
+        ],
+        user: Vec::new(),
+        children: Vec::new(),
+    };
+    let button = |name: &str, skin: &str, caption: &str, pos: [f32; 4]| kenshi_gui::res::WidgetDef {
+        kind: "Button".into(),
+        skin: skin.into(),
+        pos: kenshi_gui::res::Pos::Px(pos),
+        align: Default::default(),
+        name: name.into(),
+        layer: None,
+        props: if caption.is_empty() { Vec::new() } else { vec![("Caption".into(), caption.into())] },
+        user: Vec::new(),
+        children: Vec::new(),
+    };
+    for (k, (label, flag, _)) in AI_OPTIONS.iter().enumerate() {
+        let holder = commands
+            .spawn((
+                Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(k as f32 * row_h), width: Val::Px(width), height: Val::Px(row_h), ..default() },
+                Interaction::default(),
+                AiRow(k),
+                ZIndex(3),
+            ))
+            .id();
+        commands.entity(panel).add_child(holder);
+        o.rows.push(holder);
+        let cx = width * 0.5;
+        let control = if *flag == 9 {
+            let name = match opts.formation {
+                1 => "Caravan",
+                2 => "Military",
+                _ => "Random",
+            };
+            button("AIFormation", "Kenshi_Button1", name, [cx, 4.0 * scale, width * 0.3, row_h - 8.0 * scale])
+        } else {
+            button(&format!("AITick{k}"), "Kenshi_TickBoxSkin", "", [cx, (row_h - 33.0 * scale) * 0.5, 35.0 * scale, 33.0 * scale])
+        };
+        let built = kenshi_gui::ui::spawn(commands, &gui.0, assets, &[text("Label", label, [10.0 * scale, 0.0, width * 0.48, row_h]), control], Some(holder), [width, row_h]);
+        if let Some(v) = ai_flag(&mut opts, k)
+            && let Some(e) = built.get(&format!("AITick{k}"))
+        {
+            commands.entity(e).insert(kenshi_gui::ui::Checked(*v));
+        }
+    }
+    // the tooltip's text
+    if let Some(tip) = o.ui.get("AIToolTip") {
+        let (font, px) = o.fonts.0.clone();
+        let t = commands
+            .spawn((
+                Node { position_type: PositionType::Absolute, left: Val::Px(10.0), right: Val::Px(10.0), top: Val::Px(8.0), ..default() },
+                Text::new(String::new()),
+                TextFont { font: bevy::text::FontSource::Handle(font), font_size: bevy::text::FontSize::Px(px), ..default() },
+                TextColor(Color::BLACK),
+                ZIndex(3),
+            ))
+            .id();
+        commands.entity(t).insert(kenshi_gui::Caption(t));
+        commands.entity(tip).add_child(t);
+        o.rows.push(t);
+        o.ai_tip = Some(t);
+    }
+}
+
 fn redraw_faction(commands: &mut Commands, o: &mut Open, game: &Game) {
     let sim = &game.sim;
     let mine = sim.folk.iter().find(|p| p.player).and_then(|p| p.faction.clone());
@@ -520,6 +688,7 @@ pub fn update(
     windows: Query<&Window>,
     rows: Query<(&Interaction, &ListRow)>,
     (mut wheel, time, portraits, laid): (MessageReader<bevy::input::mouse::MouseWheel>, Res<Time>, Res<super::portraits::Portraits>, Query<(&ComputedNode, &UiGlobalTransform)>),
+    ai_rows: Query<(&Interaction, &AiRow)>,
 ) {
     // the tab asked for (controls.cfg: T research, Y crafting, M map); the main panel's TCH, MAP and SQD
     let mut asked: Option<u8> = None;
@@ -548,9 +717,10 @@ pub fn update(
     let mut repeat = false;
     let mut map_zoom = 1.0f32;
     let mut map_centre = false;
+    let mut ai_changed = false;
     for c in clicks.read() {
         match c.name.as_str() {
-            "ShortcutTechButton" => asked = Some(0),
+            "ShortcutTechButton" | "ResearchButton" => asked = Some(0),
             "ShortcutMapButton" => asked = Some(2),
             "ShortcutSquadButton" => asked = Some(4),
             "OverviewTabResearch" => switch = Some(0),
@@ -558,6 +728,24 @@ pub fn update(
             "OverviewTabMap" => switch = Some(2),
             "OverviewTabFaction" => switch = Some(3),
             "OverviewTabSquads" => switch = Some(4),
+            "OverviewTabDialogue" => switch = Some(5),
+            "OverviewTabAI" => switch = Some(6),
+            "AIFormation" => {
+                let f = &mut game.sim.ai_options.formation;
+                // the list's order: Random, Military, Caravan
+                *f = match *f {
+                    0 => 2,
+                    2 => 1,
+                    _ => 0,
+                };
+                ai_changed = true;
+            }
+            n if n.starts_with("AITick") => {
+                if let Some(v) = n[6..].parse::<usize>().ok().and_then(|k| ai_flag(&mut game.sim.ai_options, k)) {
+                    *v = !*v;
+                    ai_changed = true;
+                }
+            }
             "MapZoomInButton" => map_zoom = 1.5,
             "MapZoomOutButton" => map_zoom = 1.0 / 1.5,
             "MapCenterButton" => map_centre = true,
@@ -566,6 +754,12 @@ pub fn update(
             "Button" if win.open.as_ref().is_some_and(|o| o.ui.named.iter().any(|(_, e)| *e == c.widget)) => close = true,
             _ => {}
         }
+    }
+    // (testing) KENSHI_OVERVIEW_TAB=n: that tab once the window is open
+    if win.open.is_some()
+        && let Some(t) = std::env::var("KENSHI_OVERVIEW_TAB").ok().and_then(|v| v.parse::<u8>().ok())
+    {
+        switch = switch.or(Some(t));
     }
     // the tab asked for: closed when it is the one shown, else shown
     if let Some(t) = asked {
@@ -596,7 +790,13 @@ pub fn update(
         // the research and crafting tabs: the tab control's other items go, these become widgets
         fn research_only(d: &mut kenshi_gui::res::WidgetDef) {
             if d.name == "TabsMain" {
-                d.children.retain(|c| ["ResearchTab", "CraftTab", "MapTab", "FactionTab", "SquadsTab"].contains(&c.name.as_str()));
+                // the AI tab has no name of its own
+                for c in &mut d.children {
+                    if c.name.is_empty() && c.children.iter().any(|k| k.name == "AIOptions") {
+                        c.name = "AITab".into();
+                    }
+                }
+                d.children.retain(|c| ["ResearchTab", "CraftTab", "MapTab", "FactionTab", "SquadsTab", "MessagesTab", "AITab"].contains(&c.name.as_str()));
                 for c in &mut d.children {
                     c.kind = "Widget".into();
                     c.props.retain(|(k, _)| k != "Caption" && k != "Visible");
@@ -644,15 +844,20 @@ pub fn update(
             map_nodes: Vec::new(),
             map_drawn: -1.0,
             faction_scroll: 0,
+            log_len: usize::MAX,
+            ai_tip: None,
         };
         // the two tab buttons (Kenshi_TabControl's ButtonWidth 140), over the tab area
         if let Some(place) = o.ui.get("TabsMain") {
             let scale = kenshi_gui::res::ui_scale();
             let size = o.ui.sizes.get(&place).copied().unwrap_or([800.0, 600.0]);
+            // (assumption) seven at the tab control's ButtonWidth (140) overrun the window: as
+            // many as fit side by side
+            let w = (140.0 * scale).min(size[0] / 7.0 - 4.0 * scale);
             let button = |name: &str, caption: &str, k: f32| kenshi_gui::res::WidgetDef {
                 kind: "Button".into(),
                 skin: "Kenshi_Button1".into(),
-                pos: kenshi_gui::res::Pos::Px([k * 144.0 * scale, 0.0, 140.0 * scale, size[1] * 0.045]),
+                pos: kenshi_gui::res::Pos::Px([k * (w + 4.0 * scale), 0.0, w, size[1] * 0.045]),
                 align: Default::default(),
                 name: name.into(),
                 layer: None,
@@ -670,6 +875,8 @@ pub fn update(
                     button("OverviewTabResearch", "RESEARCH", 2.0),
                     button("OverviewTabCrafting", "CRAFTING", 3.0),
                     button("OverviewTabSquads", "SQUADS", 4.0),
+                    button("OverviewTabDialogue", "DIALOGUE", 5.0),
+                    button("OverviewTabAI", "AI", 6.0),
                 ],
                 Some(place),
                 size,
@@ -737,6 +944,29 @@ pub fn update(
         }
         if moved {
             redraw(&mut commands, o, &game);
+        }
+    }
+    // the dialogue tab: drawn again as the log grows, scrolled back by the wheel
+    if o.tab == 5 {
+        let mut moved = false;
+        for w in wheel.read() {
+            o.faction_scroll = if w.y > 0.0 { o.faction_scroll + 3 } else { o.faction_scroll.saturating_sub(3) };
+            moved = true;
+        }
+        if moved || o.log_len != game.log.len() {
+            redraw(&mut commands, o, &game);
+        }
+    }
+    // the AI tab: drawn on showing and on a change; the hovered option's tooltip below
+    if o.tab == 6 {
+        if ai_changed || o.map_drawn < 0.0 {
+            o.map_drawn = time.elapsed_secs();
+            redraw_ai(&mut commands, o, &game, &gui, &assets);
+        }
+        if let Some(t) = o.ai_tip {
+            let hovered = ai_rows.iter().find(|(i, _)| **i != Interaction::None).map(|(_, r)| r.0);
+            let text = hovered.and_then(|k| AI_OPTIONS.get(k)).map_or("", |a| a.2);
+            commands.queue(SetCaption(t, text.to_string()));
         }
     }
     if o.tab == 4 {

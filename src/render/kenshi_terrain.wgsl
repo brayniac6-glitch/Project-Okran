@@ -5,7 +5,7 @@
 
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::view
-#import kenshi::lighting::{apply_fog, main_light, sun_shadow, make_wet, reflection_dir, reflection_mip, to_screen}
+#import kenshi::lighting::{apply_fog, local_lights, main_light, sun_shadow, make_wet, reflection_dir, reflection_mip, to_screen}
 
 struct TerrainParams {
     scales_a: array<vec4<f32>, 4>,
@@ -376,7 +376,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let lit = main_light(world_normal, view_dir, albedo.rgb, gloss, 0.0, 0.0, 0.0,
         p.sun_direction.xyz, p.sun_colour, p.env_colour.w, p.ambient_params.w,
         ambient_mult, irr, refl, sun_shadow(in.world_position, in.world_normal, shadow_jitter));
-    let fogged = apply_fog(lit, camera, world_pos, p.sun_real.xyz, p.horizon, p.fog, p.fog_colour,
+    let lit_all = lit + local_lights(in.world_position.xyz, in.position.xy, world_normal, view_dir, albedo.rgb, gloss, 0.0);
+    let fogged = apply_fog(lit_all, camera, world_pos, p.sun_real.xyz, p.horizon, p.fog, p.fog_colour,
         p.sun_colour.w);
     return vec4<f32>(to_screen(fogged, p.world.z), 1.0);
 }

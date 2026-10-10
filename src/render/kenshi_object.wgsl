@@ -7,7 +7,7 @@
 
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::view
-#import kenshi::lighting::{apply_fog, main_light, sun_shadow, make_wet, reflection_dir, reflection_mip, to_screen}
+#import kenshi::lighting::{apply_fog, local_lights, main_light, sun_shadow, make_wet, reflection_dir, reflection_mip, to_screen}
 
 struct ObjectParams {
     // xy: tiling; z: glossMult; w: alpha threshold (0: no TRANSPARENCY)
@@ -256,7 +256,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
     let lit = main_light(world_normal, view_dir, diffuse.rgb, gloss, metalness, emissive,
         translucency, p.sun_direction.xyz, p.sun_colour, p.env_colour.w, p.ambient_params.w,
         ambient_mult, irr, refl, sun_shadow(in.world_position, n, shadow_jitter));
-    let fogged = apply_fog(lit, camera, world_pos, p.sun_real.xyz, p.horizon, p.fog, p.fog_colour,
+    let lit_all = lit + local_lights(in.world_position.xyz, in.position.xy, world_normal, view_dir, diffuse.rgb, gloss, metalness);
+    let fogged = apply_fog(lit_all, camera, world_pos, p.sun_real.xyz, p.horizon, p.fog, p.fog_colour,
         p.sun_colour.w);
     return vec4<f32>(to_screen(fogged, p.origin_exposure.w), 1.0);
 }

@@ -54,6 +54,12 @@ pub const RESEARCH_RATE: f32 = 0.3;
 pub const RESEARCH_LEVEL_INCREASE: f32 = 1.3;
 /// The research function (BUILDING_FUNCTIONALITY "function" 3) and wind power (5).
 const FUNCTION_RESEARCH: i32 = 3;
+/// BuildingFunction 7: training equipment (training dummies, the training turret, the
+/// locksmith's training box).
+pub const FUNCTION_TRAINING: i32 = 7;
+/// The right-click menu's targets for town furniture (a town's training dummies): FURN_TARGET +
+/// the furniture's index.
+pub const FURN_TARGET: usize = 1 << 26;
 const FUNCTION_WIND: i32 = 5;
 /// Storage (BUILDING_FUNCTIONALITY "function" 13, StorageBuilding).
 const FUNCTION_STORAGE: i32 = 13;
@@ -125,11 +131,17 @@ impl Sim {
     /// The ENVIRONMENT_RESOURCES record of the biome at world (x, z) (F048105: the biome map
     /// there; unmarked: the default biome).
     pub fn resources_at(&self, x: f32, z: f32) -> Option<&GameData> {
+        let rec = self.biome_at(x, z)?;
+        self.data.get(&rec.refs("resources").first()?.0)
+    }
+
+    /// The BIOME_GROUP record of the biome at world (x, z) (F048105: the biome map there;
+    /// unmarked: the default biome).
+    pub fn biome_at(&self, x: f32, z: f32) -> Option<&GameData> {
         let pop = self.population.as_ref()?;
         let c = pop.map.colour_at(x, z);
         let biome = pop.biomes.iter().find(|b| b.index == c).or_else(|| pop.biomes.iter().find(|b| b.record == kenshi_world::biome::DEFAULT_BIOME))?;
-        let rec = self.data.get(&biome.record)?;
-        self.data.get(&rec.refs("resources").first()?.0)
+        self.data.get(&biome.record)
     }
 
     /// The level of resource `kind` at world point `at` (F051624).
@@ -166,13 +178,15 @@ impl Sim {
         (mult, power)
     }
 
-    /// Whether building record `record` produces ("is production building" with products or
-    /// crafts, or a farm).
+    /// Whether building record `record` produces: its functionality a mine, a production
+    /// building, a crafting bench or a furnace (BuildingFunction 1, 4, 10, 14) with products or
+    /// crafts, or a farm. ("is production building" is not a field of Kenshi's (fcs.def): only
+    /// some records carry it, so it is not asked.)
     pub fn is_production_record(&self, record: &str) -> bool {
         let Some(r) = self.data.get(record) else { return false };
         is_farm(r)
-            || function_of(&self.data, r).is_some_and(|(f, _)| {
-                f.bools.get("is production building").copied().unwrap_or(false) && (!f.refs("produces").is_empty() || !f.refs("item crafts").is_empty())
+            || function_of(&self.data, r).is_some_and(|(f, function)| {
+                matches!(function, 1 | 4 | 10 | 14) && (!f.refs("produces").is_empty() || !f.refs("item crafts").is_empty())
             })
     }
 
@@ -190,7 +204,125 @@ impl Sim {
 
     /// Whether building `b` can be operated: production or research.
     pub fn is_operated(&self, b: usize) -> bool {
-        self.is_production(b) || self.research_bench(b).is_some() || self.is_turret(b)
+        self.is_production(b) || self.research_bench(b).is_some() || self.is_turret(b) || self.training(b).is_some()
+    }
+
+    /// Built training equipment `b`: the skill it trains ("stat used") and the level it trains
+    /// up to ("output rate": "For training dummies, its the max skill you can train to.").
+    pub fn training(&self, b: usize) -> Option<(StatsEnumerated, f32)> {
+        let pb = self.buildings.get(b).filter(|pb| pb.done)?;
+        let rec = self.data.get(&pb.record)?;
+        let (f, function) = function_of(&self.data, rec)?;
+        if function != FUNCTION_TRAINING {
+            return None;
+        }
+        let stat = f.ints.get("stat used").copied().filter(|&v| v > 0).and_then(StatsEnumerated::from_i32)?;
+        Some((stat, num(rec, "output rate")))
+    }
+
+    /// Town training equipment `f` (furniture): the skill and the level it trains to.
+    pub fn furniture_training(&self, f: usize) -> Option<(StatsEnumerated, f32)> {
+        let rec = self.data.get(&self.furn.get(f)?.record)?;
+        let (func, function) = function_of(&self.data, rec)?;
+        if function != FUNCTION_TRAINING {
+            return None;
+        }
+        let stat = func.ints.get("stat used").copied().filter(|&v| v > 0).and_then(StatsEnumerated::from_i32)?;
+        Some((stat, num(rec, "output rate")))
+    }
+
+    /// The town training equipment nearest `at` (units) within `reach`.
+    pub fn training_near(&self, at: [f32; 3], reach: f32) -> Option<usize> {
+        (0..self.furn.len())
+            .filter(|&k| self.furn[k].function == FUNCTION_TRAINING && (self.furn[k].position[1] - at[1]).abs() < 150.0)
+            .map(|k| (k, (self.furn[k].position[0] - at[0]).hypot(self.furn[k].position[2] - at[2])))
+            .filter(|&(_, d)| d < reach)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(k, _)| k)
+    }
+
+    /// The "Training" order on town training equipment `f` (Task_UseTrainingDummy): each walks
+    /// up to it (within its "use range") and trains there until given another order.
+    /// (assumption) Townsfolk using it do not keep the player off it.
+    pub fn order_train_at(&mut self, ids: &[usize], f: usize) {
+        let Some(furn) = self.furn.get(f) else { return };
+        let (at, reach) = (furn.position, furn.use_range.max(10.0) * 0.6);
+        for &id in ids {
+            if self.folk.get(id).is_none_or(|p| p.down || p.dead) {
+                continue;
+            }
+            let me = self.folk[id].mover.position_units();
+            let (dx, dz) = (me[0] - at[0], me[2] - at[2]);
+            let d = dx.hypot(dz).max(1e-3);
+            self.order_move(&[id], [at[0] + dx / d * reach, at[1], at[2] + dz / d * reach]);
+            self.trainees.retain(|(o, ..)| *o != id);
+            self.trainees.push((id, f, 0.0));
+        }
+    }
+
+    /// @fn F029286
+    ///
+    /// Training (UseableStuff, each frame for each user of training equipment, Task_UseTrainingDummy
+    /// F031352): the skill trained by the frame time x 2 up to the equipment's level
+    /// (CharStats::trainUpTo, F047461); the progress bar ("Training", F031296) shows how far
+    /// the skill is to its next level.
+    /// (assumption) The trainee's hunger is not raised by the equipment's "hunger rate".
+    pub fn training_tick(&mut self, dt: f32) {
+        // town equipment: trained on once there and still; given up on stopping elsewhere
+        let mut keep = Vec::new();
+        for (id, f, mut age) in std::mem::take(&mut self.trainees) {
+            age += dt;
+            let (Some(furn), Some((stat, cap))) = (self.furn.get(f), self.furniture_training(f)) else { continue };
+            let p = &self.folk[id];
+            let me = p.mover.position_units();
+            // (as a building's operators, within its reach + 40: the walk stops short of it)
+            let dist = (me[0] - furn.position[0]).hypot(me[2] - furn.position[2]);
+            let near = dist <= furn.use_range.max(10.0) + 40.0;
+            let still = p.mover.velocity[0].hypot(p.mover.velocity[2]) < 0.5;
+            // (a moment to set off first)
+            if p.down || p.dead || (still && !near && age > 2.0) {
+                if std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
+                    eprintln!("training {id}: gave up {dist:.0} from {}", furn.name);
+                }
+                if self.folk[id].operating == Some(f) {
+                    self.folk[id].operating = None;
+                }
+                continue;
+            }
+            if near && still {
+                // (the furniture's "animation" plays: activity_anim reads `operating`)
+                self.folk[id].operating = Some(f);
+                self.arena.f[id].skills.train_up_to(stat, dt, 2.0, cap);
+                if std::env::var("KENSHI_BUILD_DEBUG").is_ok() && self.tick.is_multiple_of(600) {
+                    eprintln!("training {id} at {}: {stat:?} {:.2} (up to {cap})", furn.name, self.arena.f[id].skills.level(stat));
+                }
+            }
+            keep.push((id, f, age));
+        }
+        self.trainees = keep;
+        for (id, b, _) in self.operators() {
+            let Some((stat, cap)) = self.training(b) else { continue };
+            self.arena.f[id].skills.train_up_to(stat, dt, 2.0, cap);
+            if std::env::var("KENSHI_BUILD_DEBUG").is_ok() && self.tick.is_multiple_of(600) {
+                eprintln!("training {id}: {stat:?} {:.2} (up to {cap})", self.arena.f[id].skills.level(stat));
+            }
+        }
+    }
+
+    /// How far `id` training on equipment is to its skill's next level (0 .. 1), if it is.
+    pub fn training_status(&self, id: usize) -> Option<f32> {
+        if let Some(&(_, f, _)) = self.trainees.iter().find(|(o, ..)| *o == id)
+            && self.folk[id].operating == Some(f)
+        {
+            let (stat, _) = self.furniture_training(f)?;
+            return Some(self.arena.f[id].skills.level(stat).fract());
+        }
+        let b = self.folk.get(id)?.operate?;
+        let (stat, _) = self.training(b)?;
+        if !self.at_building(id, b) || self.folk[id].down {
+            return None;
+        }
+        Some(self.arena.f[id].skills.level(stat).fract())
     }
 
     /// A mounted gun (its BUILDING has a "gun turret"): manned by whoever operates it.
@@ -267,7 +399,7 @@ impl Sim {
         let Some(rec) = self.data.get(&pb.record) else { return 0.0 };
         let Some((f, _)) = function_of(&self.data, rec) else { return 0.0 };
         let level = stat.map(|s| self.arena.f[id].level(s));
-        self.power_efficiency(b) * self.building_resource(b) * building_rate(rec, f) * self.improvements(&pb.record).0 * PRODUCTION_SPEED * skill_mult(level)
+        self.power_efficiency(b) * self.building_resource(b) * building_rate(rec, f) * self.improvements(&pb.record).0 * PRODUCTION_SPEED * self.advanced.production * skill_mult(level)
     }
 
     /// Clear the operating of characters whose building can no longer be operated.
@@ -398,7 +530,7 @@ impl Sim {
             if self.research_bench(b).is_none() {
                 continue;
             }
-            rate += self.operator_rate(id, b, stat) / PRODUCTION_SPEED;
+            rate += self.operator_rate(id, b, stat) / (PRODUCTION_SPEED * self.advanced.production);
             workers.push((id, stat));
         }
         self.research_rate = rate;
@@ -439,7 +571,7 @@ impl Sim {
             self.research_paid = true;
         }
         self.research_message = None;
-        self.research_progress += rate * dt / self.hour_secs as f32;
+        self.research_progress += rate * self.advanced.research * dt / self.hour_secs as f32;
         for (id, stat) in &workers {
             if let Some(s) = stat {
                 self.arena.f[*id].skills.train(*s, dt * 0.05, 1.0);
@@ -745,7 +877,7 @@ impl Sim {
 
     /// How many of item `record` building `b` can draw on: its own storage, the other built
     /// storage of the player, and the operator's inventory.
-    pub(crate) fn count_material(&self, operator: usize, b: usize, record: &str) -> u32 {
+    pub fn count_material(&self, operator: usize, b: usize, record: &str) -> u32 {
         let count = |inv: &Inventory| inv.sections.iter().flat_map(|s| s.items.iter()).filter(|p| p.item.record == record).map(|p| p.item.quantity).sum::<u32>();
         let own = self.buildings[b].storage.as_ref().map_or(0, count);
         let stores: u32 = self.buildings.iter().enumerate().filter(|(k, o)| *k != b && o.done).filter_map(|(_, o)| o.storage.as_ref()).map(count).sum();

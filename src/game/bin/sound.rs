@@ -982,6 +982,46 @@ pub fn work(mut s: ResMut<Sound>, game: Res<Game>, mut was: Local<HashMap<usize,
     *sites = (count.max(1), done);
 }
 
+/// A building of the player's dismantled ("Thing_Complete", F029409).
+pub fn dismantled(mut s: ResMut<Sound>, game: Res<Game>, mut was: Local<u32>, _ready: Res<WorldReady>) {
+    if game.sim.dismantled > *was {
+        s.post_with("Thing_Complete", None, &[], Channel::Ui);
+    }
+    *was = game.sim.dismantled;
+}
+
+/// Doors as they move (F029271, F029334, F029337): "Door_Open" as one starts opening,
+/// "Door_Close" as it starts closing, "Door_Shut" as it comes to a stop either way; "Break" as
+/// one is bashed in (F029386).
+pub fn doors(mut s: ResMut<Sound>, game: Res<Game>, mut was: Local<Vec<(i32, bool)>>, _ready: Res<WorldReady>) {
+    use kenshi_game::sim::{DOOR_CLOSED, DOOR_CLOSING, DOOR_OPEN, DOOR_OPENING};
+    let doors = &game.sim.door_states;
+    if was.len() != doors.len() {
+        *was = doors.iter().map(|d| (d.phase, d.broken)).collect();
+        return;
+    }
+    for (d, (before, broken)) in doors.iter().zip(was.iter_mut()) {
+        if d.broken && !*broken {
+            s.post_with("Break", Some(Vec3::from(d.door.position) - game.zone.origin), &[], Channel::Sfx);
+        }
+        *broken = d.broken;
+        if d.phase == *before {
+            continue;
+        }
+        let event = match (*before, d.phase) {
+            (_, DOOR_OPENING) => Some("Door_Open"),
+            (_, DOOR_CLOSING) => Some("Door_Close"),
+            (DOOR_OPENING, DOOR_OPEN) | (DOOR_CLOSING, DOOR_CLOSED) => Some("Door_Shut"),
+            _ => None,
+        };
+        *before = d.phase;
+        if let Some(e) = event {
+            let at = Some(Vec3::from(d.door.position) - game.zone.origin);
+            s.post_with(e, at, &[], Channel::Sfx);
+        }
+    }
+}
+
 /// Creatures near the camera now and then call out ("VO_Creature_Passive", Creature_VO).
 /// (assumption) One creature in view every 6 to 14 s; Kenshi's own timing is not decompiled.
 pub fn creatures(mut s: ResMut<Sound>, game: Res<Game>, time: Res<Time>, mut next: Local<f32>, _ready: Res<WorldReady>) {

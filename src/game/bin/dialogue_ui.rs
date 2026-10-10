@@ -41,18 +41,9 @@ fn window_size(windows: &Query<&Window>) -> [f32; 2] {
 
 /// A person's name: its own, else its CHARACTER record's (as the game titles unnamed NPCs).
 fn name_of(game: &Game, id: usize) -> String {
-    let p = &game.sim.folk[id];
-    if !p.name.is_empty() {
-        return p.name.clone();
-    }
-    if p.player {
-        return format!("Character {id}");
-    }
-    p.character
-        .as_deref()
-        .and_then(|c| game.sim.data.get(c))
-        .map_or_else(|| format!("Character {id}"), |r| r.name.clone())
+    game.sim.display_name(id)
 }
+
 
 fn close(commands: &mut Commands, o: &Open) {
     for r in &o.ui.roots {
@@ -207,6 +198,8 @@ pub fn update(
             }
             match game.sim.talk(npc, me) {
                 Some(conv) => {
+                    let line = format!("{}: {}", name_of(&game, conv.npc), conv.npc_text);
+                    super::log(&mut game.log, line);
                     let o = open(&mut commands, &gui.0, &assets, &game, conv, size);
                     win.open = Some(o);
                 }
@@ -231,6 +224,8 @@ pub fn update(
         if conv.choices.is_empty() {
             return;
         }
+        let line = format!("{}: {}", name_of(&game, conv.npc), conv.npc_text);
+        super::log(&mut game.log, line);
         let o = open(&mut commands, &gui.0, &assets, &game, conv, size);
         win.open = Some(o);
         return;
@@ -283,10 +278,16 @@ pub fn update(
         return;
     }
     let conv = o.conv.clone();
+    if let Some((_, said)) = conv.choices.iter().find(|(c, _)| *c == id) {
+        let line = format!("{}: {said}", name_of(&game, conv.player));
+        super::log(&mut game.log, line);
+    }
     let (effects, next) = game.sim.choose(&conv, &id);
     apply(&mut game, &mut inv, &mut slaves, &conv, &effects);
     match next {
         Some(n) => {
+            let line = format!("{}: {}", name_of(&game, n.npc), n.npc_text);
+            super::log(&mut game.log, line);
             o.conv = n;
             if let Some(e) = o.ui.get("MoneyAmountText") {
                 commands.queue(SetCaption(e, format!("c. {}", game.sim.money)));

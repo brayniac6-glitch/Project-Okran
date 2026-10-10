@@ -12,7 +12,34 @@ original game's data from **your own copy** of Kenshi. It's like OpenMW for Morr
 load and import your Kenshi saves. You can walk, fight, trade, recruit, build, research and talk
 your way across the world, but much is still missing or rough. Save often.
 
-## Running it
+## Download and play (Windows)
+
+1. Own and install Kenshi (Steam or GOG).
+2. Go to this repo's **[Releases](https://github.com/brayniac6-glitch/Project-Okran/releases)** page and
+   download `Project-Okran-windows.zip` from the newest release.
+3. Unzip it anywhere (your Desktop is fine) and run `kenshi.exe`. If Windows SmartScreen warns about
+   an unknown app, choose **More info**, then **Run anyway**.
+
+That's all: the download is one program, and it reads everything else from your Kenshi install. It
+finds a Steam install on its own. If yours is elsewhere (GOG, another drive), start it with the
+Kenshi folder: `kenshi.exe "D:\Games\Kenshi"`.
+
+## System requirements
+
+Measured on the development PC; the minimum is an estimate, not tested on that hardware.
+
+|           | Minimum                                  | Recommended                         |
+| --------- | ---------------------------------------- | ----------------------------------- |
+| OS        | Windows 10 or 11, 64-bit                 | Windows 11, 64-bit                  |
+| CPU       | 4 cores (Intel i5-8400 / Ryzen 5 2600)   | 6 cores (Intel i5-12400F, tested)   |
+| Memory    | 16 GB RAM                                | 32 GB RAM                           |
+| Graphics  | DirectX 12 or Vulkan, 6 GB (GTX 1660)    | 8 GB (RTX 4060, tested)             |
+| Storage   | Kenshi installed (about 14 GB), plus 100 MB | an SSD                           |
+
+It uses a lot of memory: about 7.5 GB, and up to 13 GB committed, after a minute in a town. It ran
+well on the 16 GB test PC, but close other big programs if you only have 16 GB.
+
+## Building it yourself
 
 1. Install Kenshi.
 2. Install [Rust](https://rustup.rs) (stable, 1.85 or newer).

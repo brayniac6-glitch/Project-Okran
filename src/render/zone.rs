@@ -90,6 +90,8 @@ pub struct Piece {
     pub interior: bool,
     /// A turret's swivelling part.
     pub swivel: Option<Swivel>,
+    /// One of the building's doors (its place in the "doors" list), moved as it opens.
+    pub door: Option<usize>,
 }
 
 pub struct ZoneScene {
@@ -109,6 +111,9 @@ pub struct ZoneScene {
     /// The EFFECT records placed on its buildings and their parts (F037795): effect, scene
     /// position and orientation.
     pub effects: Vec<(String, Vec3, Quat)>,
+    /// The LIGHT records placed on its buildings, their parts and their furniture
+    /// (`placed_lights`): light, scene position and orientation.
+    pub lights: Vec<(String, Vec3, Quat)>,
     /// Grass pages: (mesh, sprite, range, centre in scene coordinates).
     pub grass: Vec<(Mesh, String, FoliageRange, Vec3)>,
     /// Keep-out discs (centre, radius) of placed parts, in scene coordinates.
@@ -246,6 +251,16 @@ pub fn part_meshes_placed<'a>(data: &'a GameDataContainer, b: &'a GameData, dest
     out
 }
 
+/// A door's mesh: its zone, building (placement), door (its place in the building's "doors")
+/// and its place shut; moved by the game as the door opens.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct DoorPiece {
+    pub zone: (i32, i32),
+    pub building: usize,
+    pub index: usize,
+    pub rest: Transform,
+}
+
 /// A swivelling building part (a turret's head): its building's place (world units) and its
 /// node chain, posed each frame by [`TurretAims`].
 #[derive(Component, Clone, Debug)]
@@ -287,7 +302,7 @@ pub fn pose_swivels(aims: Res<TurretAims>, mut q: Query<(&Swivel, &mut Transform
 }
 
 /// A record's own mesh (a BUILDING_PART's "phs or mesh") and its parts' meshes.
-fn record_meshes<'a>(data: &'a GameDataContainer, r: &'a GameData) -> Vec<(&'a str, Option<&'a GameData>)> {
+pub fn record_meshes<'a>(data: &'a GameDataContainer, r: &'a GameData) -> Vec<(&'a str, Option<&'a GameData>)> {
     let mat = r.refs("material").first().and_then(|(sid, _)| data.get(sid));
     let mut out: Vec<(&str, Option<&GameData>)> = r
         .files
@@ -331,7 +346,7 @@ pub fn mesh_floors<'a>(data: &'a GameDataContainer, b: &'a GameData) -> HashMap<
 /// A mesh of a building's interior parts, doors and furniture: mesh, material, place in the
 /// building, whether an interior part, and for a turret's swivelling part its instance's place
 /// and node chain.
-pub type InteriorMesh<'a> = (&'a str, Option<&'a GameData>, Transform, bool, Option<(Transform, Vec<(Vec3, Option<i32>)>)>);
+pub type InteriorMesh<'a> = (&'a str, Option<&'a GameData>, Transform, bool, Option<(Transform, Vec<(Vec3, Option<i32>)>)>, Option<usize>);
 
 pub fn interior_meshes<'a>(
     data: &'a GameDataContainer,
@@ -343,14 +358,14 @@ pub fn interior_meshes<'a>(
     for (sid, _) in b.refs("interior") {
         if let Some(r) = data.get(sid) {
             for (m, mat) in record_meshes(data, r) {
-                out.push((m, mat, Transform::IDENTITY, true, None));
+                out.push((m, mat, Transform::IDENTITY, true, None, None));
             }
         }
     }
-    for (sid, _) in b.refs("doors") {
+    for (n, (sid, _)) in b.refs("doors").iter().enumerate() {
         if let Some(r) = data.get(sid) {
             for (m, mat) in record_meshes(data, r) {
-                out.push((m, mat, Transform::IDENTITY, false, None));
+                out.push((m, mat, Transform::IDENTITY, false, None, Some(n)));
             }
         }
     }
@@ -364,12 +379,12 @@ pub fn interior_meshes<'a>(
             .with_rotation(Quat::from_xyzw(x, y, z, w).normalize());
         for part in part_meshes_placed(data, t, false) {
             let chain = part.swivels().then(|| part.chain.clone());
-            out.push((part.mesh, part.material, local * part.local, false, chain.map(|c| (local, c))));
+            out.push((part.mesh, part.material, local * part.local, false, chain.map(|c| (local, c)), None));
         }
         for (sid, _) in t.refs("interior") {
             if let Some(r) = data.get(sid) {
                 for (m, mat) in record_meshes(data, r) {
-                    out.push((m, mat, local, false, None));
+                    out.push((m, mat, local, false, None, None));
                 }
             }
         }
@@ -412,6 +427,50 @@ pub fn placed_effects(data: &GameDataContainer, b: &GameData) -> Vec<(String, Ve
     }
     let mut out = Vec::new();
     walk(data, b, 0, &mut out);
+    out
+}
+
+/// The LIGHT instances a building places (F037794 / F045912 make an Ogre light of each, on the
+/// scene node of what holds it): those on it and on its parts (each part at its offsets), and
+/// those of the furniture it places (its own instances and its interior and exterior layouts'):
+/// light record, position and orientation in the building's frame.
+pub fn placed_lights(
+    data: &GameDataContainer,
+    b: &GameData,
+    layouts: Option<(&kenshi_world::nodes::Layouts, &kenshi_world::Placement)>,
+) -> Vec<(String, Vec3, Quat)> {
+    fn walk(data: &GameDataContainer, node: &GameData, at: Transform, depth: u32, out: &mut Vec<(String, Vec3, Quat)>) {
+        if depth > 8 {
+            return;
+        }
+        for i in &node.instances {
+            let Some(t) = data.get(&i.target) else { continue };
+            let [w, x, y, z] = i.rotation;
+            let local = at * Transform::from_translation(Vec3::from(i.position)).with_rotation(Quat::from_xyzw(x, y, z, w).normalize());
+            match t.item_type() {
+                Some(kenshi_data::ItemType::Light) => out.push((i.target.clone(), local.translation, local.rotation)),
+                // furniture it places, with its own lights
+                Some(kenshi_data::ItemType::Building) if depth == 0 => walk(data, t, local, depth + 1, out),
+                _ => {}
+            }
+        }
+        for part in node.refs("parts").iter().filter_map(|(sid, _)| data.get(sid)) {
+            let f = |k: &str| part.floats.get(k).copied().unwrap_or(0.0);
+            walk(data, part, at * Transform::from_translation(Vec3::new(f("offset X"), f("offset Y"), f("offset Z"))), depth + 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(data, b, Transform::IDENTITY, 0, &mut out);
+    if let Some((layouts, p)) = layouts {
+        for name in p.interior.iter().chain(&p.exterior) {
+            for i in layouts.for_building(data, &p.building, name) {
+                let Some(t) = data.get(&i.target) else { continue };
+                let [w, x, y, z] = i.rotation;
+                let local = Transform::from_translation(Vec3::from(i.position)).with_rotation(Quat::from_xyzw(x, y, z, w).normalize());
+                walk(data, t, local, 1, &mut out);
+            }
+        }
+    }
     out
 }
 
@@ -495,6 +554,7 @@ fn load_zone_at(
     let mut records: HashMap<usize, String> = HashMap::new();
     let mut pieces = Vec::new();
     let mut effects = Vec::new();
+    let mut lights = Vec::new();
     let placed_names: Vec<String> = placed.iter().map(|p| data.get(&p.building).map_or(p.building.clone(), |r| r.name.clone())).collect();
     for (bi, p) in placed.into_iter().enumerate() {
         let Some(b) = data.get(&p.building) else {
@@ -526,6 +586,9 @@ fn load_zone_at(
         for (effect, at, rot) in placed_effects(data, b) {
             effects.push((effect, transform.transform_point(at), transform.rotation * rot));
         }
+        for (light, at, rot) in placed_lights(data, b, Some((layouts(root), &p))) {
+            lights.push((light, transform.transform_point(at), transform.rotation * rot));
+        }
         // each part where its offsets put it; a turret's swivelling parts also keep their chain
         for part in part_meshes_placed(data, b, p.destroyed) {
             if let Some(mesh) = res.find(part.mesh) {
@@ -544,10 +607,11 @@ fn load_zone_at(
                     local_y: 0.0,
                     interior: false,
                     swivel,
+                    door: None,
                 });
             }
         }
-        for (m, mat, local, interior, swivel) in interior_meshes(data, b, layouts(root), &p) {
+        for (m, mat, local, interior, swivel, door) in interior_meshes(data, b, layouts(root), &p) {
             if let Some(mesh) = res.find(m) {
                 let swivel = swivel.map(|(inst, chain)| {
                     let base = transform * inst;
@@ -565,6 +629,7 @@ fn load_zone_at(
                     local_y: local.translation.y,
                     interior,
                     swivel,
+                    door,
                 });
             }
         }
@@ -708,6 +773,7 @@ fn load_zone_at(
         meshes,
         occupied,
         effects,
+        lights,
         grass: Vec::new(),
         zone,
         buildings,
@@ -1149,6 +1215,7 @@ impl ZoneScene {
                     local_y: 0.0,
                     interior: false,
                     swivel: None,
+                    door: None,
                 });
             }
             let (Some(mesh), mut look) = world.looks[p.mesh].clone() else { continue };
@@ -1177,6 +1244,7 @@ impl ZoneScene {
                 local_y: 0.0,
                 interior: false,
                 swivel: None,
+                door: None,
             });
         }
     }
@@ -1413,6 +1481,9 @@ impl ZoneScene {
                 }
                 if let Some(s) = &piece.swivel {
                     e.insert(s.clone());
+                }
+                if let (Some(building), Some(index)) = (piece.building, piece.door) {
+                    e.insert(DoorPiece { zone: self.zone, building, index, rest: piece.transform });
                 }
             }
         }

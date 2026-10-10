@@ -164,12 +164,26 @@ pub fn building_at(interiors: &[Interior], feet: [f32; 3]) -> Option<usize> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Door {
     pub placement: usize,
+    /// The BUILDING record whose door this is.
+    pub building: String,
     /// Which of the building's doors (the state record's "locked{n}" index).
     pub index: usize,
     /// The door BUILDING record.
     pub record: String,
     /// The centre of the door's part meshes, world placed (units).
     pub position: [f32; 3],
+    /// The door record's sliding (DoorStuff, F029394): "door move speed" (of its opening a
+    /// second), "door move dist" (units), "door axis" (0, 1, 2: the building's x, y, z),
+    /// "door comes out" (units it first moves out of its frame), "always locks".
+    pub speed: f32,
+    pub dist: f32,
+    pub axis: i32,
+    pub out: f32,
+    pub always_locks: bool,
+    /// The door's opening as a line (units): its ends across the doorway (along the slide axis,
+    /// as far as its meshes reach), and the heights it spans.
+    pub ends: [[f32; 2]; 2],
+    pub heights: [f32; 2],
 }
 
 /// The doors of a zone's placements.
@@ -203,11 +217,37 @@ pub fn doors(data: &GameDataContainer, res: &Resources, placements: &[Placement]
             if lo[0] > hi[0] {
                 continue;
             }
+            // the slide axis turned with the building, and how far the door reaches along it
+            let axis = d.ints.get("door axis").copied().unwrap_or(0);
+            let [w, x, y, z] = p.rotation;
+            let local = if axis == 2 { [0.0, 0.0, 1.0] } else { [1.0, 0.0, 0.0] };
+            let rot = |v: [f32; 3]| {
+                // q v q*, q = (w, x, y, z)
+                let (qx, qy, qz) = (x, y, z);
+                let t = [2.0 * (qy * v[2] - qz * v[1]), 2.0 * (qz * v[0] - qx * v[2]), 2.0 * (qx * v[1] - qy * v[0])];
+                [v[0] + w * t[0] + (qy * t[2] - qz * t[1]), v[1] + w * t[1] + (qz * t[0] - qx * t[2]), v[2] + w * t[2] + (qx * t[1] - qy * t[0])]
+            };
+            let dir = rot(local);
+            let l = dir[0].hypot(dir[2]).max(1e-4);
+            let dir = [dir[0] / l, dir[2] / l];
+            let mid = [(lo[0] + hi[0]) * 0.5, (lo[2] + hi[2]) * 0.5];
+            let reach = [[lo[0], lo[2]], [hi[0], lo[2]], [lo[0], hi[2]], [hi[0], hi[2]]]
+                .iter()
+                .map(|c| ((c[0] - mid[0]) * dir[0] + (c[1] - mid[1]) * dir[1]).abs())
+                .fold(0.0f32, f32::max);
             out.push(Door {
                 placement: i,
+                building: p.building.clone(),
                 index: n,
                 record: sid.clone(),
+                ends: [[mid[0] - dir[0] * reach, mid[1] - dir[1] * reach], [mid[0] + dir[0] * reach, mid[1] + dir[1] * reach]],
+                heights: [lo[1], hi[1]],
                 position: [(lo[0] + hi[0]) * 0.5, lo[1], (lo[2] + hi[2]) * 0.5],
+                speed: d.floats.get("door move speed").copied().unwrap_or(0.5),
+                dist: d.floats.get("door move dist").copied().unwrap_or(30.0),
+                axis: d.ints.get("door axis").copied().unwrap_or(0),
+                out: d.floats.get("door comes out").copied().unwrap_or(0.0),
+                always_locks: d.bools.get("always locks").copied().unwrap_or(false),
             });
         }
     }
