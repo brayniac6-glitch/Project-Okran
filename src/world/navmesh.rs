@@ -715,17 +715,31 @@ impl NavWorld {
             return Ok(false);
         }
         let mut ground = None;
+        let mut own = Vec::new();
         for s in load_tile(install, x, y)? {
             self.index(&s);
             if s.info.is_none() {
                 ground = Some(s.uid);
+            } else {
+                own.push(s.uid);
             }
             self.sections.insert(s.uid, s);
         }
         if let Some(uid) = ground {
             self.cut_section(uid);
         }
+        // the buildings' own navmeshes, round the furniture already known to stand on them
+        for uid in own {
+            self.cut_section(uid);
+        }
         Ok(true)
+    }
+
+    /// Whether face `f` is of a building's own navmesh (its floors, stairs and roofs), or of the
+    /// pieces cut from one (`navcut`).
+    pub fn on_building(&self, f: FaceRef) -> bool {
+        self.sections.get(&f.section).is_some_and(|s| s.info.is_some())
+            || self.sections.get(&f.section.wrapping_sub(crate::navcut::CUT_UID)).is_some_and(|s| s.info.is_some())
     }
 
     pub fn face(&self, f: FaceRef) -> &Face {
@@ -840,7 +854,7 @@ impl NavWorld {
     /// Whether an edge of `f` is a gap between walls: the face's edges on either side of it are
     /// both walls. (Replacement rule: Havok passes an edge by the clearance round it, not its
     /// length, so a short edge in open ground stays passable.)
-    fn gap(&self, f: FaceRef, edge: u32) -> bool {
+    pub(crate) fn gap(&self, f: FaceRef, edge: u32) -> bool {
         let face = self.face(f);
         let (s, n) = (face.start_edge, face.num_edges);
         let i = edge - s;
@@ -950,6 +964,72 @@ impl NavWorld {
                 distance(hit, lerp(c, d, segment_t(hit, c, d))) < 1e-3
             });
             f = g;
+        }
+        None
+    }
+
+    /// (stand-in for the Havok character's collision with the walls) A step from `from` (over
+    /// face `face`) toward `to`, as far as the mesh lets it: where the walk meets an edge nothing
+    /// crosses, what is left of the step runs along that edge instead (once; a corner stops it).
+    /// The face and point it ends on; None when it can't move at all.
+    pub fn slide(&self, face: FaceRef, from: [f32; 3], to: [f32; 3]) -> Option<(FaceRef, [f32; 3])> {
+        // a body standing just off its face (on the terrain) starts from the face's nearest point
+        let from = if self.over(face, from) {
+            from
+        } else {
+            let c: Vec<[f32; 3]> = self.sections[&face.section].corners(face.face).collect();
+            let mid = c.iter().fold([0.0f32; 3], |m, q| add(m, scale(*q, 1.0 / c.len() as f32)));
+            let (_, q) = self.closest_point(from, 5.0)?;
+            lerp(q, mid, 0.01)
+        };
+        if let Some(g) = self.walk(face, from, to) {
+            return Some((g, to));
+        }
+        let mut f = face;
+        let mut came: Option<u32> = None;
+        for _ in 0..256 {
+            if self.over(f, to) {
+                return Some((f, to));
+            }
+            let e = self.face_edges(f).find(|&e| {
+                if Some(e) == came {
+                    return false;
+                }
+                let (a, b) = self.edge_ends(f, e);
+                side(from, to, a) * side(from, to, b) <= 0.0 && side(a, b, from) * side(a, b, to) <= 0.0
+            })?;
+            let (a, b) = self.edge_ends(f, e);
+            let (sa, sb) = (side(from, to, a), side(from, to, b));
+            let hit = lerp(a, b, if sa == sb { 0.5 } else { sa / (sa - sb) });
+            let next = self.across(f, e).into_iter().min_by(|x, y| {
+                let d = |p: &Portal| distance(hit, lerp(p.0, p.1, segment_t(hit, p.0, p.1)));
+                d(&x.1).total_cmp(&d(&y.1))
+            });
+            match next {
+                Some((g, _)) => {
+                    came = self.face_edges(g).find(|&ge| {
+                        let (c, d) = self.edge_ends(g, ge);
+                        distance(hit, lerp(c, d, segment_t(hit, c, d))) < 1e-3
+                    });
+                    f = g;
+                }
+                None => {
+                    // the wall: from just inside it, the rest of the step along it
+                    let ab = [b[0] - a[0], 0.0, b[2] - a[2]];
+                    let l = dot(ab, ab).sqrt();
+                    if l <= 0.0 {
+                        return None;
+                    }
+                    let dir = scale(ab, 1.0 / l);
+                    let c: Vec<[f32; 3]> = self.sections[&f.section].corners(f.face).collect();
+                    let mid = c.iter().fold([0.0f32; 3], |m, q| add(m, scale(*q, 1.0 / c.len() as f32)));
+                    let start = lerp(hit, mid, 0.02);
+                    let rest = [to[0] - hit[0], 0.0, to[2] - hit[2]];
+                    let along = dot(rest, dir);
+                    let slid = add(start, scale(dir, along));
+                    return self.walk(f, start, slid).map(|g| (g, slid)).or(Some((f, start)));
+                }
+            }
         }
         None
     }

@@ -14,8 +14,11 @@
 //! (construction.material, objects.hlsl: a building being built is drawn with the scaffold
 //! texture construction.dds at 10x its UVs blended in by the scaffold's alpha; above 1.2 x its
 //! progress of its height only the scaffold's bars (alpha 0.7 on) are left; over its last fifth
-//! the scaffold clears from the top down). Not ported: CLIP_INTERIOR's interior mask render. (assumption) The biome at a point is the blend
-//! cell's slot weighing most there.
+//! the scaffold clears from the top down). CLIP_INTERIOR (kenshi_render::interior_mask) only on
+//! grass and foliage: (stand-in) Kenshi's building parts carry it too (F046403 adds 0x200,
+//! F046402 the define and the rt_interiormask unit), but how a building's own floors and
+//! furniture inside its mask escape the clip is not found, so parts are not clipped.
+//! (assumption) The biome at a point is the blend cell's slot weighing most there.
 
 use crate::terrain_material::MainLight;
 use bevy::mesh::MeshVertexBufferLayoutRef;
@@ -217,6 +220,9 @@ pub struct KenshiObjectMaterial {
     /// CONSTRUCTION's scaffold (grid_map, construction.dds).
     #[texture(16)]
     pub grid: Handle<Image>,
+    /// The interior mask (CLIP_INTERIOR on grass and foliage, kenshi_render::interior_mask).
+    #[texture(17)]
+    pub interior_mask: Handle<Image>,
 }
 
 impl Material for KenshiObjectMaterial {

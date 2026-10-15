@@ -4,6 +4,10 @@
 //! (settings.cfg "continue", else the newest; a restarted program's KENSHI_LOAD), Load and Import
 //! open their panels (saves_ui) and load the save chosen. The new game panel's ADVANCED opens the
 //! advanced options (`advanced`), given to the new world.
+//!
+//! In a game the Esc menu's New Game opens the same panel over it (F048550); its BEGIN, and a
+//! save loaded from the game, unload the game first (`super::unload_world`), then load the new
+//! world behind the loading screen as the main menu does (`Menu::pending`).
 use super::saves_ui::{Kind, SavesDone, SavesPanel};
 use super::{Loading, WorldLoad, build_world};
 use bevy::prelude::*;
@@ -51,12 +55,16 @@ pub fn find_install() -> Option<PathBuf> {
 pub struct Start {
     pub name: String,
     pub description: String,
+    /// Its "difficulty" and "style" (the new game panel's Difficulty and Play Style lines).
+    pub difficulty: String,
+    pub style: String,
     /// The squad's size (its template's leader and squad counts).
     pub members: usize,
-    /// Its towns' zones.
-    pub zones: Vec<(i32, i32)>,
-    /// Its squad template (the characters' kit).
-    pub squad: Option<String>,
+    /// Where it may begin (one at random): its zone and the point (world units, x and z):
+    /// its "start pos" when it forces it, else its towns' positions (F046699).
+    pub spots: Vec<((i32, i32), [f32; 2])>,
+    /// Its squad templates (the characters' kits, each its own people).
+    pub squads: Vec<String>,
     /// The money it starts with (cats).
     pub money: i32,
     /// Its "faction relations" (faction, value) and "research" done.
@@ -66,13 +74,34 @@ pub struct Start {
     pub races: Vec<String>,
 }
 
-/// The game starts the data has, with their towns placed.
+/// @fn F046699
+///
+/// The game starts the base game has (a start a mod adds is not offered), with where each
+/// begins: its "start pos X" / "start pos Z" when "force start pos", else one of its "town"
+/// refs' positions at random; a start with no town begins at a town of type 2 or 3 whose faction
+/// is not the player's enemy, at random. (Not ported: the game's test F04d2f7 of each place.)
 fn starts(root: &std::path::Path) -> Vec<Start> {
     let Ok(order) = Install::new(root).game_order() else { return Vec::new() };
     let Ok(data) = GameDataContainer::load(&order) else { return Vec::new() };
+    // the base game's own starts (its core files'), the player's mods' left out
+    let mut core_order = order.clone();
+    core_order.files.retain(|f| f.core);
+    let base: std::collections::HashSet<String> = GameDataContainer::load(&core_order)
+        .map(|c| c.of_type(ItemType::NewGameStartoff).map(|s| s.string_id.clone()).collect())
+        .unwrap_or_default();
     let towns = kenshi_world::town::towns(root, &data);
+    let spot = |t: &kenshi_world::town::Town| (kenshi_world::zone_of(t.position[0], t.position[2]), [t.position[0], t.position[2]]);
+    // a start without towns: towns of type 2 or 3 of a faction not the player's enemy
+    let player = data.get(kenshi_game::sim::PLAYER_FACTION).map(|r| kenshi_ai::faction::FactionRelations::from_data(r, &data));
+    let open: Vec<((i32, i32), [f32; 2])> = towns
+        .iter()
+        .filter(|t| matches!(t.kind, 2 | 3))
+        .filter(|t| !player.as_ref().is_some_and(|r| r.is_enemy(t.faction.as_deref())))
+        .map(spot)
+        .collect();
     let mut out: Vec<Start> = data
         .of_type(ItemType::NewGameStartoff)
+        .filter(|s| base.contains(&s.string_id))
         .map(|s| {
             let members = s
                 .refs("squad")
@@ -84,22 +113,27 @@ fn starts(root: &std::path::Path) -> Vec<Start> {
                 })
                 .sum::<usize>()
                 .max(1);
-            let zones = s
-                .refs("town")
-                .iter()
-                .filter_map(|(sid, _)| towns.iter().find(|t| &t.record == sid))
-                .map(|t| kenshi_world::zone_of(t.position[0], t.position[2]))
-                .collect();
+            let forced = s.bools.get("force start pos").copied().unwrap_or(false);
+            let spots: Vec<((i32, i32), [f32; 2])> = if forced {
+                let n = |k: &str| s.ints.get(k).map(|&v| v as f32).or_else(|| s.floats.get(k).copied()).unwrap_or(0.0);
+                let (x, z) = (n("start pos X"), n("start pos Z"));
+                vec![(kenshi_world::zone_of(x, z), [x, z])]
+            } else {
+                let listed: Vec<_> = s.refs("town").iter().filter_map(|(sid, _)| towns.iter().find(|t| &t.record == sid)).map(spot).collect();
+                if listed.is_empty() { open.clone() } else { listed }
+            };
             Start {
-                squad: s.refs("squad").first().map(|(sid, _)| sid.clone()),
+                squads: s.refs("squad").iter().map(|(sid, _)| sid.clone()).collect(),
                 money: s.ints.get("money").copied().unwrap_or(0),
                 relations: s.refs("faction relations").iter().map(|(f, v)| (f.clone(), v[0])).collect(),
                 research: s.refs("research").iter().map(|(r, _)| r.clone()).collect(),
                 races: s.refs("force race").iter().filter_map(|(r, _)| data.get(r)).map(|r| r.name.clone()).collect(),
                 name: s.name.clone(),
                 description: s.strings.get("description").cloned().unwrap_or_default(),
+                difficulty: s.strings.get("difficulty").cloned().unwrap_or_default(),
+                style: s.strings.get("style").cloned().unwrap_or_default(),
                 members,
-                zones,
+                spots,
             }
         })
         .collect();
@@ -121,6 +155,19 @@ pub struct Menu {
     /// The new game's advanced options, and their window when open (its rows' value texts).
     advanced: kenshi_game::advanced::Advanced,
     advanced_ui: Option<AdvancedUi>,
+    /// Opened over a game (the Esc menu's New Game, F048550): BEGIN unloads the game first.
+    in_game: bool,
+    /// The new game panel to open on the next frame.
+    want_panel: bool,
+    /// What to load once the game before is unloaded (`super::unload_world`).
+    pending: Option<After>,
+}
+
+/// What follows unloading a game: a save loaded (ours, the squad gathered or not; or with
+/// import options one in Kenshi's layout), or the new game panel's start begun.
+pub enum After {
+    Load(PathBuf, bool, Option<kenshi_game::kenshi_save::ImportOptions>),
+    Begin,
 }
 
 /// The advanced options window: its widgets, each slider's value text and scroll bar, the
@@ -134,13 +181,71 @@ struct AdvancedUi {
 }
 
 impl Menu {
+    /// The main menu, the game starts read in the background.
     pub fn new(root: PathBuf) -> Menu {
         let (tx, rx) = channel();
         let r = root.clone();
         super::spawn_worker(move || {
             let _ = tx.send(starts(&r));
         });
-        Menu { root, ui: Built::default(), panel: None, starts: Vec::new(), starts_rx: Mutex::new(Some(rx)), pick: 0, loading: Mutex::new(None), restoring: false, advanced: Default::default(), advanced_ui: None }
+        Menu { starts_rx: Mutex::new(Some(rx)), ..Menu::bare(root) }
+    }
+
+    fn bare(root: PathBuf) -> Menu {
+        Menu {
+            root,
+            ui: Built::default(),
+            panel: None,
+            starts: Vec::new(),
+            starts_rx: Mutex::new(None),
+            pick: 0,
+            loading: Mutex::new(None),
+            restoring: false,
+            advanced: Default::default(),
+            advanced_ui: None,
+            in_game: false,
+            want_panel: false,
+            pending: None,
+        }
+    }
+
+    /// The new game panel over a running game (F048550's NewGameButton: F048543 shows it).
+    pub fn in_game(root: PathBuf) -> Menu {
+        Menu { in_game: true, want_panel: true, ..Menu::new(root) }
+    }
+
+    /// Only the loading screen, for a save loaded from inside a game (no starts read).
+    pub fn loading(root: PathBuf, after: After) -> Menu {
+        Menu { pending: Some(after), ..Menu::bare(root) }
+    }
+
+    /// The game is unloaded (its widgets with it): `after` is to load next.
+    pub fn unloaded(&mut self, after: After) {
+        self.in_game = false;
+        self.want_panel = false;
+        self.panel = None;
+        self.advanced_ui = None;
+        self.ui = Built::default();
+        self.pending = Some(after);
+    }
+
+    /// Close the new game panel (and its advanced window).
+    pub fn close_panel(&mut self, commands: &mut Commands) {
+        if let Some(a) = self.advanced_ui.take() {
+            for r in a.ui.roots {
+                commands.entity(r).try_despawn();
+            }
+        }
+        if let Some(p) = self.panel.take() {
+            for r in p.roots {
+                commands.entity(r).try_despawn();
+            }
+        }
+    }
+
+    /// Whether the advanced options window is open.
+    pub fn advanced_open(&self) -> bool {
+        self.advanced_ui.is_some()
     }
 }
 
@@ -158,9 +263,13 @@ fn window_size(windows: &Query<&Window>) -> [f32; 2] {
 
 pub fn open(mut commands: Commands, gui: Res<GuiRes>, assets: Res<AssetServer>, mut menu: ResMut<Menu>, windows: Query<&Window>) {
     commands.spawn((Camera2d, MenuCamera));
-    let size = window_size(&windows);
+    main_menu(&mut commands, &gui, &assets, &mut menu, window_size(&windows));
+}
+
+/// The main menu's widgets (Kenshi_MainMenu.layout, F048551).
+fn main_menu(commands: &mut Commands, gui: &GuiRes, assets: &AssetServer, menu: &mut Menu, size: [f32; 2]) {
     let defs = gui.0.layout("Kenshi_MainMenu.layout");
-    let ui = kenshi_gui::ui::spawn(&mut commands, &gui.0, &assets, &defs, None, size);
+    let ui = kenshi_gui::ui::spawn(commands, &gui.0, assets, &defs, None, size);
     for r in &ui.roots {
         commands.entity(*r).insert(MenuUi);
     }
@@ -180,8 +289,16 @@ pub fn open(mut commands: Commands, gui: Res<GuiRes>, assets: Res<AssetServer>, 
 
 fn show_start(commands: &mut Commands, menu: &Menu) {
     let Some(panel) = &menu.panel else { return };
+    // F048538: Difficulty, Cash and Play Style, then the description
     let (title, text) = match menu.starts.get(menu.pick) {
-        Some(s) => (s.name.clone(), s.description.clone()),
+        Some(s) => (
+            s.name.clone(),
+            format!("Difficulty: {}
+Cash: c.{}
+Play Style: {}
+
+{}", s.difficulty, super::hud_ui::num(s.money as i64), s.style, s.description),
+        ),
         None => ("Loading starts...".to_string(), String::new()),
     };
     if let Some(t) = panel.get("TitleTextBox") {
@@ -252,6 +369,100 @@ fn begin_load(menu: &mut Menu, commands: &mut Commands, gui: &GuiRes, assets: &A
     Ok(())
 }
 
+/// @fn F048549
+///
+/// The new game panel (Kenshi_NewGamePanel.layout) at (0.5, 0.05) of the screen on the main menu
+/// (F048551), at (0.6, 0.05) over a game (F048550); its captions and the start shown.
+fn open_panel(commands: &mut Commands, gui: &GuiRes, assets: &AssetServer, menu: &mut Menu, size: [f32; 2]) {
+    let mut defs = gui.0.layout("Kenshi_NewGamePanel.layout");
+    if let Some(d) = defs.first_mut()
+        && let kenshi_gui::res::Pos::Real(r) = d.pos
+    {
+        let x = if menu.in_game { 0.6 } else { 0.5 };
+        d.pos = kenshi_gui::res::Pos::Real([x, 0.05, r[2], r[3]]);
+    }
+    let panel = kenshi_gui::ui::spawn(commands, &gui.0, assets, &defs, None, size);
+    let holder = panel.roots[0];
+    commands.entity(holder).insert((GlobalZIndex(90), MenuUi));
+    // the start's description inside the description panel
+    if let Some(d) = panel.get("DescriptionPanel") {
+        let t = commands
+            .spawn((
+                Text::new(""),
+                TextFont {
+                    font: gui.0.fonts.get("Kenshi_StandardFont_Medium").map_or_else(Default::default, |f| {
+                        bevy::text::FontSource::Handle(assets.load(f.file.clone()))
+                    }),
+                    font_size: bevy::text::FontSize::Px(gui.0.fonts.get("Kenshi_StandardFont_Medium").map_or(15.0, |f| f.screen_px())),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.69, 0.65, 0.55)),
+                Node { width: Val::Percent(100.0), ..default() },
+            ))
+            .id();
+        commands.entity(d).insert(kenshi_gui::Caption(t)).add_child(t);
+    }
+    let mut panel = panel;
+    if let Some(d) = panel.get("DescriptionPanel") {
+        panel.named.push(("DescriptionText".to_string(), d));
+    }
+    if let Some(l) = panel.get("lbChooseBeginning") {
+        commands.queue(SetCaption(l, "Choose your beginning".to_string()));
+    }
+    if let Some(b) = panel.get("BeginButton") {
+        commands.queue(SetCaption(b, "BEGIN".to_string()));
+    }
+    if let Some(b) = panel.get("CancelButton") {
+        commands.queue(SetCaption(b, "CANCEL".to_string()));
+    }
+    if let Some(b) = panel.get("AdvancedButton") {
+        commands.queue(SetCaption(b, "ADVANCED OPTIONS".to_string()));
+    }
+    panel.roots = vec![holder];
+    menu.panel = Some(panel);
+    // (testing) KENSHI_START=<name>: that start picked
+    if let Ok(want) = std::env::var("KENSHI_START")
+        && let Some(k) = menu.starts.iter().position(|s| s.name.eq_ignore_ascii_case(&want))
+    {
+        menu.pick = k;
+    }
+    show_start(commands, menu);
+}
+
+/// The start picked begun: its world built behind the loading screen.
+fn begin_new(commands: &mut Commands, gui: &GuiRes, assets: &AssetServer, menu: &mut Menu, size: [f32; 2]) {
+    let Some(start) = menu.starts.get(menu.pick).cloned() else { return };
+    // one of the start's places at random (F046699: randInt over them)
+    let pick = if start.spots.is_empty() {
+        0
+    } else {
+        (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()) as usize) % start.spots.len()
+    };
+    let (zone, at) = start.spots.get(pick).copied().unwrap_or(((34, 46), [f32::NAN; 2]));
+    eprintln!("new game: {} ({} people) in zone {}.{} at {at:?}", start.name, start.members, zone.0, zone.1);
+    let (tx, rx) = channel();
+    let root = menu.root.clone();
+    let advanced = menu.advanced.to_extra();
+    let text = format!("{}\n\n{}", start.name, start.description);
+    super::spawn_worker(move || {
+        let mut extras = vec![format!("player:{}", start.members), format!("money:{}", start.money), advanced];
+        if at[0].is_finite() {
+            extras.insert(0, format!("spawn:{},{}", at[0], at[1]));
+        }
+        extras.extend(start.squads.iter().map(|t| format!("kit:{t}")));
+        extras.extend(start.relations.iter().map(|(f, v)| format!("relation:{f}={v}")));
+        extras.extend(start.research.iter().map(|r| format!("research:{r}")));
+        let load = build_world(root.clone(), vec![root.to_string_lossy().into_owned()], zone, extras, Loading::New);
+        let _ = tx.send(load);
+    });
+    if let Ok(mut l) = menu.loading.lock() {
+        *l = Some(rx);
+    }
+    menu.restoring = false;
+    // the loading screen over the menu
+    loading_screen(commands, gui, assets, size, Some(text));
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn buttons(
     mut commands: Commands,
@@ -265,18 +476,38 @@ pub fn buttons(
     mut done: MessageReader<SavesDone>,
 ) {
     let size = window_size(&windows);
-    // the save panels' choices
-    for d in done.read() {
-        let (path, reset, import) = match d {
-            SavesDone::Load(p, reset) => (p.clone(), *reset, None),
-            SavesDone::Import(p, opt) => (p.clone(), false, Some(*opt)),
-            SavesDone::Save(_) => continue,
-        };
-        if import.is_none() {
-            saves.current = Some(kenshi_game::save::slot_name(&path));
+    let idle = menu.loading.lock().is_ok_and(|l| l.is_none());
+    // what a game unloaded for (super::unload_world): the menu's camera under the loading screen
+    if let Some(after) = menu.pending.take() {
+        commands.spawn((Camera2d, MenuCamera));
+        match after {
+            After::Load(path, reset, import) => {
+                if let Err(e) = begin_load(&mut menu, &mut commands, &gui, &assets, size, &path, reset, import) {
+                    eprintln!("can't load {}: {e}", path.display());
+                    // nothing to go back to: the main menu
+                    *menu = Menu::new(menu.root.clone());
+                    main_menu(&mut commands, &gui, &assets, &mut menu, size);
+                    return;
+                }
+            }
+            After::Begin => begin_new(&mut commands, &gui, &assets, &mut menu, size),
         }
-        if let Err(e) = begin_load(&mut menu, &mut commands, &gui, &assets, size, &path, reset, import) {
-            eprintln!("can't load {}: {e}", path.display());
+        return;
+    }
+    // the save panels' choices (over a game, the game's own `saves_done` takes them)
+    if !menu.in_game {
+        for d in done.read() {
+            let (path, reset, import) = match d {
+                SavesDone::Load(p, reset) => (p.clone(), *reset, None),
+                SavesDone::Import(p, opt) => (p.clone(), false, Some(*opt)),
+                SavesDone::Save(_) => continue,
+            };
+            if import.is_none() {
+                saves.current = Some(kenshi_game::save::slot_name(&path));
+            }
+            if let Err(e) = begin_load(&mut menu, &mut commands, &gui, &assets, size, &path, reset, import) {
+                eprintln!("can't load {}: {e}", path.display());
+            }
         }
     }
     // the starts, once read
@@ -288,7 +519,18 @@ pub fn buttons(
         }
         show_start(&mut commands, &menu);
     }
+    if menu.want_panel {
+        menu.want_panel = false;
+        if menu.panel.is_none() {
+            open_panel(&mut commands, &gui, &assets, &mut menu, size);
+        }
+    }
     for c in clicks.read() {
+        // over a game only the new game panel's buttons are the menu's
+        let ours = menu.panel.as_ref().is_some_and(|p| p.named.iter().any(|(_, e)| *e == c.widget));
+        if menu.in_game && !ours {
+            continue;
+        }
         match c.name.as_str() {
             "ExitButton" => {
                 exit.write(AppExit::Success);
@@ -304,53 +546,7 @@ pub fn buttons(
                     ));
                 }
             }
-            "NewGameButton" if menu.panel.is_none() => {
-                // the new game panel beside the menu's buttons (its root placed there)
-                let mut defs = gui.0.layout("Kenshi_NewGamePanel.layout");
-                if let Some(d) = defs.first_mut() {
-                    d.pos = kenshi_gui::res::Pos::Real([0.48, 0.25, 0.3, 0.509259]);
-                }
-                let panel = kenshi_gui::ui::spawn(&mut commands, &gui.0, &assets, &defs, None, size);
-                let holder = panel.roots[0];
-                commands.entity(holder).insert((GlobalZIndex(90), MenuUi));
-                // the start's description inside the description panel
-                if let Some(d) = panel.get("DescriptionPanel") {
-                    let t = commands
-                        .spawn((
-                            Text::new(""),
-                            TextFont {
-                                font: gui.0.fonts.get("Kenshi_StandardFont_Medium").map_or_else(Default::default, |f| {
-                                    bevy::text::FontSource::Handle(assets.load(f.file.clone()))
-                                }),
-                                font_size: bevy::text::FontSize::Px(gui.0.fonts.get("Kenshi_StandardFont_Medium").map_or(15.0, |f| f.screen_px())),
-                                ..default()
-                            },
-                            TextColor(Color::srgb(0.69, 0.65, 0.55)),
-                            Node { width: Val::Percent(100.0), ..default() },
-                        ))
-                        .id();
-                    commands.entity(d).insert(kenshi_gui::Caption(t)).add_child(t);
-                }
-                let mut panel = panel;
-                if let Some(d) = panel.get("DescriptionPanel") {
-                    panel.named.push(("DescriptionText".to_string(), d));
-                }
-                if let Some(l) = panel.get("lbChooseBeginning") {
-                    commands.queue(SetCaption(l, "Choose your beginning".to_string()));
-                }
-                if let Some(b) = panel.get("BeginButton") {
-                    commands.queue(SetCaption(b, "BEGIN".to_string()));
-                }
-                if let Some(b) = panel.get("CancelButton") {
-                    commands.queue(SetCaption(b, "CANCEL".to_string()));
-                }
-                if let Some(b) = panel.get("AdvancedButton") {
-                    commands.queue(SetCaption(b, "ADVANCED".to_string()));
-                }
-                panel.roots = vec![holder];
-                menu.panel = Some(panel);
-                show_start(&mut commands, &menu);
-            }
+            "NewGameButton" if menu.panel.is_none() => open_panel(&mut commands, &gui, &assets, &mut menu, size),
             "LeftButton" | "RightButton" if !menu.starts.is_empty() => {
                 let n = menu.starts.len();
                 menu.pick = if c.name == "LeftButton" { (menu.pick + n - 1) % n } else { (menu.pick + 1) % n };
@@ -358,14 +554,14 @@ pub fn buttons(
             }
             "LoadGameButton" if !saves.is_open() => saves.open(&mut commands, &gui, &assets, Kind::Load, size),
             "ImportGameButton" if !saves.is_open() => saves.open(&mut commands, &gui, &assets, Kind::Import, size),
-            "CancelButton" if menu.panel.as_ref().is_some_and(|p| p.get("CancelButton") == Some(c.widget)) => {
-                if let Some(p) = menu.panel.take() {
-                    for r in p.roots {
-                        commands.entity(r).despawn();
-                    }
+            "CancelButton" if ours => {
+                menu.close_panel(&mut commands);
+                // over a game: back to the game's Esc menu
+                if menu.in_game {
+                    commands.remove_resource::<Menu>();
                 }
             }
-            "ContinueButton" if menu.loading.lock().is_ok_and(|l| l.is_none()) => {
+            "ContinueButton" if idle => {
                 // a restarted program's save (KENSHI_LOAD), else the one Continue loads
                 let (path, reset, import) = match std::env::var_os("KENSHI_LOAD") {
                     Some(p) => (
@@ -388,33 +584,13 @@ pub fn buttons(
                     eprintln!("can't load {}: {e}", path.display());
                 }
             }
-            "BeginButton" if !menu.starts.is_empty() && menu.loading.lock().is_ok_and(|l| l.is_none()) => {
-                let start = menu.starts[menu.pick].clone();
-                // one of the start's towns at random (assumption: as the game picks among them); a
-                // start with none at the default zone
-                let pick = if start.zones.is_empty() {
-                    0
+            "BeginButton" if !menu.starts.is_empty() && idle => {
+                if menu.in_game {
+                    // the game unloaded first, then the start begun (`pending`)
+                    commands.insert_resource(super::Unload(After::Begin));
                 } else {
-                    (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()) as usize) % start.zones.len()
-                };
-                let zone = start.zones.get(pick).copied().unwrap_or((34, 46));
-                eprintln!("new game: {} ({} people) in zone {}.{}", start.name, start.members, zone.0, zone.1);
-                let (tx, rx) = channel();
-                let root = menu.root.clone();
-                let advanced = menu.advanced.to_extra();
-                super::spawn_worker(move || {
-                    let mut extras = vec![format!("player:{}", start.members), format!("money:{}", start.money), advanced];
-                    extras.extend(start.squad.map(|t| format!("kit:{t}")));
-                    extras.extend(start.relations.iter().map(|(f, v)| format!("relation:{f}={v}")));
-                    extras.extend(start.research.iter().map(|r| format!("research:{r}")));
-                    let load = build_world(root.clone(), vec![root.to_string_lossy().into_owned()], zone, extras, Loading::New);
-                    let _ = tx.send(load);
-                });
-                if let Ok(mut l) = menu.loading.lock() {
-                    *l = Some(rx);
+                    begin_new(&mut commands, &gui, &assets, &mut menu, size);
                 }
-                // the loading screen over the menu
-                loading_screen(&mut commands, &gui, &assets, size, Some(format!("{}\n\n{}", start.name, start.description)));
             }
             _ => {}
         }
@@ -436,7 +612,8 @@ fn row_def(kind: &str, skin: &str, name: &str, caption: &str, pos: [f32; 4], pro
 /// @fn F048535
 ///
 /// The advanced options window (Kenshi_AdvancedOptionsWindow.layout, "Advanced options"), opened
-/// and closed by the new game panel's ADVANCED: a row per option in its Datapanel, a slider
+/// and closed by the new game panel's ADVANCED, under the panel at its left edge (the panel's
+/// constructor F048549 places it): a row per option in its Datapanel, a slider
 /// with its value for each number, a tick box for each choice (`kenshi_game::advanced`), the
 /// hovered one's tooltip in its TooltipPanel; Esc closes it.
 /// (assumption) The rows are laid out as the options window's (`options_ui`), the game making
@@ -475,10 +652,16 @@ pub fn advanced(
     }
     if toggle && menu.advanced_ui.is_none() {
         let mut defs = gui.0.layout("Kenshi_AdvancedOptionsWindow.layout");
+        // F048549 / F048551: under the new game panel, at its left
+        let panel_h = gui.0.layout("Kenshi_NewGamePanel.layout").first().and_then(|d| match d.pos {
+            kenshi_gui::res::Pos::Real(r) => Some(r[3]),
+            _ => None,
+        });
         if let Some(d) = defs.first_mut()
             && let kenshi_gui::res::Pos::Real(r) = d.pos
         {
-            d.pos = kenshi_gui::res::Pos::Real([0.5 - r[2] * 0.5, 0.5 - r[3] * 0.5, r[2], r[3]]);
+            let x = if menu.in_game { 0.6 } else { 0.5 };
+            d.pos = kenshi_gui::res::Pos::Real([x, 0.05 + panel_h.unwrap_or(0.509259), r[2], r[3]]);
             d.props.retain(|(k, _)| k != "Caption");
             d.props.push(("Caption".into(), "Advanced options".into()));
         }
@@ -625,6 +808,52 @@ pub fn script(mut frames: Local<u32>, mut commands: Commands, widgets: Query<(En
             commands.spawn(Screenshot::primary_window()).observe(save_to_disk(PathBuf::from(path)));
         } else if let Some((e, _)) = widgets.iter().find(|(_, w)| w.name == what) {
             out.write(GuiClick { widget: e, name: what.to_string() });
+        }
+    }
+}
+
+/// (testing) KENSHI_UI_SCRIPT, as KENSHI_MENU_SCRIPT in the game: "list@300" prints the named
+/// buttons shown, "InventoryButton@320" presses one (the last of that name), "SaveRow0@330"
+/// picks a save panel's row, "shot:out.png@340" takes a screenshot, "quit@400" ends the
+/// program; frames from the world being ready (counting on in a game loaded after).
+pub fn ui_script(
+    mut frames: Local<u32>,
+    mut commands: Commands,
+    widgets: Query<(Entity, &kenshi_gui::GuiWidget, &InheritedVisibility)>,
+    mut out: MessageWriter<GuiClick>,
+    mut exit: MessageWriter<AppExit>,
+    mut rows: Query<(&mut Interaction, &super::saves_ui::SaveRow)>,
+) {
+    use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+    let Ok(s) = std::env::var("KENSHI_UI_SCRIPT") else { return };
+    *frames += 1;
+    for step in s.split(',') {
+        let Some((what, at)) = step.rsplit_once('@') else { continue };
+        if at.parse::<u32>().ok() != Some(*frames) {
+            continue;
+        }
+        if let Some(path) = what.strip_prefix("shot:") {
+            eprintln!("ui: shot {path}");
+            commands.spawn(Screenshot::primary_window()).observe(save_to_disk(PathBuf::from(path)));
+        } else if what == "quit" {
+            eprintln!("ui: quit");
+            exit.write(AppExit::Success);
+        } else if let Some(k) = what.strip_prefix("SaveRow").and_then(|k| k.parse::<usize>().ok()) {
+            if let Some((mut i, _)) = rows.iter_mut().find(|(_, r)| r.0 == k) {
+                eprintln!("ui: pick save row {k}");
+                *i = Interaction::Pressed;
+            }
+        } else if what == "list" {
+            let mut names: Vec<String> =
+                widgets.iter().filter(|(_, w, v)| v.get() && w.kind == "Button" && !w.name.is_empty()).map(|(_, w, _)| w.name.clone()).collect();
+            names.sort();
+            names.dedup();
+            eprintln!("ui: buttons shown: {}", names.join(" "));
+        } else if let Some((e, _, _)) = widgets.iter().filter(|(_, w, v)| w.name == what && v.get()).last() {
+            eprintln!("ui: press {what}");
+            out.write(GuiClick { widget: e, name: what.to_string() });
+        } else {
+            eprintln!("ui: no {what} shown");
         }
     }
 }

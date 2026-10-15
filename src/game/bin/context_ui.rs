@@ -3,12 +3,19 @@
 //! can do to them (F044603), each option labelled as the game names its order (F044568). A quick
 //! click does the default instead.
 //!
-//! (stand-in) The options are the orders of F044603 the rewrite can carry out, under its main
-//! conditions: someone unconscious: Kidnap, First Aid, Loot; a body: Pick Up, Loot; one of the
-//! squad: Inventory, First Aid, Follow, Bodyguard; someone fighting: Attack Target; anyone else:
-//! Talk To (with something to say), Trade (a trader), First Aid (hurt), Follow, Bodyguard,
-//! Attack Unprovoked. The game's others
-//! (Steal, Stealth KO, Put in Bed, the cage and lock orders...) wait for their systems.
+//! The options are F044603's orders under its conditions, labelled as F044568 names them:
+//! carrying someone: Put Down (0x45) first; someone unconscious: Pick Up (0xe1) or, someone not
+//! the selection's to take, Kidnap (0xf6, F044547), First Aid, Splint Injuries (0xf9), Loot; a
+//! body: Pick Up, Corpse Disposal, Loot; locked shackles: Unlock Shackles, Use Tools, Use
+//! Strength (0xc9, 0xb9, 0xba); one of the squad: Stand Up (0x1c, playing dead), Inventory,
+//! First Aid, Splint Injuries, Follow, Bodyguard; one caged: Escape (0xcf) or Set Free (0x6e);
+//! someone fighting: Attack Target (5, Shoot At 0xeb with a crossbow) and Attack All (0x10);
+//! anyone else: Talk To, Trade, Pay Bounty, Stealth KO (0xe4, sneaking), First Aid, Follow,
+//! Bodyguard, Attack Unprovoked, Attack All, and in the player's home or outpost Throw out of
+//! home (0xdf) or town (0x111, F044505). A bed: Put in Bed (99, carrying someone) or Sleep
+//! (0x102); a cage: Put in (0x6c, carrying), Get in (0x6b) or Set Free; a machine: Auto-Haul
+//! (0x7c); training equipment: Training (0x61); a door: Open / Close, Smash (0x7b).
+//! (Kenshi's menu never offers Capture, Stealth Kill or Break Out: they are the AI's orders.)
 use super::{Game, dialogue_ui, inventory_ui};
 use bevy::prelude::*;
 use kenshi_gui::{Built, GuiRes, SetCaption};
@@ -64,6 +71,24 @@ pub enum Action {
     /// (0x60, Task_Dismantle).
     Repair,
     Dismantle,
+    /// The `orders` errands: Put Down, Sleep, Put in Bed, Splint Injuries, the shackles' three,
+    /// Put in / Get in a cage, Stand Up, Attack All, Auto-Haul, Throw out of home / town,
+    /// Corpse Disposal.
+    PutDown,
+    Sleep,
+    PutInBed,
+    Splint,
+    UnlockShackles,
+    UseTools,
+    UseStrength,
+    PutInCage,
+    GetInCage,
+    StandUp,
+    AttackAll,
+    AutoHaul,
+    ThrowOutHome,
+    ThrowOutTown,
+    DisposeCorpse,
 }
 
 /// Someone with wounds open, bleeding, or flesh short of its full health and not yet treated
@@ -97,9 +122,26 @@ pub struct OptionRow;
 /// game's labels.
 pub fn options(game: &Game, target: usize) -> Vec<(String, Action)> {
     let sim = &game.sim;
-    // town training equipment (targets from FURN_TARGET)
+    let carrying = game.selected.iter().any(|&i| sim.folk[i].carrying.is_some());
+    // town furniture (targets from FURN_TARGET): training equipment, beds, cages
     if let Some(f) = target.checked_sub(kenshi_game::production::FURN_TARGET) {
-        return if sim.furniture_training(f).is_some() { vec![("Training".to_string(), Action::Train)] } else { Vec::new() };
+        let Some(k) = sim.furn.get(f) else { return Vec::new() };
+        let mut out = Vec::new();
+        if sim.furniture_training(f).is_some() {
+            out.push(("Training".to_string(), Action::Train));
+        } else if k.function == kenshi_game::sim::BF_BED && sim.bed_free(f) {
+            out.push(if carrying { ("Put in Bed".to_string(), Action::PutInBed) } else { ("Sleep".to_string(), Action::Sleep) });
+        } else if k.function == kenshi_world::furniture::BF_CAGE {
+            if sim.cage_free(f) {
+                out.push(if carrying { ("Put in".to_string(), Action::PutInCage) } else { ("Get in".to_string(), Action::GetInCage) });
+            } else {
+                out.push(("Set Free".to_string(), Action::Free));
+            }
+        }
+        if carrying {
+            out.insert(0, ("Put Down".to_string(), Action::PutDown));
+        }
+        return out;
     }
     // a door (targets from DOOR_TARGET)
     if let Some(d) = target.checked_sub(kenshi_game::doors::DOOR_TARGET) {
@@ -109,7 +151,7 @@ pub fn options(game: &Game, target: usize) -> Vec<(String, Action)> {
             let open = s.phase == kenshi_game::sim::DOOR_OPEN || s.phase == kenshi_game::sim::DOOR_OPENING;
             out.push((if open { "Close" } else { "Open" }.to_string(), Action::DoorToggle));
             if !open {
-                out.push(("Bash door".to_string(), Action::Bash));
+                out.push(("Smash".to_string(), Action::Bash));
             }
         }
         return out;
@@ -129,6 +171,10 @@ pub fn options(game: &Game, target: usize) -> Vec<(String, Action)> {
         if sim.is_operated(b) {
             out.push(("Operate".to_string(), Action::Operate));
         }
+        // a machine: its output kept hauled to storage
+        if sim.is_production(b) {
+            out.push(("Auto-Haul".to_string(), Action::AutoHaul));
+        }
         if pb.storage.is_some() {
             out.push(("Open".to_string(), Action::Open));
         }
@@ -143,10 +189,32 @@ pub fn options(game: &Game, target: usize) -> Vec<(String, Action)> {
     let f = &sim.arena.f[target];
     let mut out = Vec::new();
     let hurt = needs_treatment(game, target);
+    let splint = sim.needs_splint(target);
+    let leader = game.selected.first().copied();
+    // carrying someone: put them down (0x45)
+    if carrying {
+        out.push(("Put Down".to_string(), Action::PutDown));
+    }
+    // locked shackles: picked, cut or broken (0xc9, 0xb9, 0xba)
+    let shackles = |out: &mut Vec<(String, Action)>| {
+        if sim.shackles_lock(target).is_some() && !t.dead {
+            out.push(("Unlock Shackles".to_string(), Action::UnlockShackles));
+            out.push(("Use Tools".to_string(), Action::UseTools));
+            out.push(("Use Strength".to_string(), Action::UseStrength));
+        }
+    };
+    // attacking: with a crossbow ready, "Shoot At" (0xeb) in place of "Attack Target" (5)
+    let shooting = leader.is_some_and(|l| sim.arena.f[l].gun.is_some());
+    let attack = if shooting { "Shoot At" } else { "Attack Target" };
+    let in_squad = t.platoon.is_some() && !t.player;
     if t.player {
-        // a prisoner: picking the locks; one being arrested: giving up
-        if t.prison.is_some() && !t.picking {
-            out.push((if t.shackled { "Lockpick Shackles" } else { "Escape Cage" }.to_string(), Action::Escape));
+        if t.playing_dead {
+            out.push(("Stand Up".to_string(), Action::StandUp));
+        }
+        // a prisoner: out of the cage (the shackles first: their three ways)
+        shackles(&mut out);
+        if t.prison.is_some() && !t.picking && !t.shackled {
+            out.push(("Escape".to_string(), Action::Escape));
         }
         if t.prison.is_none() && !t.down && sim.folk.iter().any(|g| g.arrest.as_ref().is_some_and(|a| a.target == target && !a.slaver)) {
             out.push(("Surrender".to_string(), Action::Surrender));
@@ -156,6 +224,9 @@ pub fn options(game: &Game, target: usize) -> Vec<(String, Action)> {
         }
         if hurt {
             out.push(("First Aid".to_string(), Action::FirstAid));
+        }
+        if splint {
+            out.push(("Splint Injuries".to_string(), Action::Splint));
         }
         // a squad member's inventory: "Inventory" (order 0x1a on the player's own); following
         // them, guarding them (0x2d, 0x1f)
@@ -168,30 +239,41 @@ pub fn options(game: &Game, target: usize) -> Vec<(String, Action)> {
         }
         return out;
     }
-    // someone else in a cage: picked free from outside
+    // someone else in a cage: set free from outside (their shackles too)
     if t.prison.is_some() && !t.dead {
         if !sim.folk.iter().any(|p| p.freeing.as_ref().is_some_and(|f| f.0 == target)) {
-            out.push(("Free Prisoner".to_string(), Action::Free));
+            out.push(("Set Free".to_string(), Action::Free));
         }
+        shackles(&mut out);
         return out;
     }
     if t.down || t.dead {
-        // picked up (F044603's order 0xe1 on someone down, a body too); someone alive and
-        // unconscious can also be kidnapped (0xf6)
+        // picked up (0xe1), or taken off unlawfully: kidnapped (0xf6, F044547)
         if t.carried_by.is_none() {
-            out.push(("Pick Up".to_string(), Action::PickUp));
-            if !t.dead {
+            if leader.is_some_and(|l| sim.is_kidnap(l, target)) {
                 out.push(("Kidnap".to_string(), Action::Kidnap));
+            } else {
+                out.push(("Pick Up".to_string(), Action::PickUp));
+            }
+            if t.dead {
+                out.push(("Corpse Disposal".to_string(), Action::DisposeCorpse));
             }
         }
         if hurt {
             out.push(("First Aid".to_string(), Action::FirstAid));
         }
+        if splint {
+            out.push(("Splint Injuries".to_string(), Action::Splint));
+        }
+        shackles(&mut out);
         out.push(("Loot".to_string(), Action::Loot));
         return out;
     }
     if f.active {
-        out.push(("Attack Target".to_string(), Action::AttackTarget));
+        out.push((attack.to_string(), Action::AttackTarget));
+        if in_squad {
+            out.push(("Attack All".to_string(), Action::AttackAll));
+        }
         return out;
     }
     if t.dialogue.is_some() {
@@ -207,18 +289,32 @@ pub fn options(game: &Game, target: usize) -> Vec<(String, Action)> {
             out.push((format!("Pay Bounty (c.{amount})"), Action::PayBounty));
         }
     }
-    // sneaking: a knockout from behind
+    // sneaking: a knockout from behind (0xe4)
     if game.selected.first().is_some_and(|&me| sim.folk[me].sneaking) {
-        out.push(("Knockout".to_string(), Action::Knockout));
+        out.push(("Stealth KO".to_string(), Action::Knockout));
     }
     if hurt {
         out.push(("First Aid".to_string(), Action::FirstAid));
     }
+    if splint {
+        out.push(("Splint Injuries".to_string(), Action::Splint));
+    }
+    shackles(&mut out);
     // F044603 offers someone standing calm Attack Unprovoked (0x3d), Bodyguard (0x2d) and Follow
     // (0x1f); its menu lists them Follow, Bodyguard, Attack Unprovoked
     out.push(("Follow".to_string(), Action::Follow));
     out.push(("Bodyguard".to_string(), Action::Bodyguard));
     out.push(("Attack Unprovoked".to_string(), Action::AttackUnprovoked));
+    if in_squad {
+        out.push(("Attack All".to_string(), Action::AttackAll));
+    }
+    // F044505: in a building of the player's, out of their home; in their outpost, out of town
+    let at = t.mover.position_units();
+    if sim.building_at(at).is_some() {
+        out.push(("Throw out of home".to_string(), Action::ThrowOutHome));
+    } else if sim.in_outpost(at) {
+        out.push(("Throw out of town".to_string(), Action::ThrowOutTown));
+    }
     out
 }
 
@@ -228,17 +324,38 @@ pub fn act(game: &mut Game, inv: &mut inventory_ui::InventoryWindow, talk: &mut 
     if selected.is_empty() {
         return;
     }
+    if a == Action::PutDown {
+        let carriers: Vec<usize> = selected.iter().copied().filter(|&i| game.sim.folk[i].carrying.is_some()).collect();
+        game.sim.order_drop(&carriers);
+        return;
+    }
     if let Some(f) = target.checked_sub(kenshi_game::production::FURN_TARGET) {
-        if a == Action::Train {
-            game.sim.order_train_at(&selected, f);
+        match a {
+            Action::Train => game.sim.order_train_at(&selected, f),
+            Action::Sleep => game.sim.order_sleep(&selected, f),
+            Action::PutInBed => game.sim.order_put_in_bed(&selected, f),
+            Action::PutInCage => game.sim.order_cage(&selected, f, false),
+            Action::GetInCage => game.sim.order_cage(&selected, f, true),
+            // the cage's prisoner set free
+            Action::Free => {
+                if let Some(p) = game.sim.folk.iter().find(|p| p.prison.as_ref().is_some_and(|q| q.cage == f && !q.out)).map(|p| p.id) {
+                    game.sim.order_free(selected[0], p);
+                }
+            }
+            _ => {}
         }
         return;
     }
     if let Some(d) = target.checked_sub(kenshi_game::doors::DOOR_TARGET) {
         match a {
+            // "Open" / "Close" (task 72): the first selected walks there and toggles it
             Action::DoorToggle => {
-                if let Some(say) = game.sim.toggle_door(d) {
-                    game.sim.messages.push(say.to_string());
+                if selected.is_empty() {
+                    if let Some(say) = game.sim.toggle_door(d) {
+                        game.sim.messages.push(say.to_string());
+                    }
+                } else {
+                    game.sim.order_door(&selected, d);
                 }
             }
             Action::Bash => game.sim.order_bash(&selected, d),
@@ -258,6 +375,7 @@ pub fn act(game: &mut Game, inv: &mut inventory_ui::InventoryWindow, talk: &mut 
             Action::Crafting => game.crafting_request = Some(b),
             Action::Repair => game.sim.order_repair(&selected, b),
             Action::Dismantle => game.dismantle_request = Some((selected.clone(), b)),
+            Action::AutoHaul => game.sim.order_auto_haul(&selected, b),
             _ => {}
         }
         return;
@@ -302,7 +420,30 @@ pub fn act(game: &mut Game, inv: &mut inventory_ui::InventoryWindow, talk: &mut 
             }
         }
         Action::Surrender => game.sim.folk[target].surrendered = true,
-        Action::Build | Action::Operate | Action::Open | Action::Crafting | Action::DoorToggle | Action::Bash | Action::Train | Action::Repair | Action::Dismantle => {}
+        Action::Splint => game.sim.order_splint(&selected, target),
+        Action::UnlockShackles => game.sim.order_shackles(&selected, target, kenshi_game::orders::ShackleHow::Pick),
+        Action::UseTools => game.sim.order_shackles(&selected, target, kenshi_game::orders::ShackleHow::Cut),
+        Action::UseStrength => game.sim.order_shackles(&selected, target, kenshi_game::orders::ShackleHow::Strength),
+        Action::StandUp => game.sim.order_stand_up(target),
+        Action::AttackAll => game.sim.order_attack_all(&selected, target),
+        Action::ThrowOutHome => game.sim.order_throw_out(target, false),
+        Action::ThrowOutTown => game.sim.order_throw_out(target, true),
+        Action::DisposeCorpse => game.sim.order_dispose(&selected, target),
+        Action::Build
+        | Action::Operate
+        | Action::Open
+        | Action::Crafting
+        | Action::DoorToggle
+        | Action::Bash
+        | Action::Train
+        | Action::Repair
+        | Action::Dismantle
+        | Action::PutDown
+        | Action::Sleep
+        | Action::PutInBed
+        | Action::PutInCage
+        | Action::GetInCage
+        | Action::AutoHaul => {}
     }
 }
 

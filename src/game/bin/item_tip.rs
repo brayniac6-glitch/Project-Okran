@@ -5,13 +5,12 @@
 //! weight and the value (F044583: "Value" at the price here, "(+n%)" / "(-n%)" over its worth
 //! when it is not, and "Sell value").
 //!
-//! The lines are kept as text (`Tip`): the first line the title, then "label\tvalue\tcolour"
-//! (colour: t title, c class, g good, r bad, empty plain); a line with no tab is a paragraph.
-//!
-//! (assumption) The colours (strings the game makes at start) are a light title, a dim class
-//! line, green for a bonus and red for a penalty. The damage against robots, humans, animals
+//! The lines are kept as text (`tooltip_ui`'s format): "label\tvalue\tcolour" each, the first
+//! the title (colour t, the game's #492620: F044593 writes the name in it), then the lines (v: a
+//! label in #140806 and its value in #afa68b; c: a class line in #afa68b; g / r: a value in the
+//! bonus #a8b774 / penalty #59231a); a line with no tab is a paragraph. The damage against robots, humans, animals
 //! and races (F044624 shows their labels by a helper not traced) read "{n}x", shown when not 1;
-//! armour penetration reads "{n}%". Weather protections are not listed.
+//! armour penetration reads "{n}%".
 use super::Game;
 use kenshi_char::inventory::Item;
 use kenshi_data::{GameData, ItemType};
@@ -24,6 +23,8 @@ struct Lines(Vec<String>);
 
 impl Lines {
     fn line(&mut self, label: &str, value: impl Into<String>, colour: &str) {
+        // a plain line: its value in #afa68b
+        let colour = if colour.is_empty() { "v" } else { colour };
         self.0.push(format!("{label}\t{}\t{colour}", value.into()));
     }
     /// A bonus: "+n" in green, a penalty in red, nothing for none.
@@ -42,7 +43,7 @@ impl Lines {
 /// The tooltip of `item`; `price`: what it costs here (a trade), else none.
 pub fn tip(game: &Game, item: &Item, price: Option<i32>) -> String {
     let data = &game.sim.data;
-    let mut l = Lines(vec![item.shown_name(data)]);
+    let mut l = Lines(vec![format!("{}\t\tt", item.shown_name(data))]);
     let rec = data.get(&item.record);
     match (item.kind, rec) {
         (Some(ItemType::Weapon), Some(r)) => weapon(&mut l, game, item, r),
@@ -225,6 +226,19 @@ fn armour(l: &mut Lines, game: &Game, item: &Item, r: &GameData) {
         }
         if a.pierce_reduction > 1.0 {
             l.line("Harpoon resistance", format!("{} pts", a.pierce_reduction as i32), "");
+        }
+    }
+    // its weather protections: "[Weather Protections]", then "-<weather>" with the amount for
+    // each it lists (WeatherAffecting names, F044593 via its name table)
+    let mut kinds: Vec<i32> = r.ints.iter().filter(|(k, _)| k.starts_with("weather protection") && *k != "weather protection amount").map(|(_, v)| *v).filter(|v| (1..=5).contains(v)).collect();
+    kinds.sort();
+    kinds.dedup();
+    if !kinds.is_empty() {
+        l.line("[Weather Protections]", "", "c");
+        let amount = r.floats.get("weather protection amount").copied().unwrap_or(0.0);
+        for k in kinds {
+            let name = ["", "Duststorms", "Acid", "Burning", "Gas", "Rain"][k as usize];
+            l.line(&format!("-{name}"), format!("{}%", (amount * 100.0) as i32), "");
         }
     }
     weight(l, item);

@@ -155,6 +155,11 @@ pub fn highlight(
     mut nodes: Query<&mut Node>,
     pressed: Query<(&Interaction, &DropLabel), Changed<Interaction>>,
 ) {
+    // a game loaded in the program: its own labels
+    if game.is_added() {
+        labels.clear();
+        *glowing = false;
+    }
     // (testing) KENSHI_HIGHLIGHT: held on
     let on = act.held("highlight") || std::env::var("KENSHI_HIGHLIGHT").is_ok();
     if on != *glowing {

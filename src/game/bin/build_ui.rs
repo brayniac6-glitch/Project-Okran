@@ -112,9 +112,46 @@ pub struct PartMesh {
     pub interior: bool,
     pub lo: Vec3,
     pub hi: Vec3,
+    /// A part that moves (a turret's head, a wind generator's blades, a machine's spinner): its
+    /// mesh left in its own frame, and its node chain and spins (kenshi_render::zone::Swivel).
+    pub moves: Option<(Vec<(Vec3, Option<i32>)>, Vec<kenshi_render::zone::SpinDef>)>,
+}
+
+/// Where a part stands at rest in its building's frame: a moving part (its mesh in its own
+/// frame) by its node chain, the rest where their mesh already is.
+fn rest_of(moves: &Option<(Vec<(Vec3, Option<i32>)>, Vec<kenshi_render::zone::SpinDef>)>) -> Transform {
+    moves.as_ref().map_or(Transform::default(), |(chain, _)| chain.iter().fold(Transform::IDENTITY, |t, (o, _)| t * Transform::from_translation(*o)))
 }
 
 /// Load a building's part meshes once (its parts, and its interior's).
+/// A NEST_ITEM's mesh (its "ground mesh", or with `mesh` above 0 that file's numbered
+/// variant, F048851: "name" + n + ".mesh") in its "material", cached by record and number.
+fn debris_meshes<'a>(cache: &'a mut HashMap<String, (Vec<PartMesh>, Vec2, f32)>, game: &Game, record: &str, mesh: i32, meshes: &mut Assets<Mesh>) -> &'a Vec<PartMesh> {
+    &cache
+        .entry(format!("{record}#{mesh}"))
+        .or_insert_with(|| {
+            let mut out = Vec::new();
+            if let Some(r) = game.sim.data.get(record)
+                && let Some(file) = r.files.get("ground mesh").filter(|f| !f.is_empty())
+            {
+                let name = std::path::Path::new(file).file_name().map_or(file.clone(), |n| n.to_string_lossy().into_owned());
+                let name = if mesh > 0 { format!("{}{mesh}.mesh", name.trim_end_matches(".mesh")) } else { name };
+                let material = r.refs("material").first().and_then(|(m, _)| game.sim.data.get(m));
+                if let Some(path) = game.res.find(&name)
+                    && let Ok(m) = kenshi_io::ogre_mesh::read(&game.root.join(&path))
+                {
+                    let look = ObjectLook::from_record(material, |f| game.res.find(f)).for_building();
+                    for (_, bm) in kenshi_render::to_bevy(&m) {
+                        let colours = bm.attribute(Mesh::ATTRIBUTE_COLOR).is_some();
+                        out.push(PartMesh { mesh: meshes.add(bm), look: look.clone(), colours, floor: 0, interior: false, lo: Vec3::ZERO, hi: Vec3::ZERO, moves: None });
+                    }
+                }
+            }
+            (out, Vec2::ZERO, 0.0)
+        })
+        .0
+}
+
 fn meshes_of<'a>(
     cache: &'a mut HashMap<String, (Vec<PartMesh>, Vec2, f32)>,
     game: &Game,
@@ -128,19 +165,26 @@ fn meshes_of<'a>(
             let floors = kenshi_render::zone::mesh_floors(&game.sim.data, b);
             // each part baked where its offsets put it (a turret's head at rest), then the
             // interior's parts (shown once someone is inside)
-            let mut parts: Vec<(&str, Option<&kenshi_data::GameData>, Transform, bool)> =
-                kenshi_render::zone::part_meshes_placed(&game.sim.data, b, false).into_iter().map(|p| (p.mesh, p.material, p.local, false)).collect();
+            type Moves = Option<(Vec<(Vec3, Option<i32>)>, Vec<kenshi_render::zone::SpinDef>)>;
+            let mut parts: Vec<(&str, Option<&kenshi_data::GameData>, Transform, bool, Moves)> = kenshi_render::zone::part_meshes_placed(&game.sim.data, b, false)
+                .into_iter()
+                .map(|p| {
+                    let moves = p.swivels().then(|| (p.chain.clone(), p.spins.clone()));
+                    (p.mesh, p.material, p.local, false, moves)
+                })
+                .collect();
             for (sid, _) in b.refs("interior") {
                 if let Some(r) = game.sim.data.get(sid) {
-                    parts.extend(kenshi_render::zone::record_meshes(&game.sim.data, r).into_iter().map(|(m, mat)| (m, mat, Transform::IDENTITY, true)));
+                    parts.extend(kenshi_render::zone::record_meshes(&game.sim.data, r).into_iter().map(|(m, mat)| (m, mat, Transform::IDENTITY, true, None)));
                 }
             }
-            for (name, material, local, interior) in parts {
+            for (name, material, local, interior, moves) in parts {
                 let Some(path) = game.res.find(name) else { continue };
                 let Ok(mesh) = kenshi_io::ogre_mesh::read(&game.root.join(&path)) else { continue };
                 let look = ObjectLook::from_record(material, |f| game.res.find(f)).for_building();
                 for (_, m) in kenshi_render::to_bevy(&mesh) {
-                    let m = if local == Transform::IDENTITY { m } else { m.transformed_by(local) };
+                    // (a moving part's mesh stays in its own frame: its pose places it)
+                    let m = if local == Transform::IDENTITY || moves.is_some() { m } else { m.transformed_by(local) };
                     let (mut plo, mut phi) = (Vec3::ZERO, Vec3::ZERO);
                     if let Some(a) = m.compute_aabb() {
                         (plo, phi) = (Vec3::from(a.min()), Vec3::from(a.max()));
@@ -150,7 +194,7 @@ fn meshes_of<'a>(
                         }
                     }
                     let colours = m.attribute(Mesh::ATTRIBUTE_COLOR).is_some();
-                    out.push(PartMesh { mesh: meshes.add(m), look: look.clone(), colours, floor: floors.get(name).copied().unwrap_or(0), interior, lo: plo, hi: phi });
+                    out.push(PartMesh { mesh: meshes.add(m), look: look.clone(), colours, floor: floors.get(name).copied().unwrap_or(0), interior, lo: plo, hi: phi, moves: moves.clone() });
                 }
             }
         }
@@ -641,7 +685,7 @@ pub fn update(
             let parts = meshes_of(cache, &game, rec, &mut meshes).0.clone();
             let root = commands.spawn((Transform::default(), Visibility::Hidden)).id();
             for pm in parts.into_iter().filter(|p| !p.interior) {
-                let e = commands.spawn((Mesh3d(pm.mesh), MeshMaterial3d(looks.ok.clone()), Transform::default(), bevy::light::NotShadowCaster)).id();
+                let e = commands.spawn((Mesh3d(pm.mesh), MeshMaterial3d(looks.ok.clone()), rest_of(&pm.moves), bevy::light::NotShadowCaster)).id();
                 commands.entity(root).add_child(e);
             }
             o.ghost = Some((root, rec.clone(), true));
@@ -847,6 +891,14 @@ pub fn draw(
                 sites.push(h.clone());
             }
             let e = commands.spawn((Mesh3d(m), MeshMaterial3d(h), Transform::default())).id();
+            // a part that moves, posed in its building's frame (the root's child) once built
+            if let Some((chain, spins)) = pm.moves.clone() {
+                let local = chain.iter().fold(Transform::IDENTITY, |t, (o, _)| t * Transform::from_translation(*o));
+                commands.entity(e).insert(local);
+                if w.done {
+                    commands.entity(e).insert(kenshi_render::zone::Swivel::new(Transform::IDENTITY, Vec3::from(w.at), chain, spins));
+                }
+            }
             // its floor and bounds, for the roofs hidden while someone is inside (hide_roofs)
             if w.done {
                 let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
@@ -1196,6 +1248,10 @@ pub fn draw_nests(
     mut shown: Local<Vec<(usize, Entity)>>,
 ) {
     let origin = game.zone.origin;
+    // a game loaded in the program: its nests drawn afresh
+    if game.is_added() {
+        shown.clear();
+    }
     // the nests drawn that are gone (wiped out and left behind)
     shown.retain(|(k, e)| {
         let keep = game.sim.nests.get(*k).is_some_and(|n| n.built && !n.pieces.is_empty());
@@ -1217,7 +1273,24 @@ pub fn draw_nests(
             for pm in parts.into_iter().filter(|p| !p.interior) {
                 let ground = look.ground_colour(at[0], at[2]);
                 let h = objects.add(look.object(&assets, &pm.look, origin, pm.colours, ground));
-                let e = commands.spawn((Mesh3d(pm.mesh), MeshMaterial3d(h), Transform::default())).id();
+                let e = commands.spawn((Mesh3d(pm.mesh), MeshMaterial3d(h), rest_of(&pm.moves))).id();
+                commands.entity(place).add_child(e);
+            }
+            commands.entity(root).add_child(place);
+        }
+        // its loose debris
+        for (record, mesh, at, yaw, scale) in &n.loose {
+            let parts = debris_meshes(&mut mode.meshes, &game, record, *mesh, &mut meshes).clone();
+            if parts.is_empty() {
+                continue;
+            }
+            let place = commands
+                .spawn((Transform::from_translation(Vec3::from(*at) - origin).with_rotation(Quat::from_rotation_y(*yaw)).with_scale(Vec3::splat(scale.max(0.05))), Visibility::default()))
+                .id();
+            for pm in parts {
+                let ground = look.ground_colour(at[0], at[2]);
+                let h = objects.add(look.object(&assets, &pm.look, origin, pm.colours, ground));
+                let e = commands.spawn((Mesh3d(pm.mesh), MeshMaterial3d(h), rest_of(&pm.moves))).id();
                 commands.entity(place).add_child(e);
             }
             commands.entity(root).add_child(place);

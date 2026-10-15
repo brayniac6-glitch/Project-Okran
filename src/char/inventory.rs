@@ -41,6 +41,11 @@ pub struct Item {
     pub model: Option<String>,
     /// Branded as a faction's uniform (CHARACTER "wears uniform"): that faction.
     pub uniform: Option<String>,
+    /// A backpack's storage (CONTAINER "storage size width / height": its own grid) and what
+    /// its contents weigh against their own weight ("encumbrance effect", F043920 +0x23c).
+    /// (assumption) the contents' weight is the effect times theirs.
+    pub contents: Option<Inventory>,
+    pub carry: f32,
 }
 
 impl Item {
@@ -90,6 +95,10 @@ impl Item {
             maker: None,
             model: None,
             uniform: None,
+            contents: (kind == Some(ItemType::Container)).then(|| int("storage size width").zip(int("storage size height"))).flatten().filter(|&(w, h)| w > 0 && h > 0).map(|(w, h)| Inventory {
+                sections: vec![Section::new("main", w as u32, h as u32, ANY)],
+            }),
+            carry: r.floats.get("encumbrance effect").copied().unwrap_or(1.0),
         }
     }
 }
@@ -161,6 +170,63 @@ impl Section {
         (0..self.h).flat_map(|y| (0..self.w).map(move |x| (x, y))).find(|&(x, y)| self.fits(item, x, y, None))
     }
 
+    /// @fn F043580
+    ///
+    /// A section arranged (its ARRANGE button, F042738 -> F043557 over the inventory's sections):
+    /// its items taken out and put back, each where it first fits row by row and onto a stack of
+    /// its kind with room (F043608), the biggest first: by their longer side, else (not all fitting)
+    /// by their area, else by their width; the stacks emptied on the way are dropped between tries.
+    /// Nothing fitting all three ways, the items left are put back where they were.
+    /// (assumption) Items of the same size keep the section's order (Kenshi's is its item map's).
+    pub fn arrange(&mut self) {
+        if self.is_equipment() || self.items.is_empty() {
+            return;
+        }
+        let mut entries: Vec<Placed> = std::mem::take(&mut self.items);
+        for mode in 0..3 {
+            let key = |p: &Placed| -> u32 {
+                match mode {
+                    0 => p.item.w.max(p.item.h),
+                    1 => p.item.w * p.item.h,
+                    _ => p.item.w,
+                }
+            };
+            let mut order: Vec<usize> = (0..entries.len()).collect();
+            order.sort_by_key(|&i| std::cmp::Reverse(key(&entries[i])));
+            // placed: which entry sits where
+            let mut placed: Vec<(usize, u32, u32)> = Vec::new();
+            let mut all = true;
+            for &i in &order {
+                // onto a stack of its kind with room
+                for &(j, ..) in &placed {
+                    let (a, b) = (&entries[i].item, &entries[j].item);
+                    if a.record == b.record && b.stack > 1 && b.quantity < b.stack && a.quantity > 0 {
+                        let take = (b.stack - b.quantity).min(a.quantity);
+                        entries[j].item.quantity += take;
+                        entries[i].item.quantity -= take;
+                    }
+                }
+                if entries[i].item.quantity == 0 {
+                    continue;
+                }
+                self.items = placed.iter().map(|&(j, x, y)| Placed { item: entries[j].item.clone(), x, y }).collect();
+                match self.first_fit(&entries[i].item) {
+                    Some((x, y)) => placed.push((i, x, y)),
+                    None => all = false,
+                }
+            }
+            if all {
+                self.items = placed.into_iter().map(|(j, x, y)| Placed { item: entries[j].item.clone(), x, y }).collect();
+                return;
+            }
+            if mode != 2 {
+                entries.retain(|p| p.item.quantity > 0);
+            }
+        }
+        // put back where they were
+        self.items = entries.into_iter().filter(|p| p.item.quantity > 0).collect();
+    }
+
     /// The item covering cell (x, y).
     pub fn at(&self, x: u32, y: u32) -> Option<usize> {
         if self.is_equipment() {
@@ -197,6 +263,23 @@ impl Inventory {
         }
     }
 
+    /// @fn F040052
+    ///
+    /// An animal's sections: its backpack slot and a main grid of its "inventory w" x
+    /// "inventory h" (ANIMAL_CHARACTER).
+    pub fn animal(w: u32, h: u32) -> Inventory {
+        Inventory { sections: vec![Section::new("backpack_attach", 5, 4, 12), Section::new("main", w.max(1), h.max(1), ANY)] }
+    }
+
+    /// The worn backpack's storage, if one is worn.
+    pub fn bag(&self) -> Option<&Inventory> {
+        self.sections.iter().find(|s| s.name == "backpack_attach")?.items.first()?.item.contents.as_ref()
+    }
+
+    pub fn bag_mut(&mut self) -> Option<&mut Inventory> {
+        self.sections.iter_mut().find(|s| s.name == "backpack_attach")?.items.first_mut()?.item.contents.as_mut()
+    }
+
     pub fn section(&self, name: &str) -> Option<usize> {
         self.sections.iter().position(|s| s.name == name)
     }
@@ -227,7 +310,11 @@ impl Inventory {
                 return true;
             }
         }
-        false
+        // (assumption) what does not fit in the main grid goes in the worn backpack
+        match self.bag_mut() {
+            Some(bag) => bag.add(item, false),
+            None => false,
+        }
     }
 
     /// Move item `idx` of section `from` to cell (x, y) of section `to`, if it fits there.
@@ -271,17 +358,19 @@ impl Inventory {
             }
             return Some((name, b));
         }
-        None
+        self.bag_mut()?.eat(shown)
     }
 
     /// The charges of ammo item `record` carried (every pack's left, packs after the first full).
     pub fn ammo_charges(&self, record: &str) -> u32 {
-        self.sections
+        let own = self
+            .sections
             .iter()
             .flat_map(|s| &s.items)
             .filter(|p| p.item.record == record)
             .filter_map(|p| p.item.ammo.map(|(full, left)| left + full * (p.item.quantity.max(1) - 1) as f32))
-            .sum::<f32>() as u32
+            .sum::<f32>() as u32;
+        own + self.bag().map_or(0, |b| b.ammo_charges(record))
     }
 
     /// One charge of ammo item `record` spent (F033853): from the first pack, a pack emptied
@@ -304,7 +393,7 @@ impl Inventory {
             }
             return true;
         }
-        false
+        self.bag_mut().is_some_and(|b| b.spend_ammo(record))
     }
 
     /// Put `item` in section `s` with its top-left at (x, y) if it fits there (back otherwise).
@@ -326,7 +415,11 @@ impl Inventory {
 
     /// Everything carried, by weight (kg).
     pub fn weight(&self) -> f32 {
-        self.sections.iter().flat_map(|s| &s.items).map(|p| p.item.weight * p.item.quantity as f32).sum()
+        self.sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .map(|p| p.item.weight * p.item.quantity as f32 + p.item.contents.as_ref().map_or(0.0, |c| c.weight() * p.item.carry))
+            .sum()
     }
 
     /// The items equipped (every section but the main grid).
@@ -417,7 +510,38 @@ mod tests {
             food: None,
             medkit: None,
             ammo: None,
+            contents: None,
+            carry: 1.0,
         }
+    }
+
+    #[test]
+    fn arrange_packs_the_biggest_first() {
+        let mut s = Section::new("main", 4, 4, ANY);
+        // the 2x2 goes first, to the top left; the 1x1 after it
+        s.items.push(Placed { item: item(7, 1, 1), x: 0, y: 0 });
+        s.items.push(Placed { item: item(7, 2, 2), x: 2, y: 2 });
+        s.arrange();
+        let big = s.items.iter().find(|p| p.item.w == 2).unwrap();
+        assert_eq!((big.x, big.y), (0, 0));
+        let small = s.items.iter().find(|p| p.item.w == 1).unwrap();
+        assert_eq!((small.x, small.y), (2, 0));
+    }
+
+    #[test]
+    fn arrange_merges_stacks() {
+        let mut s = Section::new("main", 4, 4, ANY);
+        let mut a = item(7, 1, 1);
+        a.stack = 10;
+        a.quantity = 3;
+        let mut b = a.clone();
+        b.quantity = 4;
+        s.items.push(Placed { item: a, x: 3, y: 3 });
+        s.items.push(Placed { item: b, x: 0, y: 2 });
+        s.arrange();
+        assert_eq!(s.items.len(), 1);
+        assert_eq!(s.items[0].item.quantity, 7);
+        assert_eq!((s.items[0].x, s.items[0].y), (0, 0));
     }
 
     #[test]
@@ -461,5 +585,25 @@ mod tests {
         assert_eq!(main.items.len(), 2);
         assert_eq!(main.items[0].item.quantity, 3);
         assert_eq!(main.items[1].item.quantity, 1);
+    }
+
+    #[test]
+    fn a_backpack_carries_what_the_grid_cannot_at_its_weight() {
+        let mut inv = Inventory::character();
+        let mut bag = item(12, 3, 3);
+        bag.contents = Some(Inventory { sections: vec![Section::new("main", 2, 2, ANY)] });
+        bag.carry = 0.5;
+        assert!(inv.add(bag, true));
+        assert!(inv.bag().is_some());
+        // fill the main grid, then one more goes in the bag
+        let main = inv.section("main").unwrap();
+        while inv.sections[main].first_fit(&item(7, 1, 1)).is_some() {
+            assert!(inv.add(item(7, 1, 1), false));
+        }
+        let before = inv.weight();
+        assert!(inv.add(item(7, 1, 1), false));
+        assert_eq!(inv.bag().unwrap().sections[0].items.len(), 1);
+        // its weight counted at half
+        assert!((inv.weight() - before - 0.5).abs() < 1e-5);
     }
 }

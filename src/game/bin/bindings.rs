@@ -181,14 +181,6 @@ impl Bindings {
     pub fn load(root: &std::path::Path) -> Bindings {
         Bindings::from_cfg(&kenshi_io::cfg::load(root, "controls.cfg"))
     }
-
-    /// The first key an action is bound to (what a GUI button standing for the action presses).
-    pub fn key(&self, action: &str) -> Option<KeyCode> {
-        self.actions.get(action)?.iter().find_map(|c| match c.button {
-            Button::Key(k) if !c.mods.any() => Some(k),
-            _ => None,
-        })
-    }
 }
 
 /// The input as actions: `just("toggle_map")`, `held("camera_left")`. Keyboard actions do not
@@ -199,6 +191,23 @@ pub struct Actions<'w, 's> {
     mouse: Res<'w, ButtonInput<MouseButton>>,
     binds: Res<'w, Bindings>,
     typing: Query<'w, 's, &'static kenshi_gui::EditText>,
+    ui: Option<Res<'w, UiPresses>>,
+}
+
+/// Actions pressed by the HUD's buttons (its INV and STA shortcuts press the keys' own actions):
+/// pushed to `next`, seen by [`Actions::just`] all through the next frame, whatever runs first.
+/// (A pretend key press used to stay held, so a second click did nothing.)
+#[derive(Resource, Default)]
+pub struct UiPresses {
+    pub next: Vec<String>,
+    now: Vec<String>,
+}
+
+/// PreUpdate: the buttons' presses of the last frame are this frame's.
+pub fn turn_presses(mut p: ResMut<UiPresses>) {
+    if !p.next.is_empty() || !p.now.is_empty() {
+        p.now = std::mem::take(&mut p.next);
+    }
 }
 
 impl Actions<'_, '_> {
@@ -232,6 +241,9 @@ impl Actions<'_, '_> {
 
     /// Pressed this frame.
     pub fn just(&self, action: &str) -> bool {
+        if self.ui.as_ref().is_some_and(|u| u.now.iter().any(|a| a == action)) {
+            return true;
+        }
         let Some(combos) = self.binds.actions.get(action) else { return false };
         let held = self.mods();
         let typing = self.typing();

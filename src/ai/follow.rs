@@ -47,7 +47,10 @@ pub struct FollowLeader {
 }
 
 impl Default for FollowLeader {
-    /// @fn F030758
+    /// @fn F030763
+    ///
+    /// Task_FollowLeader's: Task_Follow's constructor (F030758) with the distance 40 (the
+    /// factory's plain Task_Follow takes a random 20 .. 40).
     fn default() -> Self {
         Self {
             distance: 40.0,

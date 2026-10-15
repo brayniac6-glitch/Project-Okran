@@ -20,8 +20,11 @@ use std::collections::{HashMap, HashSet};
 pub const ICON_LAYER: usize = 5;
 /// Pixels per inventory cell in a drawn icon (the game: twice its cell size).
 const CELL_PX: u32 = 64;
-/// Frames an icon's camera is kept before its image is taken as drawn.
-const FRAMES: u32 = 3;
+/// Frames an icon's camera is kept before its image is taken as drawn, once its textures are
+/// in: enough for the renderer to build the pipelines a new mesh and material need (Bevy
+/// compiles them in the background and draws nothing until they are; with the textures already
+/// loaded, as a pack bull's bags worn in the world have them, three frames left the icon empty).
+const FRAMES: u32 = 30;
 
 #[derive(Resource, Default)]
 pub struct ItemIcons {

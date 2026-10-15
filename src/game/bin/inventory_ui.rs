@@ -157,6 +157,47 @@ pub fn limbs_window(
     o.dirty = true;
 }
 
+/// The character (or animal) window's OpenBagButton: its worn backpack's storage in the generic
+/// inventory window beside it (as a storage's, `open_storage`), in place of anything looted;
+/// again: closed. (testing) KENSHI_OPEN_BAG: opened with the window.
+pub fn bag_window(
+    mut commands: Commands,
+    mut win: ResMut<InventoryWindow>,
+    mut clicks: MessageReader<GuiClick>,
+    gui: Res<GuiRes>,
+    assets: Res<AssetServer>,
+    game: Res<Game>,
+    windows: Query<&Window>,
+    mut tested: Local<bool>,
+) {
+    let mut pressed = clicks.read().any(|c| c.name == "OpenBagButton");
+    let Some(o) = win.open.as_mut() else { return };
+    if !*tested && std::env::var("KENSHI_OPEN_BAG").is_ok() {
+        *tested = true;
+        pressed = true;
+    }
+    if !pressed {
+        return;
+    }
+    let bag = kenshi_game::loot::BAG_OWNER + o.person;
+    if let Some((who, other)) = o.other.take() {
+        for r in &other.roots {
+            commands.entity(*r).despawn();
+        }
+        o.dirty = true;
+        if who == bag {
+            return;
+        }
+    }
+    if game.sim.inv(bag).is_none() {
+        return;
+    }
+    let size = window_size(&windows);
+    let ui = open_storage(&mut commands, &gui.0, &assets, &game, bag, size);
+    o.other = Some((bag, ui));
+    o.dirty = true;
+}
+
 /// Which window a building's inventory shows in (F024434 / F024437 / F024440): a research bench's
 /// in the research inventory window, a machine's (a production building, not a farm) in the
 /// generic building window (its inputs and output), any other's in the generic inventory window.
@@ -338,28 +379,25 @@ fn open_character(
     size: [f32; 2],
     offset: usize,
 ) -> Built {
-    let mut defs = gui.layout("Kenshi_InventoryCharacterWindow.layout");
+    // an animal's in the animal window (its backpack slot and grid)
+    let animal = game.sim.folk[person].race.is_some();
+    let mut defs = gui.layout(if animal { "Kenshi_InventoryAnimalWindow.layout" } else { "Kenshi_InventoryCharacterWindow.layout" });
     if let Some(d) = defs.first_mut() {
         // the layout's size, by the screen's left edge (a looted character's by the right)
         if let kenshi_gui::res::Pos::Real(r) = d.pos {
             let x = if offset == LOOT { 0.98 - r[2] } else { 0.02 };
             d.pos = kenshi_gui::res::Pos::Real([x, 0.18, r[2], r[3]]);
         }
-        // its name, else its character's
-        let p = &game.sim.folk[person];
-        let name = if p.name.is_empty() {
-            p.character.as_deref().and_then(|c| game.sim.data.get(c)).map_or(format!("Character {person}"), |c| c.name.clone())
-        } else {
-            p.name.clone()
-        };
-        d.props.push(("Caption".into(), name));
+        // its name as shown
+        d.props.push(("Caption".into(), game.sim.display_name(person)));
     }
     let ui = kenshi_gui::ui::spawn(commands, gui, assets, &defs, None, size);
     for r in &ui.roots {
         commands.entity(*r).insert(GlobalZIndex(60));
     }
-    for (k, s) in SECTIONS.iter().enumerate() {
-        if let Some(e) = ui.get(s) {
+    let inv = &game.sim.folk[person].inventory;
+    for s in SECTIONS.iter() {
+        if let (Some(e), Some(k)) = (ui.get(s), inv.section(s)) {
             commands.entity(e).insert((SectionNode(k + offset), RelativeCursorPosition::default()));
         }
     }
@@ -502,91 +540,6 @@ pub fn toggle(
 #[derive(Component)]
 pub struct ItemTip(pub String);
 
-/// The tooltip of the item under the pointer, beside it.
-pub fn tooltip(
-    mut commands: Commands,
-    items: Query<(&Interaction, &ItemTip)>,
-    windows: Query<&Window>,
-    mut shown: Local<Option<(Entity, String)>>,
-    mut nodes: Query<&mut Node>,
-    gui: Res<GuiRes>,
-    assets: Res<AssetServer>,
-) {
-    let mut hovered = items.iter().find(|(i, _)| **i == Interaction::Hovered).map(|(_, t)| t.0.clone());
-    let mut cursor = windows.iter().next().and_then(|w| w.cursor_position());
-    // (testing) KENSHI_TIP=<text>: the tip of the first item whose tip has that text, shown at
-    // the window's middle
-    if let Ok(want) = std::env::var("KENSHI_TIP") {
-        hovered = hovered.or_else(|| items.iter().map(|(_, t)| t.0.clone()).find(|t| t.contains(&want)));
-        cursor = cursor.or_else(|| windows.iter().next().map(|w| w.size() * 0.5));
-    }
-    match (hovered, cursor) {
-        (Some(text), Some(c)) => {
-            if shown.as_ref().is_none_or(|(_, t)| *t != text) {
-                if let Some((e, _)) = shown.take() {
-                    commands.entity(e).despawn();
-                }
-                let font = gui.0.fonts.get("Kenshi_StandardFont_Medium").map(|f| (assets.load(f.file.clone()), f.screen_px()));
-                let px = font.as_ref().map_or(14.0, |f| f.1);
-                let mut tf = TextFont { font_size: bevy::text::FontSize::Px(px), ..default() };
-                if let Some((h, _)) = font {
-                    tf.font = bevy::text::FontSource::Handle(h);
-                }
-                let e = tip_node(&mut commands, &text, &tf, px);
-                *shown = Some((e, text));
-            }
-            if let Some((e, _)) = shown.as_ref()
-                && let Ok(mut n) = nodes.get_mut(*e)
-            {
-                n.left = Val::Px(c.x + 18.0);
-                n.top = Val::Px(c.y + 12.0);
-            }
-        }
-        _ => {
-            if let Some((e, _)) = shown.take() {
-                commands.entity(e).despawn();
-            }
-        }
-    }
-}
-
-/// A tooltip's box: its first line the title, then its lines (`item_tip`'s "label\tvalue\tcolour",
-/// a label on the left and its value on the right; a line without a tab, a paragraph).
-fn tip_node(commands: &mut Commands, text: &str, tf: &TextFont, px: f32) -> Entity {
-    const PLAIN: Color = Color::srgb(0.88, 0.84, 0.74);
-    let colour = |c: &str| match c {
-        "t" => Color::srgb(0.97, 0.93, 0.82),
-        "c" => Color::srgb(0.72, 0.68, 0.58),
-        "g" => Color::srgb(0.45, 0.8, 0.35),
-        "r" => Color::srgb(0.9, 0.35, 0.3),
-        _ => PLAIN,
-    };
-    let e = commands
-        .spawn((
-            Node { position_type: PositionType::Absolute, padding: UiRect::all(Val::Px(6.0)), flex_direction: FlexDirection::Column, min_width: Val::Px(px * 14.0), max_width: Val::Px(px * 26.0), ..default() },
-            BackgroundColor(Color::srgba(0.08, 0.07, 0.06, 0.92)),
-            BorderColor::all(Color::srgb(0.45, 0.4, 0.3)),
-            GlobalZIndex(300),
-            Pickable::IGNORE,
-        ))
-        .id();
-    for (k, line) in text.lines().enumerate() {
-        let row = match line.split('\t').collect::<Vec<_>>().as_slice() {
-            [label, value, c] if k > 0 => {
-                let row = commands.spawn(Node { flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, column_gap: Val::Px(px), ..default() }).id();
-                // a separator line, dim
-                let lc = if label.starts_with("---") { Color::srgb(0.45, 0.42, 0.36) } else if *c == "c" || value.is_empty() { colour(c) } else { PLAIN };
-                let l = commands.spawn((Text::new(label.to_string()), tf.clone(), TextColor(lc))).id();
-                let v = commands.spawn((Text::new(value.to_string()), tf.clone(), TextColor(colour(c)))).id();
-                commands.entity(row).add_children(&[l, v]);
-                row
-            }
-            _ => commands.spawn((Text::new(line.to_string()), tf.clone(), TextColor(if k == 0 { colour("t") } else { PLAIN }))).id(),
-        };
-        commands.entity(e).add_child(row);
-    }
-    e
-}
 
 fn draw_item(
     commands: &mut Commands,
@@ -623,6 +576,7 @@ fn draw_item(
             Interaction::default(),
             node,
             ItemTip(super::item_tip::tip(game, &p.item, price)),
+            super::tooltip_ui::InventoryTip,
         ))
         .id();
     let image = icons.icon(game, assets, &p.item);
@@ -669,6 +623,9 @@ fn draw_item(
             .id();
         commands.entity(e).add_child(bar);
     }
+    if std::env::var("KENSHI_ICON_DEBUG").is_ok() {
+        eprintln!("item {} in {widget:?}: {x:.0},{y:.0} {w:.0}x{h:.0} (cells {cells:?}, equip {equip}) as {e:?}", p.item.name);
+    }
     commands.entity(widget).add_child(e);
     e
 }
@@ -711,7 +668,11 @@ pub fn draw(
     }
     let trading = o.trader.as_ref().and_then(|t| sim.folk[t.id].shop.as_ref().map(|s| (t, s)));
     let inv = &sim.folk[o.person].inventory;
-    for (k, name) in SECTIONS.iter().enumerate() {
+    for name in SECTIONS.iter() {
+        let Some(k) = inv.section(name) else { continue };
+        if std::env::var("KENSHI_ICON_DEBUG").is_ok() {
+            eprintln!("section {name} ({k}): widget {:?} size {:?}, {} items", o.ui.get(name), o.ui.get(name).and_then(|w| o.ui.sizes.get(&w)), inv.sections[k].items.len());
+        }
         let (Some(widget), Some(sec)) = (o.ui.get(name), inv.sections.get(k)) else { continue };
         let size = o.ui.sizes.get(&widget).copied().unwrap_or([100.0, 100.0]);
         for (idx, p) in sec.items.iter().enumerate() {
@@ -720,6 +681,12 @@ pub fn draw(
             let e = draw_item(&mut commands, &game, &assets, &mut icons, &font, widget, size, (sec.w, sec.h), p, sec.is_equipment(), ItemNode { section: k, idx }, price);
             o.items.push(e);
         }
+    }
+    // the character's info box (the window's "datapanel")
+    if let Some(panel) = o.ui.get("datapanel")
+        && sim.folk[o.person].race.is_none()
+    {
+        commands.queue(super::hud_ui::SetRows { panel, rows: info_rows(sim, o.person), font: font.clone(), label_colour: super::hud_ui::LIGHT, centre: false });
     }
     if let Some((who, ui)) = &o.other
         && let Some(inv) = sim.inv(*who)
@@ -730,7 +697,9 @@ pub fn draw(
         } else {
             &SECTIONS
         };
-        for (k, name) in names.iter().enumerate() {
+        for (j, name) in names.iter().enumerate() {
+            // a storage's one grid, a character's sections by name
+            let Some(k) = (if *who >= kenshi_game::base::BUILDING_OWNER { Some(j) } else { inv.section(name) }) else { continue };
             let (Some(widget), Some(sec)) = (ui.get(name), inv.sections.get(k)) else { continue };
             let size = ui.sizes.get(&widget).copied().unwrap_or([100.0, 100.0]);
             for (idx, p) in sec.items.iter().enumerate() {
@@ -765,6 +734,104 @@ pub fn draw(
             });
         }
     }
+}
+
+/// F039272 mode 15, a character's inventory info: "Total Weight:" what it carries against what
+/// it can carry, how heavy that is by its load factor (CharStats +0x190: under 0.1 Overloaded and
+/// under 0.5 Heavy in red, under 0.75 Moderate, under 0.95 Lightweight, else Weightless); its
+/// disguise (its faction, else "None"; its effective percentage, "Blown!"), with the tooltip's
+/// breakdown: the clothing disguise (the state object +0x100 x 100), then x 0.75 "In secure
+/// location" (indoors in a private town), and the observers' modifiers shown for 14 s after they
+/// applied (Character +0x1b0: x 0.6 "Same faction", x 0.5 "Slave owner recognition", x 0.2
+/// "Someone knows me personally" (the look itself halves for it, F046537), "Disguise blown"
+/// with its seconds and nothing left); whose slave it is ("The faction that owns you.", "You
+/// are a free person."); how much it looks like a slave ("Looks like slave:", +0xf4 x 100) with
+/// its breakdown (the clothing, 100 less +0xf0 x 100 taken off; "x2" escaping; the minimum,
+/// +0xec, escaping or as an ex-slave; the total).
+/// The tooltips' lines are key and value rows (`tooltip_ui`). (the trader's money and merchant
+/// lines are the trader window's)
+fn info_rows(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<super::hud_ui::Row> {
+    use super::hud_ui::{LIGHT, MODERATE, PENALTY, Row, row};
+    let p = &sim.folk[id];
+    let f = &sim.arena.f[id];
+    let ec = kenshi_char::encumbrance::EncumbranceConstants::default();
+    let strength = f.level(kenshi_char::StatsEnumerated::StatStrength);
+    let capacity = ec.carry_weight_mult * strength + ec.encumbrance_base;
+    let weight = kenshi_char::encumbrance::carried_weight(p.inventory.weight(), p.carrying.is_some(), &ec);
+    let load = kenshi_char::encumbrance::load(weight, 1.0, kenshi_char::encumbrance::strength_level(strength, 1.0), &ec);
+    let (class, colour) = if load < 0.1 {
+        ("Overloaded", PENALTY)
+    } else if load < 0.5 {
+        ("Heavy", PENALTY)
+    } else if load < 0.75 {
+        ("Moderate", MODERATE)
+    } else if load < 0.95 {
+        ("Lightweight", LIGHT)
+    } else {
+        ("Weightless", LIGHT)
+    };
+    let tipped = |label: &str, value: String, colour, tip: &str| Row { label: label.into(), value, colour, tip: tip.into() };
+    let mut rows = vec![row("Total Weight:", format!("{}/{}", weight.round() as i64, capacity.round() as i64)), tipped("", class.into(), colour, "")];
+    let o = sim.outfit(id);
+    let mut total = o.disguise * 100.0;
+    let disguise_tip = if total > 0.0 {
+        let mut lines = vec![format!("Clothing disguise:	{}	", total as i32)];
+        let recent = sim.recognition.recent.get(&id).copied().unwrap_or([0.0; 3]);
+        if p.inside.is_some() && p.town.and_then(|t| sim.towns.get(t)).is_some_and(|t| !t.public) {
+            total *= 0.75;
+            lines.push("In secure location:	-25%	".into());
+        }
+        for (k, (mult, line)) in [(0.6, "Same faction:	-40%	"), (0.5, "Slave owner recognition:	-50%	"), (0.2, "Someone knows me personally:	-80%	")].into_iter().enumerate() {
+            if recent[k] > 0.0 {
+                total *= mult;
+                lines.push(line.into());
+            }
+        }
+        if p.disguise_blown > 0.0 {
+            total = 0.0;
+            let n = p.disguise_blown as i32;
+            lines.push(format!("Disguise blown:	{n} {}	", if n == 1 { "sec" } else { "secs" }));
+        }
+        lines.push(format!("Total:	{}	", total as i32));
+        lines.join("\n")
+    } else {
+        "Not currently in disguise.".to_string()
+    };
+    let name = |f: &str| sim.data.get(f).map_or(f.to_string(), |r| r.name.clone());
+    let as_who = o.disguise_as.as_deref().map_or("None".to_string(), name);
+    let (value, colour) = if o.disguise <= 0.0 {
+        (as_who, LIGHT)
+    } else if p.disguise_blown > 0.0 {
+        (format!("{as_who} Blown!"), PENALTY)
+    } else {
+        (format!("{as_who} {}%", total as i32), LIGHT)
+    };
+    rows.push(tipped("Disguise:", value, colour, &disguise_tip));
+    let state = sim.slave_state(id);
+    let looks = (o.looks * 100.0) as i32;
+    match p.slave.as_ref().filter(|_| state > 0) {
+        Some(s) => {
+            rows.push(tipped("Slave of:", name(&s.faction), LIGHT, "The faction that owns you."));
+            let clothing = 100 - (o.clothing * 100.0) as i32;
+            let mut lines = vec![format!("Clothing:	-{}	", clothing.abs())];
+            if state == kenshi_game::slavery::ESCAPING_SLAVE {
+                lines.push("Clothing:	x2	".into());
+                if o.minimum > 0 {
+                    lines.push(format!("Minimum (Escaping):	+{}	", o.minimum));
+                }
+            } else if state == kenshi_game::slavery::EX_SLAVE && o.minimum > 0 {
+                lines.push(format!("Minimum (Ex-Slave):	+{}	", o.minimum));
+            }
+            lines.push(format!("Total:	{looks}%	"));
+            lines.push("How much you look like an escaped slave. Based on how you are dressed/undressed. Wearing shackles and rags is a big giveaway. Try to avoid hanging around too long near people who may recognise you.".into());
+            rows.push(tipped("Looks like slave:", format!("{looks}"), if looks > 0 { PENALTY } else { LIGHT }, &lines.join("\n")));
+        }
+        None => {
+            rows.push(tipped("Slave of:", "None".into(), LIGHT, "You are a free person."));
+            rows.push(tipped("Looks like slave:", format!("{looks}"), LIGHT, "You are no slave."));
+        }
+    }
+    rows
 }
 
 /// Drag an item from where it lies to a section's cell (the cell under its top-left corner):
@@ -1093,3 +1160,32 @@ pub fn scroll(mut win: ResMut<InventoryWindow>, game: Res<Game>, mut wheel: Mess
     }
 }
 
+
+/// The windows' ARRANGE buttons (F042738): the inventory of the window pressed arranged, every
+/// section (F043557), with the click.
+pub fn arrange_button(mut win: ResMut<InventoryWindow>, mut game: ResMut<Game>, mut clicks: MessageReader<GuiClick>) {
+    let pressed: Vec<Entity> = clicks.read().filter(|c| c.name == "ArrangeButton").map(|c| c.widget).collect();
+    let Some(o) = win.open.as_mut() else { return };
+    for w in pressed {
+        let owner = if o.ui.get("ArrangeButton") == Some(w) {
+            Some(o.person)
+        } else if let Some((who, ui)) = &o.other
+            && ui.get("ArrangeButton") == Some(w)
+        {
+            Some(*who)
+        } else {
+            None
+        };
+        let inv = match (owner, &o.trader) {
+            (Some(who), _) => game.sim.inv_mut(who),
+            (None, Some(t)) if t.ui.get("ArrangeButton") == Some(w) => game.sim.folk.get_mut(t.id).and_then(|p| p.shop.as_mut()).map(|s| &mut s.stock),
+            _ => None,
+        };
+        if let Some(inv) = inv {
+            for s in &mut inv.sections {
+                s.arrange();
+            }
+            o.dirty = true;
+        }
+    }
+}

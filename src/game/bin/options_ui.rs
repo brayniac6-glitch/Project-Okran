@@ -5,13 +5,15 @@
 //!
 //! Settings are saved to the rewrite's own copies (kenshi_io::cfg, %APPDATA%\kenshi-rewrite); the
 //! install's files are never written.
-//! (stand-in) F032960 is too large to decompile here: the rows are its strings' options in its
-//! order; the sliders' ranges are assumptions; its combo boxes are buttons that step through
-//! their choices; the tooltips are the rewrite's own words. Most options take effect when the
-//! game next starts (the damage floaters, the sound volumes and the movement marker at once);
-//! the key bindings are saved but the game's keys are not yet read from them. New Game from the
-//! Esc menu starts the program again at the main menu; Save and Load open their panels
-//! (saves_ui).
+//! The rows, their ranges, choices and tooltips are F032960's (read from its code: too large for
+//! the decompiler), the graphics tab's last rows the compositors.cfg ticks, the Mods tab the
+//! active mods with their versions. The resolution and screen mode are Ogre's kenshi.cfg
+//! options (the rewrite's copy read over the install's). (stand-in) Its combo boxes are buttons
+//! that step through their choices; (assumption) Reset Tutorials forgets the tutorials seen.
+//! Most options take effect when the game next starts (the damage floaters, the sound volumes and the movement marker at once);
+//! a key binding is used at once (bindings). New Game opens the new game panel over the game
+//! (menu::Menu::in_game; F048550 -> F048543), Save and Load open their panels (saves_ui); a game
+//! begun or loaded replaces this one in the program (super::unload_world).
 use super::Game;
 use bevy::prelude::*;
 use bevy::ui::RelativeCursorPosition;
@@ -20,12 +22,23 @@ use kenshi_io::cfg::{self, Cfg};
 
 #[derive(Clone, Copy)]
 enum Kind {
+    /// A heading line (F042410 with text).
     Header,
+    /// An empty line (F042410 / F042408 with no text).
+    Blank,
     Tick,
-    /// min, max, step, shown as a percentage.
-    Slider(f32, f32, f32, bool),
-    /// The values, in order, with their names.
+    /// min, max (F042419: a scroll bar of 100 steps a unit, the value written as Ogre writes a
+    /// float).
+    Slider(f32, f32),
+    /// The values, in order, with their names (F042414's items: their index, the decals'
+    /// resolution).
     Choice(&'static [(&'static str, &'static str)]),
+    /// A button (F042415) and what it does.
+    Action(&'static str),
+    /// A kenshi.cfg (Ogre's) option: the resolution, a choice of the screen's video modes.
+    Resolution,
+    /// A kenshi.cfg tick: the option and the value ticked ("Full Screen" "Yes", "Border" "None").
+    VideoTick(&'static str),
 }
 
 struct Opt {
@@ -40,73 +53,196 @@ const fn o(tab: u8, key: &'static str, label: &'static str, kind: Kind, tip: &'s
     Opt { tab, key, label, kind, tip }
 }
 
-const TABS: [&str; 5] = ["GENERAL", "GAMEPLAY", "GRAPHICS", "AUDIO", "CONTROLS"];
+/// The tabs (F032960; the sixth, Mods, lists the active mods).
+const TABS: [&str; 6] = ["GENERAL", "GAMEPLAY", "GRAPHICS", "AUDIO", "CONTROLS", "MODS"];
 
 use Kind::*;
+/// The rows as F032960 makes them, in its order, with their settings.cfg keys (F032944) and
+/// tooltips; the graphics tab ends with a tick per post-processing compositor
+/// (data/materials/compositors/compositors.cfg), the controls tab with the key bindings.
 const OPTS: &[Opt] = &[
     // General
-    o(0, "tutorials", "Tutorials", Tick, "Show the in-game tutorials."),
-    o(0, "User save location", "User Save Location", Tick, "Save games in your user folder rather than the game's folder."),
-    o(0, "Auto save", "Auto save", Tick, "Save the game automatically."),
-    o(0, "Auto save time (minutes)", "Auto save time (minutes)", Slider(1.0, 60.0, 1.0, false), "Minutes between automatic saves."),
-    o(0, "Show names", "Show character names", Tick, "Show your characters' names over their heads."),
-    o(0, "Movement marker", "Show movement marker", Tick, "Show the green marker where you order a move."),
-    o(0, "Rotation marker", "Show rotation marker", Tick, "Show the green marker while the camera turns."),
-    o(0, "Edge scrolling", "Edge scrolling", Tick, "Move the camera when the pointer reaches the edge of the screen."),
-    o(0, "censorship", "Language censorship", Tick, "Filter out most of the bad language."),
-    o(0, "floaters", "Show damage floaters", Choice(&[("0", "Off"), ("1", "Simple info"), ("2", "Full info")]), "The numbers that rise over a character when hit, with what armour stopped in brackets."),
-    o(0, "font size2", "Font Size", Slider(0.0, 4.0, 1.0, false), "The size of the interface's text."),
-    o(0, "Fast zone hopping", "Fast zone hopping", Tick, "Keep more of the world loaded so jumping between characters far apart has no loading time."),
+    o(0, "tutorials", "Tutorials", Tick, "Enable/Disable in-game tutorials"),
+    o(0, "", "", Action("Reset Tutorials"), ""),
+    o(0, "User save location", "User Save Location", Tick, ""),
+    o(0, "Auto save", "Auto save", Tick, "Turns on automatic saves"),
+    o(0, "Auto save time (minutes)", "Auto save time (minutes)", Slider(1.0, 30.0), ""),
+    o(0, "Show names", "Show character names", Tick, "Shows the names of your characters on screen, hovering above their heads."),
+    o(
+        0,
+        "Movement marker",
+        "Show movement marker",
+        Tick,
+        "Shows horrible green marker to show you exactly where you clicked.  Useful when you are new to the game, but you should turn them off once you are used to it.",
+    ),
+    o(
+        0,
+        "Rotation marker",
+        "Show rotation marker",
+        Tick,
+        "Shows horrible green marker to show camera rotation.  Useful when you are new to the game, but you should turn them off once you are used to it because it looks horrible.",
+    ),
+    o(0, "Edge scrolling", "Edge scrolling", Tick, "Makes the camera move when you move the mouse pointer to the edge of the screen"),
+    o(
+        0,
+        "censorship",
+        "Language censorship",
+        Tick,
+        "Filters out most of the bad language, if you don't like that sort of thing ruining your violent blood-bath and slavery experience.",
+    ),
+    o(
+        0,
+        "floaters",
+        "Show damage floaters",
+        Choice(&[("0", "Off"), ("1", "Simple info"), ("2", "Full info")]),
+        "These are the floating text numbers that show the damage when a character is hit.  It also shows in brackets the amount of damage that was stopped by armour.  [Full Info] will show separate numbers for each damage type.",
+    ),
+    o(0, "font size2", "Font Size", Slider(-10.0, 32.0), ""),
+    o(0, "", "", Blank, ""),
+    o(
+        0,
+        "Fast zone hopping",
+        "Fast zone hopping",
+        Tick,
+        "Allows you to jump between characters in different map zones without any loading time because it keeps a larger area in memory.  WARNING: will use more RAM and reduce frame rate",
+    ),
     // Gameplay
     o(1, "", "Population settings (affects performance)", Header, ""),
-    o(1, "Squad size multiplier", "Squad size multiplier", Slider(0.25, 3.0, 0.05, false), "Multiplies the number of people in each squad."),
-    o(1, "Global population multiplier", "Global population multiplier (num NPC squads)", Slider(0.25, 3.0, 0.05, false), "Multiplies the number of squads in the world."),
+    o(
+        1,
+        "Squad size multiplier",
+        "Squad size multiplier",
+        Slider(0.5, 3.0),
+        "This multiplies the number of NPCs in each squad (Does not affect number of squads).  Setting higher than 1.0 means MORE characters and bigger battles.  WARNING! Will adversely affect performance.",
+    ),
+    o(
+        1,
+        "Global population multiplier",
+        "Global population multiplier (num NPC squads)",
+        Slider(0.5, 4.0),
+        "This multiplies the number of squads in the world (Does not affect squad size).  Setting higher than 1.0 means MORE characters.  WARNING! Will adversely affect performance.",
+    ),
     o(1, "", "Difficulty settings", Header, ""),
-    o(1, "raidSizeMult", "Town raid events: size", Slider(0.25, 3.0, 0.05, false), "The size of the forces that attack your town."),
-    o(1, "raidFrequencyMult", "Town raid events: frequency", Slider(0.25, 3.0, 0.05, false), "How often raids on your town happen (above 1 more often)."),
-    o(1, "attacks", "Town attacks frequency", Choice(&[("0", "Never"), ("1", "Fewer"), ("2", "Normal"), ("3", "Bombardment")]), "How often bandits and enemies attack your town besides the raid events."),
-    o(1, "Dismemberment", "Dismemberment", Choice(&[("0", "Off"), ("1", "Rare"), ("2", "Frequent")]), "How often limbs are lost."),
+    o(
+        1,
+        "raidSizeMult",
+        "Town raid events: size",
+        Slider(0.25, 4.0),
+        "Affects the size (and therefore difficulty) of attacking forces when nearby factions attack your town. WARNING! Making the raids bigger will affect performance",
+    ),
+    o(1, "raidFrequencyMult", "Town raid events: frequency", Slider(0.25, 3.0), "Affects the frequency of the raid events.  (Values > 1 means more frequent attacks)"),
+    o(
+        1,
+        "attacks",
+        "Town attacks frequency",
+        Choice(&[("0", "Bombardment"), ("1", "High"), ("2", "Normal"), ("3", "Fewer"), ("4", "Rare"), ("5", "Never")]),
+        "This is a separate thing to the raid events.  This is for the attacks by bandits and enemies that just happen to be passing by your base and decide to attack it, trying to take it over. The old default was [High]",
+    ),
+    o(
+        1,
+        "Dismemberment",
+        "Dismemberment",
+        Choice(&[("0", "Never"), ("1", "Rare"), ("2", "Frequent")]),
+        "Affects how often limbs are lost.  [Frequent] means that a limb is lost whenever its HP drops below -100.  [Rare] means limbs are only lost when HIT and the damage goes below -100 (a rare occurence).  With either setting limbs can still be eaten off also.  [Never] means limb loss is disabled completely (boring)",
+    ),
     // Graphics
-    o(2, "view distance", "View Distance", Slider(2000.0, 20000.0, 500.0, false), "How far you can see; far costs performance."),
-    o(2, "terrain detail", "Terrain Detail", Slider(0.0, 1.0, 0.05, true), "The quality of the terrain."),
-    o(2, "grass range", "Grass View Range", Slider(0.0, 3.0, 0.1, false), "How far grass is drawn."),
-    o(2, "grass density", "Grass Density", Slider(0.0, 2.0, 0.1, false), "How thick the grass is."),
-    o(2, "foliage range", "Foliage View Range", Slider(0.0, 3.0, 0.1, false), "How far plants and rocks are drawn."),
-    o(2, "npc range", "NPC View Range", Slider(1000.0, 10000.0, 250.0, false), "How far people are drawn."),
-    o(2, "objects view range", "Objects View Range", Slider(1000.0, 10000.0, 250.0, false), "How far small objects are drawn."),
-    o(2, "feature range", "Terrain Feature Range", Slider(0.0, 4.0, 1.0, false), "How far large rocks and cliffs are drawn."),
-    o(2, "distant town range", "Distant Towns Range", Slider(0.0, 10.0, 1.0, false), "How far away towns are drawn on the horizon."),
-    o(2, "generate distant towns", "Generate Distant Towns", Tick, "Make horizon models for towns that have none (player and modded towns)."),
-    o(2, "texture resolution gimping", "Texture Quality (need restart)", Choice(&[("0", "Maximum"), ("1", "Medium"), ("2", "Fugly")]), "Texture resolution; more uses more video memory."),
-    o(2, "terrain patch size", "Terrain Chunk Size (need restart)", Choice(&[("0", "Small"), ("1", "Large")]), "Large chunks are faster at long view distances."),
-    o(2, "water reflection", "Water reflection", Choice(&[("0", "Disabled"), ("1", "Characters"), ("2", "Buildings"), ("3", "Everything")]), "What the water reflects; off is faster."),
-    o(2, "shadow mode", "Shadows", Choice(&[("0", "Off"), ("1", "Normal"), ("2", "RTWSM")]), "Turn shadows off if the game runs slowly."),
-    o(2, "shadow quality", "Shadow Quality", Choice(&[("0", "1024 (poor)"), ("1", "2048 (nice)"), ("2", "4096")]), "The shadows' resolution."),
-    o(2, "Shadow Range", "Shadow Range", Slider(500.0, 5000.0, 100.0, false), "How far shadows reach; longer is softer."),
-    o(2, "Blood", "Blood", Tick, "Blood splats on the ground."),
-    o(2, "harpoonLimit", "Harpoon limit", Slider(0.0, 200.0, 5.0, false), "How many bolts and harpoons stay stuck in the ground."),
-    o(2, "HeatHaze", "HeatHaze", Tick, "The shimmer of heat in the air."),
-    o(2, "FXAA", "FXAA", Tick, "Smooth jagged edges."),
+    o(2, "Video Mode", "Resolution (need restart)", Resolution, ""),
+    o(2, "Full Screen", "Full screen (need restart)", VideoTick("Yes"), "Fullscreen mode, use only if Borderless isn't working for you"),
+    o(2, "Border", "Borderless (need restart)", VideoTick("None"), "Borderless is the recommended screen mode, it is a type of fullscreen that allows safer alt-tabbing"),
+    o(
+        2,
+        "view distance",
+        "View Distance",
+        Slider(1500.0, 12000.0),
+        "Increases the distance you can see, but has a negative effect on performance.  Recommend you don't set it extremely high or low.",
+    ),
+    o(2, "terrain detail", "Terrain Detail", Slider(0.0, 1.0), "Increases the quality of the terrain, but can have a negative effect on performance."),
+    o(2, "grass range", "Grass View Range", Slider(0.0, 3.0), ""),
+    o(2, "grass density", "Grass Density", Slider(0.0, 2.0), ""),
+    o(2, "foliage range", "Foliage View Range", Slider(0.1, 4.0), ""),
+    o(2, "npc range", "NPC View Range", Slider(1000.0, 8000.0), ""),
+    o(2, "objects view range", "Objects View Range", Slider(1000.0, 8000.0), ""),
+    o(2, "feature range", "Terrain Feature Range", Slider(0.0, 8.0), ""),
+    o(2, "distant town range", "Distant Towns Range", Slider(0.0, 8.0), ""),
+    o(
+        2,
+        "generate distant towns",
+        "Generate Distant Towns",
+        Tick,
+        "Generate distant town meshes for towns that do not yet have them, such as player built towns and modded towns.\nThis may cause issues on some hardware.",
+    ),
+    o(
+        2,
+        "texture resolution gimping",
+        "Texture Quality (need restart)",
+        Choice(&[("0", "Maximum"), ("1", "High"), ("2", "Medium"), ("3", "Low"), ("4", "Fugly")]),
+        "Increases texture quality, doesn't tend to affect performance but will affect memory use and loading times. /n WARNING!  If you don't have enough video RAM to handle the setting you choose then the game will crash randomly because that's just how Microsoft designed it.  Recommend > 4GB VRAM for max setting",
+    ),
+    o(
+        2,
+        "terrain patch size",
+        "Terrain Chunk Size (need restart)",
+        Choice(&[("0", "Small"), ("1", "Large")]),
+        "The size of terrain chunks. [Large] will make the game run much faster when looking at the horizon for faster computers.  Slower systems using a shorter view distance may find it actually runs slower, in which case set it to [Small].  [Small] will also help if you have problems with running out of video RAM, which causes crashes",
+    ),
+    o(
+        2,
+        "water reflection",
+        "Water reflection",
+        Choice(&[("0", "Disabled"), ("1", "Landscape"), ("2", "Characters"), ("3", "Buildings"), ("4", "Everything")]),
+        "Determines what is reflected in the water.  Turning this off will give a good performance boost",
+    ),
+    o(2, "shadow mode", "Shadows", Choice(&[("0", "Disabled"), ("1", "CSM"), ("2", "RTWSM")]), "Turn off shadows if you have problems with performance"),
+    o(2, "shadow quality", "Shadow Quality", Choice(&[("0", "1024 (poor)"), ("1", "2048 (nice)"), ("2", "4096 (some video cards may freak out)")]), ""),
+    o(
+        2,
+        "Shadow Range",
+        "Shadow Range",
+        Slider(1000.0, 9000.0),
+        "Setting a longer range means that shadows are visible for a longer distance, but also reduces the shadows resolution/quality.  Find a balance that you like.",
+    ),
+    o(2, "Blood", "Blood", Tick, ""),
+    o(2, "Decal Range", "Decal Range", Slider(0.0, 5000.0), ""),
+    o(2, "Decal Resolution", "Decal Resolution", Choice(&[("512", "512"), ("1024", "1024"), ("2048", "2048")]), "The quality of blood-splats on the terrain"),
+    o(
+        2,
+        "harpoonLimit",
+        "Harpoon limit",
+        Slider(10.0, 500.0),
+        "The max number of harpoons/arrows that are left in the ground.  Reduce this if you have frame rate drops around heavy turret areas.",
+    ),
+    o(2, "", "", Blank, ""),
     // Audio
-    o(3, "Music volume", "Music volume", Slider(0.0, 1.0, 0.05, true), ""),
-    o(3, "Ambient volume", "Ambient volume", Slider(0.0, 1.0, 0.05, true), ""),
-    o(3, "Footstep volume", "Footstep volume", Slider(0.0, 1.0, 0.05, true), ""),
-    o(3, "Sfx volume", "SFX volume", Slider(0.0, 1.0, 0.05, true), ""),
-    o(3, "UI volume", "UI volume", Slider(0.0, 1.0, 0.05, true), ""),
-    o(3, "VO volume", "VO volume", Slider(0.0, 1.0, 0.05, true), ""),
-    o(3, "Music frequency", "Music Frequency (minutes)", Slider(0.0, 30.0, 1.0, false), "How long between pieces of music."),
+    o(3, "Music volume", "Music volume", Slider(0.0, 1.0), ""),
+    o(3, "Ambient volume", "Ambient volume", Slider(0.0, 1.0), ""),
+    o(3, "Footstep volume", "Footstep volume", Slider(0.0, 1.0), ""),
+    o(3, "Sfx volume", "SFX volume", Slider(0.0, 1.0), ""),
+    o(3, "VO volume", "VO volume", Slider(0.0, 1.0), ""),
+    o(3, "UI volume", "UI volume", Slider(0.0, 1.0), ""),
+    o(3, "", "", Blank, ""),
+    o(3, "Music frequency", "Music Frequency (minutes)", Slider(1.0, 20.0), "Affects the overall amount of time that music plays in the game"),
     // Controls
     o(4, "invert X", "Invert mouse X", Tick, ""),
     o(4, "invert Y", "Invert mouse Y", Tick, ""),
-    o(4, "swap mouse buttons", "Swap mouse buttons", Tick, "Swap the left and right buttons on the interface."),
-    o(4, "hardware_mouse", "Hardware Mouse", Tick, "Use the Windows pointer: it moves without lag when the game is slow."),
-    o(4, "mouse speed pan", "Camera Rotate Speed X", Slider(1.0, 20.0, 0.5, false), ""),
-    o(4, "mouse speed tilt", "Camera Rotate Speed Y", Slider(1.0, 20.0, 0.5, false), ""),
-    o(4, "camera zoom", "Camera Zoom Speed", Slider(10.0, 300.0, 5.0, false), ""),
+    o(4, "swap mouse buttons", "Swap mouse buttons", Tick, "Swap left and right mouse buttons on the GUI"),
+    o(
+        4,
+        "hardware_mouse",
+        "Hardware Mouse",
+        Tick,
+        "Turning this on will use the windows hardware mouse pointer, which looks a bit weird but has the advantage that it's not affected by the frame-rate.  (REQURIES RESTART)",
+    ),
+    o(4, "camera speed", "Camera Move Speed", Slider(150.0, 1000.0), ""),
+    o(4, "mouse speed pan", "Camera Rotate Speed X", Slider(2.0, 50.0), ""),
+    o(4, "mouse speed tilt", "Camera Rotate Speed Y", Slider(2.0, 50.0), ""),
+    o(4, "camera zoom", "Camera Zoom Speed", Slider(10.0, 200.0), ""),
+    o(4, "", "", Blank, ""),
     o(4, "", "Key bindings", Header, ""),
 ];
 
-/// controls.cfg's actions with the option window's names (F032960's key binding rows).
+/// The key binding rows (F032960): controls.cfg's actions with the window's names, in its
+/// order; an empty action a heading. (not ported) The Tools section's editor keys do nothing
+/// here.
 const BINDINGS: &[(&str, &str)] = &[
     ("mouse_select", "Selection"),
     ("mouse_command", "Issue command"),
@@ -137,18 +273,19 @@ const BINDINGS: &[(&str, &str)] = &[
     ("toggle_inventory", "Toggle character inventory"),
     ("toggle_stats", "Toggle character stats"),
     ("toggle_research", "Toggle research"),
-    ("toggle_crafting", "Toggle faction window"),
+    ("toggle_faction", "Toggle faction window"),
     ("toggle_bar", "Toggle main gui"),
     ("stop_movement", "Stop selected characters actions"),
     ("toggle_block", "Toggle block only mode"),
     ("toggle_hold", "Toggle hold mode"),
     ("toggle_passive", "Toggle passive mode"),
+    ("toggle_jobs", "Toggle jobs"),
     ("toggle_ranged", "Toggle ranged mode"),
     ("toggle_sneak", "Toggle stealth mode"),
-    ("toggle_taunt", "Toggle taunt mode"),
     ("cycle_run_speed", "Cycle movement speed"),
     ("medic", "Medic order"),
     ("rescue", "Rescue order"),
+    ("prospect", "Prospect order"),
     ("focus_char", "Focus selected character"),
     ("select_all", "Select all characters"),
     ("select_0", "Select character 1"),
@@ -164,6 +301,7 @@ const BINDINGS: &[(&str, &str)] = &[
     ("character_next", "Select next character"),
     ("character_prev", "Select previous character"),
     ("change_squad", "Cycle squads"),
+    ("", "Build mode"),
     ("toggle_build", "Toggle build mode"),
     ("build_apply", "Confirm build mode"),
     ("build_undo", "Undo last building"),
@@ -173,6 +311,13 @@ const BINDINGS: &[(&str, &str)] = &[
     ("build_move_down", "Move building down"),
     ("build_tilt_increase", "Increase building slope"),
     ("build_tilt_decrease", "Decrease building slope"),
+    ("", "Tools"),
+    ("editor_toggle", "Toggle game editor"),
+    ("rebuild_navmesh", "Rebuild navmesh"),
+    ("reload_biomes", "Reload biome data"),
+    ("gizmo_move", "Editor gizmo: move"),
+    ("gizmo_rotate", "Editor gizmo: rotate"),
+    ("gizmo_scale", "Editor gizmo: scale"),
 ];
 
 /// The Esc menu and the options window.
@@ -193,6 +338,12 @@ struct Options {
     tab: u8,
     settings: Cfg,
     controls: Cfg,
+    /// Ogre's kenshi.cfg (the screen's resolution and mode), the screen's video modes, the
+    /// compositors (compositors.cfg), the active mods (names and versions).
+    video: Cfg,
+    modes: Vec<String>,
+    compositors: Vec<String>,
+    mods: Vec<(String, i32)>,
     /// The rows of the tab shown: holder, the option (or binding) and its control entities.
     rows: Vec<Row>,
     list: Entity,
@@ -205,6 +356,9 @@ struct Row {
     holder: Entity,
     opt: Option<usize>,
     bind: Option<usize>,
+    /// A compositor's tick, or the key bindings' Defaults button.
+    comp: Option<usize>,
+    defaults: bool,
     control: Option<Entity>,
     number: Option<Entity>,
 }
@@ -239,13 +393,42 @@ fn button_def(name: &str, skin: &str, caption: &str, pos: [f32; 4]) -> kenshi_gu
     }
 }
 
+/// A float as Ogre's StringConverter::toString writes it (precision 6, F042345): six
+/// significant digits, no trailing zeros.
+fn ogre_float(v: f32) -> String {
+    if v == 0.0 || !v.is_finite() {
+        return "0".into();
+    }
+    let digits = (5 - v.abs().log10().floor() as i32).max(0) as usize;
+    let s = format!("{v:.digits$}");
+    if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
+}
+
 fn value_text(kind: Kind, v: f32) -> String {
     match kind {
-        Slider(_, _, _, true) => format!("{:.0}%", v * 100.0),
-        Slider(_, _, step, false) if step >= 1.0 => format!("{v:.0}"),
-        Slider(..) => format!("{v:.2}"),
+        Slider(..) => ogre_float(v),
         _ => String::new(),
     }
+}
+
+/// The compositors the graphics tab ticks (data/materials/compositors/compositors.cfg: a name a
+/// line, # a comment).
+fn compositors(root: &std::path::Path) -> Vec<String> {
+    let text = std::fs::read_to_string(root.join("data/materials/compositors/compositors.cfg")).unwrap_or_default();
+    text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_string).collect()
+}
+
+/// The active mods, each with its file's version (the Mods tab).
+fn active_mods(root: &std::path::Path) -> Vec<(String, i32)> {
+    let order = kenshi_io::mods::Install::new(root).load_order().map(|o| o.files).unwrap_or_default();
+    order
+        .into_iter()
+        .filter(|f| !f.core)
+        .map(|f| {
+            let v = kenshi_io::fcs::read_header(&f.path).map_or(0, |h| h.version);
+            (f.name.trim_end_matches(".mod").to_string(), v)
+        })
+        .collect()
 }
 
 fn choice_name(kind: Kind, v: &str) -> String {
@@ -253,6 +436,14 @@ fn choice_name(kind: Kind, v: &str) -> String {
         Choice(cs) => cs.iter().find(|(k, _)| *k == v).map_or(v.to_string(), |(_, n)| n.to_string()),
         _ => String::new(),
     }
+}
+
+/// The screen's video modes as Ogre names them ("1920 x 1080 @ 32-bit colour"), largest first.
+fn video_modes(monitors: &Query<&bevy::window::Monitor>) -> Vec<String> {
+    let mut sizes: Vec<(u32, u32)> = monitors.iter().flat_map(|m| m.video_modes.iter().map(|v| (v.physical_size.x, v.physical_size.y))).collect();
+    sizes.sort_by(|a, b| b.cmp(a));
+    sizes.dedup();
+    sizes.into_iter().map(|(w, h)| format!("{w} x {h} @ 32-bit colour")).collect()
 }
 
 /// The rows of `o.tab`, made again.
@@ -263,7 +454,7 @@ fn fill(commands: &mut Commands, o: &mut Options, gui: &GuiRes, assets: &AssetSe
     let scale = kenshi_gui::res::ui_scale();
     let row_h = 44.0 * scale;
     let mut k = 0usize;
-    let mut add = |commands: &mut Commands, defs: Vec<kenshi_gui::WidgetDef>, opt: Option<usize>, bind: Option<usize>, control: &str, number: &str| {
+    let mut add = |commands: &mut Commands, defs: Vec<kenshi_gui::WidgetDef>, opt: Option<usize>, bind: Option<usize>, control: &str, number: &str, (comp, defaults): (Option<usize>, bool)| {
         let holder = commands
             .spawn((
                 Node {
@@ -279,20 +470,29 @@ fn fill(commands: &mut Commands, o: &mut Options, gui: &GuiRes, assets: &AssetSe
             .id();
         commands.entity(o.list).add_child(holder);
         let built = kenshi_gui::ui::spawn(commands, &gui.0, assets, &defs, Some(holder), [width, row_h]);
-        o.rows.push(Row { holder, opt, bind, control: built.get(control), number: built.get(number) });
+        o.rows.push(Row { holder, opt, bind, comp, defaults, control: built.get(control), number: built.get(number) });
         k += 1;
     };
     let (lw, cx) = (width * 0.48, width * 0.5);
     for (i, op) in OPTS.iter().enumerate().filter(|(_, op)| op.tab == o.tab) {
         let label = |f: &str| text_def("Label", op.label, [10.0 * scale, 0.0, lw, row_h], f, "Left VCenter");
         let v = o.settings.get(op.key).unwrap_or("").to_string();
+        let tick = || button_def("Control", "Kenshi_TickBoxSkin", "", [cx, (row_h - 33.0 * scale) * 0.5, 35.0 * scale, 33.0 * scale]);
         let defs = match op.kind {
             Header => vec![text_def("Label", op.label, [0.0, 0.0, width, row_h], "Kenshi_PaintedTextFont_Large", "Left VCenter")],
-            Tick => vec![label("Kenshi_StandardFont_Large"), button_def("Control", "Kenshi_TickBoxSkin", "", [cx, (row_h - 33.0 * scale) * 0.5, 35.0 * scale, 33.0 * scale])],
-            Slider(min, max, _, _) => {
+            Blank => Vec::new(),
+            Tick | VideoTick(_) => vec![label("Kenshi_StandardFont_Large"), tick()],
+            // F042415: the button 0.2 of the row wide, its label empty
+            Action(caption) => vec![button_def("Control", "Kenshi_Button2", caption, [cx, 4.0 * scale, width * 0.2, row_h - 8.0 * scale])],
+            Resolution => {
+                let shown = o.video.get(op.key).unwrap_or("").to_string();
+                vec![label("Kenshi_StandardFont_Large"), button_def("Control", "Kenshi_Button1", &shown, [cx, 4.0 * scale, width * 0.4, row_h - 8.0 * scale])]
+            }
+            Slider(min, max) => {
                 let mut bar = button_def("Control", "Kenshi_ScrollBar", "", [cx, 4.0 * scale, width * 0.36, row_h - 8.0 * scale]);
                 bar.kind = "ScrollBar".into();
-                bar.props.push(("Range".into(), "1000".into()));
+                // F042370: 100 steps a unit
+                bar.props.push(("Range".into(), format!("{}", ((max - min) * 100.0).round())));
                 let f = v.parse::<f32>().unwrap_or(min);
                 vec![
                     label("Kenshi_StandardFont_Large"),
@@ -302,7 +502,7 @@ fn fill(commands: &mut Commands, o: &mut Options, gui: &GuiRes, assets: &AssetSe
                 .into_iter()
                 .map(|mut d| {
                     if d.name == "Control" {
-                        d.props.push(("ScrollPosition".into(), format!("{}", ((f - min) / (max - min) * 1000.0).round())));
+                        d.props.push(("ScrollPosition".into(), format!("{}", ((f - min) * 100.0).round())));
                     }
                     d
                 })
@@ -310,31 +510,59 @@ fn fill(commands: &mut Commands, o: &mut Options, gui: &GuiRes, assets: &AssetSe
             }
             Choice(_) => vec![label("Kenshi_StandardFont_Large"), button_def("Control", "Kenshi_Button1", &choice_name(op.kind, &v), [cx, 4.0 * scale, width * 0.3, row_h - 8.0 * scale])],
         };
-        add(commands, defs, Some(i), None, "Control", "Number");
+        add(commands, defs, Some(i), None, "Control", "Number", (None, false));
+    }
+    // the graphics tab's compositor ticks (F032960's loop over compositors.cfg's names)
+    if o.tab == 2 {
+        for (c, name) in o.compositors.clone().iter().enumerate() {
+            let defs = vec![
+                text_def("Label", name, [10.0 * scale, 0.0, lw, row_h], "Kenshi_StandardFont_Large", "Left VCenter"),
+                button_def("Control", "Kenshi_TickBoxSkin", "", [cx, (row_h - 33.0 * scale) * 0.5, 35.0 * scale, 33.0 * scale]),
+            ];
+            add(commands, defs, None, None, "Control", "", (Some(c), false));
+        }
     }
     if o.tab == 4 {
         for (b, (action, name)) in BINDINGS.iter().enumerate() {
+            // an empty action: a heading (Build mode, Tools)
+            if action.is_empty() {
+                add(commands, vec![text_def("Label", name, [0.0, 0.0, width, row_h], "Kenshi_PaintedTextFont_Large", "Left VCenter")], None, None, "", "", (None, false));
+                continue;
+            }
             let keys = o.controls.all(action).join(", ");
             let defs = vec![
                 text_def("Label", name, [10.0 * scale, 0.0, lw, row_h], "Kenshi_StandardFont_Large", "Left VCenter"),
                 button_def("Control", "Kenshi_Button1", if keys.is_empty() { "-" } else { &keys }, [cx, 4.0 * scale, width * 0.3, row_h - 8.0 * scale]),
             ];
-            add(commands, defs, None, Some(b), "Control", "");
+            add(commands, defs, None, Some(b), "Control", "", (None, false));
+        }
+        // the bindings' Defaults (Kenshi_Button2)
+        add(commands, vec![button_def("Control", "Kenshi_Button2", "Defaults", [cx, 4.0 * scale, width * 0.2, row_h - 8.0 * scale])], None, None, "Control", "", (None, true));
+    }
+    // the Mods tab: "[Active mods]" in #afa68b, then "- name" and "Version: n" a mod
+    if o.tab == 5 {
+        add(commands, vec![text_def("Label", "[Active mods]", [10.0 * scale, 0.0, lw, row_h], "Kenshi_StandardFont_Large", "Left VCenter")], None, None, "", "", (None, false));
+        for (name, v) in o.mods.clone() {
+            let defs = vec![
+                text_def("Label", &format!("- {name}"), [10.0 * scale, 0.0, lw, row_h], "Kenshi_StandardFont_Large", "Left VCenter"),
+                text_def("Number", &format!("Version: {v}"), [cx, 0.0, width * 0.4, row_h], "Kenshi_StandardFont_Large", "Left VCenter"),
+            ];
+            add(commands, defs, None, None, "", "", (None, false));
         }
     }
     // the sliders where their values are
     for r in &o.rows {
         if let (Some(i), Some(c)) = (r.opt, r.control)
-            && let Slider(min, max, _, _) = OPTS[i].kind
+            && let Slider(min, max) = OPTS[i].kind
         {
             let f = o.settings.f32(OPTS[i].key, min);
-            commands.queue(kenshi_gui::ui::SetScroll(c, ((f - min) / (max - min) * 1000.0).clamp(0.0, 1000.0)));
+            commands.queue(kenshi_gui::ui::SetScroll(c, ((f - min) * 100.0).clamp(0.0, (max - min) * 100.0)));
         }
     }
     o.scroll = 0.0;
 }
 
-fn open_options(commands: &mut Commands, gui: &GuiRes, assets: &AssetServer, game: &Game, size: [f32; 2]) -> Options {
+fn open_options(commands: &mut Commands, gui: &GuiRes, assets: &AssetServer, game: &Game, size: [f32; 2], modes: Vec<String>) -> Options {
     let mut defs = gui.0.layout("Kenshi_OptionsPanel.layout");
     for d in &mut defs {
         if let kenshi_gui::res::Pos::Real(r) = d.pos {
@@ -372,6 +600,10 @@ fn open_options(commands: &mut Commands, gui: &GuiRes, assets: &AssetServer, gam
         tab: 0,
         settings: cfg::load(&game.root, "settings.cfg"),
         controls: cfg::load(&game.root, "controls.cfg"),
+        video: cfg::load(&game.root, "kenshi.cfg"),
+        modes,
+        compositors: compositors(&game.root),
+        mods: active_mods(&game.root),
         rows: Vec::new(),
         list: inner,
         scroll: 0.0,
@@ -391,7 +623,14 @@ fn close_options(commands: &mut Commands, o: Options) {
 }
 
 /// The options that act at once: the damage floaters, the sound volumes, the movement marker.
-fn apply_now(key: &str, value: &str, floaters: &mut Option<ResMut<super::floaters::FloaterMode>>, sound: &mut Option<ResMut<super::sound::Sound>>) {
+fn apply_now(key: &str, value: &str, floaters: &mut Option<ResMut<super::floaters::FloaterMode>>, sound: &mut Option<ResMut<super::sound::Sound>>, markers: &mut Option<ResMut<super::move_marker::MarkerOptions>>) {
+    if let Some(m) = markers {
+        match key {
+            "Movement marker" => m.movement = value.trim() != "0",
+            "Rotation marker" => m.rotation = value.trim() != "0",
+            _ => {}
+        }
+    }
     if key == "floaters"
         && let Some(f) = floaters
     {
@@ -418,7 +657,7 @@ pub fn update(
     windows: Query<&Window>,
     hovers: Query<&RelativeCursorPosition>,
     mut nodes: Query<&mut Node>,
-    (inv, stats, build, research, mut floaters, mut sound, slaves): (
+    (inv, stats, build, research, mut floaters, mut sound, slaves, mut markers): (
         Option<Res<super::inventory_ui::InventoryWindow>>,
         Option<Res<super::stats_ui::StatsWindow>>,
         Option<Res<super::build_ui::BuildMode>>,
@@ -426,10 +665,11 @@ pub fn update(
         Option<ResMut<super::floaters::FloaterMode>>,
         Option<ResMut<super::sound::Sound>>,
         Option<Res<super::slave_ui::SlaveTrade>>,
+        Option<ResMut<super::move_marker::MarkerOptions>>,
     ),
-    mut exit: MessageWriter<AppExit>,
-    mut frames: Local<u32>,
+    (mut frames, monitors, mut tutorials): (Local<u32>, Query<&bevy::window::Monitor>, ResMut<super::tutorial_ui::Tutorials>),
     mut saves: ResMut<super::saves_ui::SavesPanel>,
+    mut new_game: Option<ResMut<super::menu::Menu>>,
 ) {
     let size = windows.iter().next().map_or([1600.0, 900.0], |w| [w.width(), w.height()]);
     let mut clicked: Vec<GuiClick> = clicks.read().cloned().collect();
@@ -507,8 +747,16 @@ pub fn update(
     if saves.is_open() {
         return;
     }
-    // Esc: the options window closes, then the menu; with nothing else open, the menu opens
+    // Esc: the options window closes, then the new game panel (its advanced window first:
+    // menu::advanced), then the menu; with nothing else open, the menu opens
     if esc {
+        if let Some(m) = new_game.as_mut() {
+            if !m.advanced_open() {
+                m.close_panel(&mut commands);
+                commands.remove_resource::<super::menu::Menu>();
+            }
+            return;
+        }
         if let Some(o) = menus.options.take() {
             close_options(&mut commands, o);
             return;
@@ -544,20 +792,12 @@ pub fn update(
                     }
                     game.paused = menus.was_paused;
                 }
-                "OptionsButton" => menus.options = Some(open_options(&mut commands, &gui, &assets, &game, size)),
+                "OptionsButton" => menus.options = Some(open_options(&mut commands, &gui, &assets, &game, size, video_modes(&monitors))),
                 "SaveGameButton" => saves.open(&mut commands, &gui, &assets, super::saves_ui::Kind::Save, size),
                 "LoadGameButton" => saves.open(&mut commands, &gui, &assets, super::saves_ui::Kind::Load, size),
-                "NewGameButton" => {
-                    // (stand-in) the program started again at its main menu
-                    if let Ok(exe) = std::env::current_exe() {
-                        let mut c = std::process::Command::new(exe);
-                        c.arg(&game.root).current_dir(&game.root);
-                        for v in super::LOAD_VARS {
-                            c.env_remove(v);
-                        }
-                        let _ = c.spawn();
-                    }
-                    exit.write(AppExit::Success);
+                "NewGameButton" if new_game.is_none() => {
+                    // F048550 -> F048543: the new game panel over the game (menu::Menu::in_game)
+                    commands.insert_resource(super::menu::Menu::in_game(game.root.clone()));
                 }
                 "ExitGameButton" => {
                     // F048526: asked first
@@ -590,8 +830,48 @@ pub fn update(
             commands.queue(SetCaption(c.widget, "Press a key...".into()));
             continue;
         }
+        // the bindings' Defaults: the install's controls.cfg again
+        if r.defaults {
+            o.controls = Cfg::parse(&std::fs::read_to_string(game.root.join("controls.cfg")).unwrap_or_default());
+            let _ = cfg::save("controls.cfg", &o.controls);
+            commands.insert_resource(super::bindings::Bindings::from_cfg(&o.controls));
+            fill(&mut commands, o, &gui, &assets, tab_width);
+            break;
+        }
+        // a compositor's tick
+        if let Some(k) = r.comp {
+            let key = o.compositors[k].clone();
+            let on = o.settings.get(&key).is_some_and(|v| v.trim() == "1");
+            o.settings.set(&key, if on { "0" } else { "1" });
+            let _ = cfg::save("settings.cfg", &o.settings);
+            continue;
+        }
         let Some(i) = r.opt else { continue };
         let op = &OPTS[i];
+        match op.kind {
+            Action("Reset Tutorials") => {
+                tutorials.reset();
+                continue;
+            }
+            // kenshi.cfg's: saved in the rewrite's copy (read at the next start)
+            VideoTick(yes) => {
+                let on = o.video.get(op.key) == Some(yes);
+                let other = if op.key == "Border" { "Default" } else { "No" };
+                o.video.set(op.key, if on { other } else { yes });
+                let _ = cfg::save("kenshi.cfg", &o.video);
+                continue;
+            }
+            Resolution if !o.modes.is_empty() => {
+                let cur = o.video.get(op.key).unwrap_or("");
+                let at = o.modes.iter().position(|m| cur.starts_with(m.as_str())).map_or(0, |k| (k + 1) % o.modes.len());
+                let m = o.modes[at].clone();
+                o.video.set(op.key, &m);
+                let _ = cfg::save("kenshi.cfg", &o.video);
+                commands.queue(SetCaption(c.widget, m));
+                continue;
+            }
+            _ => {}
+        }
         let cur = o.settings.get(op.key).unwrap_or("0").to_string();
         let new = match op.kind {
             Tick => if cur.trim() == "1" { "0".to_string() } else { "1".to_string() },
@@ -603,7 +883,7 @@ pub fn update(
         };
         o.settings.set(op.key, &new);
         let _ = cfg::save("settings.cfg", &o.settings);
-        apply_now(op.key, &new, &mut floaters, &mut sound);
+        apply_now(op.key, &new, &mut floaters, &mut sound, &mut markers);
         match op.kind {
             Tick => {
                 commands.entity(c.widget).insert(kenshi_gui::ui::Checked(new == "1"));
@@ -614,24 +894,27 @@ pub fn update(
     }
     // the tick boxes as set
     for r in &o.rows {
-        if let (Some(i), Some(c)) = (r.opt, r.control)
-            && matches!(OPTS[i].kind, Tick)
-        {
-            commands.entity(c).insert(kenshi_gui::ui::Checked(o.settings.get(OPTS[i].key).is_some_and(|v| v.trim() == "1")));
-        }
+        let Some(c) = r.control else { continue };
+        let on = match (r.opt.map(|i| &OPTS[i]), r.comp) {
+            (Some(op), _) if matches!(op.kind, Tick) => o.settings.get(op.key).is_some_and(|v| v.trim() == "1"),
+            (Some(Opt { kind: VideoTick(yes), key, .. }), _) => o.video.get(key) == Some(*yes),
+            (None, Some(k)) => o.settings.get(&o.compositors[k]).is_some_and(|v| v.trim() == "1"),
+            _ => continue,
+        };
+        commands.entity(c).insert(kenshi_gui::ui::Checked(on));
     }
     // sliders
     for s in scrolls.read() {
         let Some(r) = o.rows.iter().find(|r| r.control == Some(s.widget)) else { continue };
         let Some(i) = r.opt else { continue };
         let op = &OPTS[i];
-        if let Slider(min, max, step, _) = op.kind {
-            let v = min + (max - min) * (s.pos / 1000.0).clamp(0.0, 1.0);
-            let v = (v / step).round() * step;
-            let text = if step >= 1.0 { format!("{v:.0}") } else { format!("{v:.3}") };
+        if let Slider(min, max) = op.kind {
+            // F042370: the bar's position in hundredths from the minimum
+            let v = (min + s.pos.round() / 100.0).clamp(min, max);
+            let text = ogre_float(v);
             o.settings.set(op.key, &text);
             let _ = cfg::save("settings.cfg", &o.settings);
-            apply_now(op.key, &text, &mut floaters, &mut sound);
+            apply_now(op.key, &text, &mut floaters, &mut sound, &mut markers);
             if let Some(n) = r.number {
                 commands.queue(SetCaption(n, value_text(op.kind, v)));
             }

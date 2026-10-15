@@ -21,6 +21,15 @@
 //! (stand-in) The buildings come without their storage's contents or their interiors. (assumption) Kenshi's handle fields (the "...CS"/"...S"/"...I" ints linking
 //! records at run time) are written as 0: whether Kenshi itself would load such a save is not
 //! known.
+//!
+//! What a real Kenshi save has that the writer leaves out (the save_diff example against an
+//! autosave): in quick.save the towns' GAMESTATE_TOWN (317), the WAR_SAVESTATEs (103), BIOMES,
+//! INSTANCE_COLLECTIONs, GAMESTATE_TOWN_INSTANCE_LIST, SAVED_STATE and TERRAIN_DECALS records;
+//! the PLATOON's handles, squad index, home and current town, mission and AI tag fields; the
+//! factions' trust tables and known list; the camera's options and selection; in a platoon file
+//! the characters' handles, modes and carrying, the items' owners and insides, the medical
+//! parts' hits and wear, the appearance's age and body version, the AI's jobs. Kenshi's own
+//! loader would have to be read to know which of these it needs.
 
 use kenshi_io::fcs::{File, Header, Instance, Record, Reference};
 use std::path::Path;
@@ -39,6 +48,8 @@ pub struct KItem {
     pub maker: String,
     pub material: String,
     pub uniform: String,
+    /// What a bag holds (the item state's own instances: its items in its grid).
+    pub inside: Vec<KItem>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,6 +75,13 @@ pub struct KChar {
     pub personality: i32,
     pub slave_state: i32,
     pub shaved: bool,
+    /// The state object's "escap" (an escaped prisoner, +0xe8) and "disguiseblown" (+0x110,
+    /// seconds; F040035).
+    pub escaped: bool,
+    pub disguise_blown: f32,
+    /// "ssct": when the slave state last turned escaping or ex-slave (the game's clock, hours
+    /// since day 1 began; the state object +0x8, F038704).
+    pub ssct: f32,
     pub items: Vec<KItem>,
 }
 
@@ -103,6 +121,8 @@ pub struct KenshiSave {
     /// The CHARACTER templates of everyone dead in any squad.
     pub dead: Vec<String>,
     pub buildings: Vec<KBuilding>,
+    /// The folder it was read from.
+    pub source: Option<std::path::PathBuf>,
 }
 
 fn int(r: &Record, k: &str) -> Option<i32> {
@@ -116,6 +136,79 @@ fn string(r: &Record, k: &str) -> Option<String> {
 }
 fn boolean(r: &Record, k: &str) -> bool {
     r.bools.iter().any(|(n, v)| n == k && *v)
+}
+
+/// An item state, and what it holds (a bag's items, its own instances).
+fn read_item(it: &Record, by_id: &std::collections::HashMap<&str, &Record>, depth: u32) -> KItem {
+    KItem {
+        record: string(it, "base data sid").unwrap_or_default(),
+        section: string(it, "section").unwrap_or_else(|| "main".into()),
+        x: int(it, "inventory x").unwrap_or(0),
+        y: int(it, "inventory y").unwrap_or(0),
+        quantity: int(it, "quantity").unwrap_or(1),
+        quality: float(it, "quality").unwrap_or(0.0),
+        charges: float(it, "charges").unwrap_or(1.0),
+        maker: string(it, "company sid").unwrap_or_default(),
+        material: string(it, "material sid").unwrap_or_default(),
+        uniform: string(it, "uniform").unwrap_or_default(),
+        // a bag's own INVENTORY_STATE (its instance) and the items in it
+        inside: if depth < 4 {
+            it.instances
+                .iter()
+                .filter_map(|i| by_id.get(i.target.as_str()))
+                .flat_map(|r| if r.kind == INVENTORY { r.instances.iter().filter_map(|i| by_id.get(i.target.as_str())).copied().collect::<Vec<_>>() } else { vec![*r] })
+                .map(|r| read_item(r, by_id, depth + 1))
+                .collect()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// An item as the save keeps it (`KItem`), what a bag holds with it.
+pub(crate) fn kitem(it: &kenshi_char::inventory::Item, section: &str, x: u32, y: u32) -> KItem {
+    KItem {
+        record: it.record.clone(),
+        section: section.to_string(),
+        x: x as i32,
+        y: y as i32,
+        quantity: it.quantity as i32,
+        quality: it.quality,
+        charges: it.food.or(it.ammo).map_or(1.0, |(_, l)| l),
+        maker: it.maker.clone().unwrap_or_default(),
+        material: it.model.clone().unwrap_or_default(),
+        uniform: it.uniform.clone().unwrap_or_default(),
+        inside: it.contents.as_ref().map(|c| c.sections.iter().flat_map(|s| s.items.iter().map(move |p| kitem(&p.item, &s.name, p.x, p.y))).collect()).unwrap_or_default(),
+    }
+}
+
+/// An item of the save made one of the game's (`KItem`), a bag filled with what it held.
+pub(crate) fn game_item(data: &kenshi_data::GameDataContainer, it: &KItem) -> Option<kenshi_char::inventory::Item> {
+    let r = data.get(&it.record)?;
+    let mut item = kenshi_char::inventory::Item::from_record(r, it.quantity.max(1) as u32);
+    if let Some((full, _)) = item.food {
+        item.food = Some((full, it.charges));
+    }
+    if let Some((full, _)) = item.ammo {
+        item.ammo = Some((full, it.charges));
+    }
+    item.maker = (!it.maker.is_empty()).then(|| it.maker.clone());
+    item.model = (!it.material.is_empty()).then(|| it.material.clone());
+    item.uniform = (!it.uniform.is_empty()).then(|| it.uniform.clone());
+    let mut item = item.with_quality(data, it.quality);
+    if let Some(bag) = item.contents.as_mut() {
+        for inner in &it.inside {
+            let Some(i) = game_item(data, inner) else { continue };
+            let left = match bag.section(&inner.section).or(Some(0)) {
+                Some(s) => bag.put(s, i, inner.x.max(0) as u32, inner.y.max(0) as u32).err(),
+                None => Some(i),
+            };
+            if let Some(i) = left {
+                bag.add(i, false);
+            }
+        }
+    }
+    Some(item)
 }
 
 /// Record kinds (itemType) the save uses.
@@ -136,7 +229,7 @@ const BUILDING_STATE: i32 = 35;
 /// A Kenshi save folder read (the player's squads only).
 pub fn read(dir: &Path) -> Result<KenshiSave, String> {
     let quick = kenshi_io::fcs::read(&dir.join("quick.save")).map_err(|e| format!("quick.save: {e}"))?;
-    let mut out = KenshiSave::default();
+    let mut out = KenshiSave { source: Some(dir.to_path_buf()), ..Default::default() };
     if let Some(c) = quick.records.iter().find(|r| r.kind == CAMERA) {
         out.time = (int(c, "time day").unwrap_or(1), int(c, "time hour").unwrap_or(12), int(c, "time minute").unwrap_or(0));
         out.money = int(c, "player money").unwrap_or(0);
@@ -190,6 +283,9 @@ pub fn read(dir: &Path) -> Result<KenshiSave, String> {
                 c.personality = int(g, "personality").unwrap_or(0);
                 c.slave_state = int(g, "slavestate").unwrap_or(0);
                 c.shaved = boolean(g, "shaved");
+                c.escaped = boolean(g, "escap");
+                c.disguise_blown = float(g, "disguiseblown").unwrap_or(0.0);
+                c.ssct = float(g, "ssct").unwrap_or(0.0);
             }
             if let Some(s) = of(STATS) {
                 c.stats = s.floats.clone();
@@ -221,19 +317,9 @@ pub fn read(dir: &Path) -> Result<KenshiSave, String> {
             }
             if let Some(inv) = of(INVENTORY) {
                 for i in &inv.instances {
-                    let Some(it) = by_id.get(i.target.as_str()) else { continue };
-                    c.items.push(KItem {
-                        record: string(it, "base data sid").unwrap_or_default(),
-                        section: string(it, "section").unwrap_or_else(|| "main".into()),
-                        x: int(it, "inventory x").unwrap_or(0),
-                        y: int(it, "inventory y").unwrap_or(0),
-                        quantity: int(it, "quantity").unwrap_or(1),
-                        quality: float(it, "quality").unwrap_or(0.0),
-                        charges: float(it, "charges").unwrap_or(1.0),
-                        maker: string(it, "company sid").unwrap_or_default(),
-                        material: string(it, "material sid").unwrap_or_default(),
-                        uniform: string(it, "uniform").unwrap_or_default(),
-                    });
+                    if let Some(it) = by_id.get(i.target.as_str()) {
+                        c.items.push(read_item(it, &by_id, 0));
+                    }
                 }
             }
             squad.characters.push(c);
@@ -272,7 +358,7 @@ fn rec(kind: i32, id: i32, file: &str, name: &str) -> Record {
     Record { lead: 0, kind, id, name: name.to_string(), string_id: format!("{id}-{file}-INGAME"), datatype: 0, ..Default::default() }
 }
 
-fn v15(records: Vec<Record>, next: i32) -> File {
+pub(crate) fn v15(records: Vec<Record>, next: i32) -> File {
     File {
         header: Header { filetype: 15, version: 0, author: String::new(), description: String::new(), dependencies: String::new(), references: String::new(), tail: Vec::new(), id_counter: next, record_count: records.len() as i32 },
         records,
@@ -335,6 +421,9 @@ pub fn write(dir: &Path, s: &KenshiSave) -> std::io::Result<()> {
             let mut g = take(CHARACTER_STATE, "0");
             g.bools = vec![("shaved".into(), c.shaved)];
             g.ints = vec![("personality".into(), c.personality), ("slavestate".into(), c.slave_state)];
+            g.bools.push(("escap".into(), c.escaped));
+            g.floats.push(("disguiseblown".into(), c.disguise_blown));
+            g.floats.push(("ssct".into(), c.ssct));
             g.strings = vec![("name".into(), c.name.clone()), ("owner faction ID".into(), c.faction.clone())];
             let mut st = take(STATS, &c.name);
             st.floats = c.stats.clone();
@@ -361,7 +450,7 @@ pub fn write(dir: &Path, s: &KenshiSave) -> std::io::Result<()> {
             }
             let mut inv = take(INVENTORY, "0");
             let mut items = Vec::new();
-            for (k, it) in c.items.iter().enumerate() {
+            fn item_records(it: &KItem, take: &mut dyn FnMut(i32, &str) -> Record, out: &mut Vec<Record>) -> String {
                 let mut r = take(ITEM_STATE, "0");
                 r.bools = vec![("in inventory".into(), true)];
                 r.ints = vec![("inventory x".into(), it.x), ("inventory y".into(), it.y), ("quantity".into(), it.quantity)];
@@ -373,8 +462,23 @@ pub fn write(dir: &Path, s: &KenshiSave) -> std::io::Result<()> {
                     ("material sid".into(), it.material.clone()),
                     ("uniform".into(), it.uniform.clone()),
                 ];
-                inv.instances.push(Instance { id: (k + 1).to_string(), target: r.string_id.clone(), position: [0.0; 3], rotation: [1.0, 0.0, 0.0, 0.0], states: Vec::new() });
-                items.push(r);
+                // a bag: its own INVENTORY_STATE holding its items
+                if !it.inside.is_empty() {
+                    let mut bag = take(INVENTORY, "0");
+                    for (k, inner) in it.inside.iter().enumerate() {
+                        let sid = item_records(inner, take, out);
+                        bag.instances.push(Instance { id: (k + 1).to_string(), target: sid, position: [0.0; 3], rotation: [1.0, 0.0, 0.0, 0.0], states: Vec::new() });
+                    }
+                    r.instances.push(Instance { id: "1".into(), target: bag.string_id.clone(), position: [0.0; 3], rotation: [1.0, 0.0, 0.0, 0.0], states: Vec::new() });
+                    out.push(bag);
+                }
+                let sid = r.string_id.clone();
+                out.push(r);
+                sid
+            }
+            for (k, it) in c.items.iter().enumerate() {
+                let sid = item_records(it, &mut take, &mut items);
+                inv.instances.push(Instance { id: (k + 1).to_string(), target: sid, position: [0.0; 3], rotation: [1.0, 0.0, 0.0, 0.0], states: Vec::new() });
             }
             let ai = take(AI, "ai");
             coll.instances.push(Instance {
@@ -445,8 +549,11 @@ impl crate::sim::Sim {
         let minute = (minutes % 60) as i32;
         let players: Vec<&crate::sim::Person> = self.folk.iter().filter(|p| p.player).collect();
         let first = players.first().map_or([0.0; 3], |p| p.mover.position_units());
-        let faction_name = self.data.get(crate::sim::PLAYER_FACTION).map_or("Nameless".to_string(), |f| f.name.clone());
-        let characters = players
+        let faction_name = self.player_faction_name();
+        // each of the player's squads (their order), the animals and those of none in the first
+        let squad_index = |p: &crate::sim::Person| self.player_squad_index(p.id).unwrap_or(0);
+        let squad_count = self.player_squads.len().max(1);
+        let characters: Vec<(usize, KChar)> = players
             .iter()
             .map(|p| {
                 let f = &self.arena.f[p.id];
@@ -456,22 +563,9 @@ impl crate::sim::Sim {
                     .inventory
                     .sections
                     .iter()
-                    .flat_map(|s| {
-                        s.items.iter().map(move |it| KItem {
-                            record: it.item.record.clone(),
-                            section: s.name.to_string(),
-                            x: it.x as i32,
-                            y: it.y as i32,
-                            quantity: it.item.quantity as i32,
-                            quality: it.item.quality,
-                            charges: it.item.food.or(it.item.ammo).map_or(1.0, |(_, l)| l),
-                            maker: it.item.maker.clone().unwrap_or_default(),
-                            material: it.item.model.clone().unwrap_or_default(),
-                            uniform: it.item.uniform.clone().unwrap_or_default(),
-                        })
-                    })
+                    .flat_map(|s| s.items.iter().map(move |it| kitem(&it.item, &s.name, it.x, it.y)))
                     .collect();
-                KChar {
+                let c = KChar {
                     template: p.character.clone().unwrap_or_default(),
                     name: p.name.clone(),
                     position: p.mover.position_units(),
@@ -489,33 +583,36 @@ impl crate::sim::Sim {
                     dead: p.dead,
                     appearance: look(p.id).unwrap_or_default(),
                     personality: p.personality,
-                    // (assumption) 1 a slave, 2 one that has escaped
-                    slave_state: if p.slave.is_some() {
-                        1
-                    } else if p.escaped.is_some() {
-                        2
-                    } else {
-                        0
-                    },
+                    // SlaveStateEnum (crate::slavery)
+                    slave_state: p.slave.as_ref().map_or(0, |s| s.state as i32),
                     shaved: p.shaved,
+                    escaped: p.escaped.is_some(),
+                    ssct: p.slave.as_ref().map_or(0.0, |s| (s.since + self.start_hour()) as f32),
+                    disguise_blown: p.disguise_blown.max(0.0),
                     items,
-                }
+                };
+                (squad_index(p), c)
             })
             .collect();
+        let mut squads: Vec<KSquad> = (0..squad_count)
+            .map(|n| KSquad { id: format!("{faction_name}_{n}"), faction: crate::sim::PLAYER_FACTION.to_string(), template: String::new(), position: first, characters: Vec::new() })
+            .collect();
+        for (n, c) in characters {
+            squads[n.min(squad_count - 1)].characters.push(c);
+        }
+        squads.retain(|q| !q.characters.is_empty());
+        for q in &mut squads {
+            q.position = q.characters.first().map_or(first, |c| c.position);
+        }
         KenshiSave {
             time: (day, hour, minute),
             money: self.money,
             camera: first,
             zones: self.zone_order.clone(),
-            squads: vec![KSquad {
-                id: format!("{faction_name}_0"),
-                faction: crate::sim::PLAYER_FACTION.to_string(),
-                template: String::new(),
-                position: first,
-                characters,
-            }],
+            squads,
             faction_name,
             version: "1.0.68".into(),
+            source: None,
             research: self.research_done.clone(),
             relations: {
                 let mut v: Vec<(String, Vec<(String, f32)>)> = self
@@ -563,7 +660,10 @@ impl crate::sim::Sim {
         let ids: Vec<usize> = self.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
         let chars: Vec<&KChar> = k.squads.iter().flat_map(|s| &s.characters).collect();
         let first = chars.first().map_or([0.0; 3], |c| c.position);
+        self.kenshi_base = k.source.as_ref().map(|p| p.to_string_lossy().into_owned());
         let mut out = Vec::new();
+        // (the save's clock: the slave states' stamps are hours since the clock's start here)
+        let start_hour = self.start_hour();
         for (n, (&id, c)) in ids.iter().zip(&chars).enumerate() {
             let _ = (n, first);
             let at = c.position;
@@ -580,24 +680,21 @@ impl crate::sim::Sim {
             p.dead = c.dead;
             p.personality = c.personality;
             p.shaved = c.shaved;
+            // (crate::slavery, crate::law) the slave state, its master found as a start's
+            // slaves' are (`start_slaves`); an escaped prisoner of the town it stands in
+            p.slave = (c.slave_state > 0).then(|| crate::slavery::Slavery { state: c.slave_state.min(3) as u8, obedient: c.slave_state == 1, since: c.ssct as f64 - start_hour, ..crate::slavery::Slavery::new(None, "") });
+            p.escaped = c.escaped.then(|| (String::new(), 0.0));
+            p.disguise_blown = c.disguise_blown;
+            if c.slave_state > 0 {
+                self.start_slaves = true;
+            }
             p.female = Some(c.appearance.female);
             p.look_race = c.appearance.race.clone();
             p.ai.queue.clear();
             // the kit, each item in its section and cell (else anywhere it fits)
             let mut inv = kenshi_char::inventory::Inventory::character();
             for it in &c.items {
-                let Some(r) = data.get(&it.record) else { continue };
-                let mut item = kenshi_char::inventory::Item::from_record(r, it.quantity.max(1) as u32);
-                if let Some((full, _)) = item.food {
-                    item.food = Some((full, it.charges));
-                }
-                if let Some((full, _)) = item.ammo {
-                    item.ammo = Some((full, it.charges));
-                }
-                item.maker = (!it.maker.is_empty()).then(|| it.maker.clone());
-                item.model = (!it.material.is_empty()).then(|| it.material.clone());
-                item.uniform = (!it.uniform.is_empty()).then(|| it.uniform.clone());
-                let item = item.with_quality(&data, it.quality);
+                let Some(item) = game_item(&data, it) else { continue };
                 let left = match inv.section(&it.section) {
                     Some(s) => inv.put(s, item, it.x.max(0) as u32, it.y.max(0) as u32).err(),
                     None => Some(item),
@@ -631,6 +728,24 @@ impl crate::sim::Sim {
             self.equip(id);
             out.push((id, c.appearance.clone()));
         }
+        // the save's squads the player's: each its own platoon (the first keeps the people's)
+        let squad_of: Vec<usize> = k.squads.iter().enumerate().flat_map(|(n, q)| std::iter::repeat_n(n, q.characters.len())).collect();
+        if k.squads.len() > 1 {
+            let mut pids = Vec::new();
+            for n in 0..k.squads.len() {
+                let first = ids.first().and_then(|&i| self.folk[i].platoon).filter(|_| n == 0);
+                pids.push(first.unwrap_or_else(|| {
+                    self.bar_states.push(None);
+                    self.bar_states.len() - 1
+                }));
+            }
+            for (&id, &n) in ids.iter().zip(&squad_of) {
+                self.folk[id].platoon = Some(pids[n]);
+            }
+        }
+        self.player_squads.clear();
+        self.faction_name = k.faction_name.clone();
+        self.squads_ready();
         if opt.reset_positions {
             self.gather_squad();
         }

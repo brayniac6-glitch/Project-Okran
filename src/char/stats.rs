@@ -131,9 +131,10 @@ impl Skills {
 impl Skills {
     /// @fn F047459
     ///
-    /// Train the defence skill (+0xf0; see below) after a block roll against an attacker of skill
-    /// `other`; `mine` is the defender's defence level (F047048), `load` CharStats +0x190, `g1`/`g2`
-    /// the combat XP base and global XP factor, `group` the skillDiffMult group size.
+    /// Train the dodge skill (CharStats +0xf0) after a block roll against an attacker of skill
+    /// `other`: `mine` is the defender's dodge level (F047048, buffed), `load` CharStats +0x190,
+    /// `g1`/`g2` the combat XP base and the global factor, `group` the skillDiffMult group size;
+    /// a failed roll teaches twice what a block does.
     #[allow(clippy::too_many_arguments)]
     pub fn train_defence(
         &mut self,
@@ -146,9 +147,8 @@ impl Skills {
         (bonus_gap, penalty_gap, group): (f32, f32, u32),
     ) {
         let k = if blocked { 0.4 } else { 0.8 };
-        // (assumption) the field +0xf0 taken as melee defence (see the combat crate's
-        // defence_level)
-        let s = StatsEnumerated::StatMeleeDefence;
+        // +0xf0, the STATS "dodge": the race's XP mult is read by stat id 32 (dodge)
+        let s = StatsEnumerated::StatDodge;
         let race = self.race_xp.get(&s).copied().unwrap_or(1.0);
         let g =
             load * k * g1 * race * g2 * skill_diff_mult(mine, other, bonus_gap, penalty_gap, group);
@@ -222,11 +222,9 @@ pub fn race_multipliers(race: &kenshi_data::GameData) -> HashMap<StatsEnumerated
 ///
 /// A character's starting stats from its CHARACTER record: its STATS record's levels, or,
 /// when it has none, the record's templates ("combat stats", "unarmed stats", "stealth
-/// stats", "strength", "ranged stats", each only when above 0); then "stats randomise", then
+/// stats", "strength", "ranged stats", each only when above 0); then "stats randomise"
+/// (F040408, either way: each of [`RANDOMISED`] moved by a uniform -n .. n, unclamped), then
 /// each stat times the race's multiplier. `rand` gives uniform [0, 1).
-///
-/// (stand-in) The randomise helper is not ported: each templated stat moves by up to
-/// +-"stats randomise" levels, never below 0.
 pub fn character_levels(
     data: &kenshi_data::GameDataContainer,
     character: &kenshi_data::GameData,
@@ -288,11 +286,14 @@ pub fn character_levels(
                     lv.insert(s, r as f32);
                 }
             }
-            let spread = character.ints.get("stats randomise").copied().unwrap_or(0) as f32;
-            if spread > 0.0 {
-                for v in lv.values_mut() {
-                    *v = (*v + (rand() * 2.0 - 1.0) * spread).max(0.0);
-                }
+        }
+    }
+    let spread = character.ints.get("stats randomise").copied().unwrap_or(0) as f32;
+    if spread > 0.0 {
+        for s in RANDOMISED {
+            let d = (rand() * 2.0 - 1.0) * spread;
+            if let Some(s) = s {
+                *lv.entry(s).or_insert(0.0) += d;
             }
         }
     }
@@ -301,6 +302,28 @@ pub fn character_levels(
     }
     lv
 }
+
+/// @fn F040408
+///
+/// The stats "stats randomise" moves, in the order Kenshi draws them (CharStats fields +0x80
+/// strength, +0x84, dexterity, perception, toughness, melee attack, melee defence, athletics,
+/// medic, mass combat, +0xa0, stealth, thieving, lockpicking, +0xc4, +0xc0, engineering, the
+/// two smithing skills, robotics, swimming, katanas, sabres, hackers, heavy weapons, blunt,
+/// martial arts, dodge, friendly fire, crossbows, polearms, turrets; the fields no stat reads,
+/// F047040, None). Science, labouring, farming, cooking, assassination and bow smithing stay.
+pub const RANDOMISED: [Option<StatsEnumerated>; 32] = {
+    use StatsEnumerated::*;
+    [
+        Some(StatStrength), None, Some(StatDexterity), Some(StatPerception), Some(StatToughness),
+        Some(StatMeleeAttack), Some(StatMeleeDefence), Some(StatAthletics), Some(StatMedic),
+        Some(StatMasscombat), None, Some(StatStealth), Some(StatThieving), Some(StatLockpicking),
+        None, None, Some(StatEngineering), Some(StatSmithingWeapon), Some(StatSmithingArmour),
+        Some(StatRobotics), Some(StatSwimming), Some(StatKatanas), Some(StatSabres),
+        Some(StatHackers), Some(StatHeavyweapons), Some(StatBlunt), Some(StatMartialarts),
+        Some(StatDodge), Some(StatFriendlyFire), Some(StatCrossbows), Some(StatPolearms),
+        Some(StatTurrets),
+    ]
+};
 
 /// The GLOBAL CONSTANTS training reads (shipped values as defaults).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -313,7 +336,8 @@ pub struct XpConstants {
     /// "skill diff xp 2x bonus" / "skill diff xp 0x penalty".
     pub bonus_gap: f32,
     pub penalty_gap: f32,
-    /// (assumption) the global XP factor (0x142133580) is not read yet: 1.
+    /// The factor trainFromCombat and trainDefence also multiply by: 0x142133580, the advanced
+    /// options' "Global damage multiplier" (the fight sets it from its damage factor).
     pub global: f32,
 }
 
@@ -347,28 +371,43 @@ impl XpConstants {
     }
 }
 
-/// What happened in a fight, for trainFromCombat's event type (F047467). (assumption) Which
-/// game event raises which type: 0 my attack landed, 1 my attack was blocked, 2 I blocked an
-/// attack, 4 I was hit; type 6 (a weaker attack event) is not raised yet.
+/// What happened in a fight, for trainFromCombat's event type (F047467): 0 my blow landed, 1 my
+/// blow was blocked, 6 my blow was dodged (CombatClass::strike F039803 raises these for the
+/// attacker); 2 I blocked a blow, 4 a blow hit me (Character::onMeleeHit F033862, for the one
+/// struck).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CombatEvent {
     Landed,
     Blocked,
+    Dodged,
     Parried,
     Hit { damage: f32 },
 }
 
-/// A fighter's side of a combat event: its weapon's skill (None unarmed), the opponent's level
-/// the gap is taken against, the load factor (CharStats +0x190), the share of its weight the
-/// armour is (dexterity training) and the weapon strain (CharStats +0x184, assumption).
+/// A fighter's side of a combat event (what trainFromCombat reads of the two characters).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CombatTraining {
-    pub weapon: Option<StatsEnumerated>,
-    pub mine: f32,
-    pub theirs: f32,
+    /// The weapon skill's field (CharStats +0x1f8: the martial arts field unarmed and for an
+    /// animal) and whether the weapon category is unarmed (5).
+    pub weapon: StatsEnumerated,
+    pub unarmed: bool,
+    /// My attack skill (F047043), defence level (F047060, unbuffed), dodge level (F047048,
+    /// buffed) and weapon skill level (CharStats vtable 0x18).
+    pub attack: f32,
+    pub defence: f32,
+    pub dodge: f32,
+    pub weapon_level: f32,
+    /// The opponent's attack skill (F047043) and defence level (F047060, unbuffed).
+    pub their_attack: f32,
+    pub their_defence: f32,
+    /// The cut and pierce share of the weapon's damage factors (CharStats +0x19c cut, +0x1a0
+    /// blunt, +0x1a8 pierce; 1 when they sum to 0).
+    pub cut_share: f32,
+    /// The load factor (CharStats +0x190) and the weapon strain (+0x184).
     pub load: f32,
-    pub armour_share: f32,
     pub strain: f32,
+    /// My toughness level (+0x90 x +0x34).
+    pub toughness: f32,
     pub group: u32,
 }
 
@@ -383,47 +422,85 @@ impl Skills {
 
     /// @fn F047467
     ///
-    /// Train from one combat event: attack (martial arts unarmed), the weapon's skill and
-    /// dexterity for attacks; melee defence for blocks; melee defence and toughness for hits
-    /// taken; then strength from the effort.
+    /// Train from one combat event against a character. G1 is the exp gain multiplier (stored)
+    /// x 0.1; G2 the advanced options' global damage multiplier (0x142133580, which Kenshi reads
+    /// here too); gains go in by addXP (cap 101); diff(a, b) is skillDiffMult (F047454); the race's
+    /// XP mults by stat id (2 attack, 18 dexterity, 19 defence, 20 weapons, 21 toughness, 1
+    /// strength). The "attack" stat is martial arts unarmed, else melee attack; the weapon's is
+    /// the weapon skill's field (martial arts unarmed: armed only below).
+    /// - Landed (0): attack += G1 diff(attack, their defence) race[2] G2; armed: weapon +=
+    ///   G1 diff(weapon level x race[20], their defence) G2; dexterity += G1 diff(attack, their
+    ///   defence) x the cut share (armed; 1 unarmed) x race[18] G2.
+    /// - Blocked (1): attack x 0.5; armed weapon x 0.4; dexterity x 0.5 (the cut share armed).
+    /// - Parried (2): melee defence += G1 x 0.25 diff(defence x race[19], their attack) G2;
+    ///   weapon += G1 x 0.1 diff(weapon level x race[20], their defence) G2 (unarmed too: the
+    ///   martial arts field); strength's x 0.4.
+    /// - Hit (4): unarmed, trainDefence (F047459, not blocked); armed, melee defence += G1 x 2
+    ///   diff(defence, their attack) race[19] G2; toughness += xp rate toughness G1
+    ///   diff(toughness, the damage) race[21] G2; strength's x 0.1.
+    /// - Dodged (6): attack += G1 x 0.25 diff(attack x race[2], their defence) G2; armed, weapon
+    ///   += G1 x 0.1 diff(weapon level x race[20], their defence) G2.
+    ///
+    /// Then strength += G1 x 0.55 x 2 x xp rate strength (x its event factor) x race[1] G2 x the
+    /// weapon strain armed, x (1 - load) unarmed (none when that is not above 0).
     pub fn train_from_combat(&mut self, e: CombatEvent, t: &CombatTraining, c: &XpConstants) {
         use StatsEnumerated::*;
         let g1 = c.exp_gain * 0.1;
         let g2 = c.global;
-        let diff = skill_diff_mult(t.mine, t.theirs, c.bonus_gap, c.penalty_gap, t.group);
-        let attack = if t.weapon.is_some() { StatMeleeAttack } else { StatMartialarts };
-        let (a, w) = match e {
-            CombatEvent::Landed => (1.0, 1.0),
-            CombatEvent::Blocked => (0.5, 0.4),
-            CombatEvent::Parried => (0.0, 0.1),
-            CombatEvent::Hit { .. } => (0.0, 0.0),
-        };
-        if a > 0.0 {
-            self.add(attack, g1 * a * diff * self.race(attack) * g2);
-            self.add(StatDexterity, g1 * a * diff * t.armour_share * self.race(StatDexterity));
-        }
-        if let Some(ws) = t.weapon
-            && w > 0.0
-        {
-            self.add(ws, g1 * w * diff * self.race(ws) * g2);
-        }
+        let diff = |a: f32, b: f32| skill_diff_mult(a, b, c.bonus_gap, c.penalty_gap, t.group);
+        let attack = if t.unarmed { StatMartialarts } else { StatMeleeAttack };
+        let mut s = c.xp_rate_strength * 2.0;
         match e {
+            CombatEvent::Landed | CombatEvent::Blocked => {
+                let k = if e == CombatEvent::Landed { 1.0 } else { 0.5 };
+                let d = diff(t.attack, t.their_defence);
+                self.add(attack, g1 * k * d * self.race(StatMeleeAttack) * g2);
+                let mut share = 1.0;
+                if !t.unarmed {
+                    share = t.cut_share;
+                    let dw = diff(t.weapon_level * self.race(StatWeapons), t.their_defence);
+                    let w = if e == CombatEvent::Landed { 1.0 } else { 0.4 };
+                    self.add(t.weapon, dw * g1 * w * g2);
+                }
+                self.add(StatDexterity, g1 * k * d * share * self.race(StatDexterity) * g2);
+            }
             CombatEvent::Parried => {
-                self.add(StatMeleeDefence, 0.25 * g1 * diff * self.race(StatMeleeDefence));
+                let dd = diff(t.defence * self.race(StatMeleeDefence), t.their_attack);
+                self.add(StatMeleeDefence, dd * g1 * 0.25 * g2);
+                let dw = diff(t.weapon_level * self.race(StatWeapons), t.their_defence);
+                self.add(t.weapon, dw * g1 * 0.1 * g2);
+                s *= 0.4;
             }
             CombatEvent::Hit { damage } => {
-                self.add(StatMeleeDefence, 2.0 * g1 * diff * self.race(StatMeleeDefence));
-                let tdiff = skill_diff_mult(self.level(StatToughness), damage, c.bonus_gap, c.penalty_gap, 1);
-                self.add(StatToughness, c.xp_rate_toughness * g1 * tdiff * self.race(StatToughness));
+                s *= 0.1;
+                if t.unarmed {
+                    self.train_defence(t.dodge, t.their_attack, false, t.load, g1, g2, (c.bonus_gap, c.penalty_gap, t.group));
+                } else {
+                    let dd = diff(t.defence, t.their_attack);
+                    self.add(StatMeleeDefence, g1 * 2.0 * self.race(StatMeleeDefence) * g2 * dd);
+                }
+                let td = diff(t.toughness, damage);
+                self.add(StatToughness, c.xp_rate_toughness * g1 * td * self.race(StatToughness) * g2);
             }
-            _ => {}
+            CombatEvent::Dodged => {
+                let d = diff(t.attack * self.race(StatMeleeAttack), t.their_defence);
+                self.add(attack, d * g1 * 0.25 * g2);
+                if !t.unarmed {
+                    let dw = diff(t.weapon_level * self.race(StatWeapons), t.their_defence);
+                    self.add(t.weapon, dw * g1 * 0.1 * g2);
+                }
+            }
         }
-        let k = match e {
-            CombatEvent::Parried => 0.4,
-            _ => 1.0,
+        let effort = if t.unarmed {
+            s *= 1.0 - t.load;
+            if s <= 0.0 {
+                return;
+            }
+            1.0
+        } else {
+            t.strain
         };
-        let effort = if t.weapon.is_none() { 1.0 - t.load } else { t.strain };
-        self.add(StatStrength, g1 * 0.55 * 2.0 * c.xp_rate_strength * k * effort * self.race(StatStrength));
+        self.add(StatStrength, g1 * 0.55 * s * effort * self.race(StatStrength) * g2);
     }
 
     /// @fn F047463
@@ -481,12 +558,18 @@ mod tests {
         use StatsEnumerated::*;
         let c = XpConstants::default();
         let t = CombatTraining {
-            weapon: Some(StatKatanas),
-            mine: 10.0,
-            theirs: 10.0,
+            weapon: StatKatanas,
+            unarmed: false,
+            attack: 10.0,
+            defence: 10.0,
+            dodge: 10.0,
+            weapon_level: 10.0,
+            their_attack: 10.0,
+            their_defence: 10.0,
+            cut_share: 0.5,
             load: 1.0,
-            armour_share: 0.5,
             strain: 0.5,
+            toughness: 10.0,
             group: 1,
         };
         let mut s = Skills::new(3.0);
@@ -502,9 +585,21 @@ mod tests {
         assert_eq!(d.level(StatMeleeAttack), 0.0);
         // unarmed attacks train martial arts, not melee attack
         let mut u = Skills::new(3.0);
-        u.train_from_combat(CombatEvent::Landed, &CombatTraining { weapon: None, ..t }, &c);
+        u.train_from_combat(CombatEvent::Landed, &CombatTraining { weapon: StatMartialarts, unarmed: true, ..t }, &c);
         assert!(u.level(StatMartialarts) > 0.0);
         assert_eq!(u.level(StatMeleeAttack), 0.0);
+        // a dodged blow teaches a quarter of the attack and a tenth of the weapon
+        let mut g = Skills::new(3.0);
+        g.train_from_combat(CombatEvent::Dodged, &t, &c);
+        let mut l = Skills::new(3.0);
+        l.train_from_combat(CombatEvent::Landed, &t, &c);
+        assert!((g.level(StatMeleeAttack) - 0.25 * l.level(StatMeleeAttack)).abs() < 1e-6);
+        assert!((g.level(StatKatanas) - 0.1 * l.level(StatKatanas)).abs() < 1e-6);
+        // hit unarmed: the dodge skill trains, not melee defence
+        let mut h = Skills::new(3.0);
+        h.train_from_combat(CombatEvent::Hit { damage: 20.0 }, &CombatTraining { unarmed: true, load: 1.0, ..t }, &c);
+        assert!(h.level(StatDodge) > 0.0);
+        assert_eq!(h.level(StatMeleeDefence), 0.0);
     }
 
     #[test]
@@ -524,8 +619,8 @@ mod tests {
         a.train_defence(10.0, 10.0, true, 1.0, 1.0, 1.0, (10.0, 25.0, 1));
         b.train_defence(10.0, 10.0, false, 1.0, 1.0, 1.0, (10.0, 25.0, 1));
         let (la, lb) = (
-            a.level(StatsEnumerated::StatMeleeDefence),
-            b.level(StatsEnumerated::StatMeleeDefence),
+            a.level(StatsEnumerated::StatDodge),
+            b.level(StatsEnumerated::StatDodge),
         );
         assert!((la - 0.4).abs() < 1e-6 && (lb - 0.8).abs() < 1e-6);
     }

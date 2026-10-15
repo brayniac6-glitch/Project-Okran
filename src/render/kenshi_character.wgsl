@@ -27,6 +27,11 @@ struct CharacterParams {
     hair_alpha: vec4<f32>,
     beard_alpha: vec4<f32>,
     hair_colour: vec4<f32>,
+    // x: 1 with painted-on clothing (the vest maps); y: 1 painted clothing (the colour map)
+    vest: vec4<f32>,
+    // skin.hlsl's color1, color2
+    paint1: vec4<f32>,
+    paint2: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> p: CharacterParams;
@@ -44,6 +49,11 @@ struct CharacterParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(11) var ambient_sampler: sampler;
 // common/shadowFunctions.hlsl jitterMap (white-noise.png)
 @group(#{MATERIAL_BIND_GROUP}) @binding(12) var shadow_jitter: texture_2d<f32>;
+// painted-on clothing (a shirt's vest texture and normal map)
+@group(#{MATERIAL_BIND_GROUP}) @binding(13) var vest_map: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(14) var vest_normal_map: texture_2d<f32>;
+// skin.hlsl's colorMap (colourisation in red and green, metalness in blue)
+@group(#{MATERIAL_BIND_GROUP}) @binding(15) var color_map: texture_2d<f32>;
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
@@ -56,6 +66,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
     // Skinned's diffuseMap: mipmap_bias -2
     var diffuse = textureSampleBias(diffuse_map, diffuse_sampler, uv, -2.0);
     let normal_tex = textureSample(normal_map, diffuse_sampler, uv);
+    // painted-on clothing over the skin by its normal map's alpha (Kenshi's vest)
+    if (p.vest.x > 0.5) {
+        let vest = textureSampleBias(vest_map, diffuse_sampler, uv, -2.0);
+        let vest_n = textureSample(vest_normal_map, diffuse_sampler, uv);
+        diffuse = vec4<f32>(mix(diffuse.rgb, vest.rgb, vest_n.a), diffuse.a);
+    }
     let origin = p.origin_exposure.xyz;
     let world_pos = in.world_position.xyz + origin;
 
@@ -97,6 +113,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
         if (normal_tex.a - 0.6 < 0.0) {
             discard;
         }
+        // the colour map: colourisation data and metalness (COLOURING)
+        let cmap = textureSample(color_map, diffuse_sampler, uv).rgb;
+        metalness = cmap.b;
+        if (p.vest.y > 0.5) {
+            let intensity = (diffuse.r + diffuse.g + diffuse.b) / 3.0;
+            let m1 = mix(intensity, 1.0, p.paint1.a);
+            let m2 = mix(intensity, 1.0, p.paint2.a);
+            diffuse = vec4<f32>(mix(diffuse.rgb, p.paint1.rgb * m1, cmap.r), diffuse.a);
+            diffuse = vec4<f32>(mix(diffuse.rgb, p.paint2.rgb * m2, cmap.g), diffuse.a);
+        }
         let bump = vec3<f32>(normal_tex.r, 1.0 - normal_tex.g, normal_tex.b) * 2.0 - 1.0;
         world_normal = normalize(bump.x * t + bump.y * b + bump.z * n);
         diffuse.a = diffuse.a * p.kind.y;
@@ -133,6 +159,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
     }
 
     let camera = view.world_position + origin;
+    // the water reflection's view (kenshi_object.wgsl): the albedo's luma
+    if (camera.y < 100.0) {
+        if (world_pos.y < 100.0) {
+            discard;
+        }
+        return vec4<f32>(0.25 * albedo.r + 0.5 * albedo.g + 0.25 * albedo.b, 0.0, 0.0, 1.0);
+    }
     let view_dir = normalize(camera - world_pos);
     let world_size = p.world.x;
     let ambient_mult = textureSample(ambient_map, ambient_sampler, (world_pos.xz + world_size * 0.5) / world_size);

@@ -10,5 +10,6 @@ sheet/strings.tsv
 dist/
 *.png
 target/
+target-public/
 /exports/
 shots/

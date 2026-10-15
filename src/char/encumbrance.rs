@@ -13,6 +13,8 @@ use crate::medical::invlerp;
 pub struct EncumbranceConstants {
     pub carry_weight_mult: f32,
     pub encumbrance_base: f32,
+    /// "carry person weight": what one carried adds to the carrier's weight (F039146).
+    pub carry_person_weight: f32,
     pub xp_rate_strength_from_walking: f32,
 }
 
@@ -21,9 +23,18 @@ impl Default for EncumbranceConstants {
         EncumbranceConstants {
             carry_weight_mult: 1.2,
             encumbrance_base: 15.0,
+            carry_person_weight: 30.0,
             xp_rate_strength_from_walking: 0.5,
         }
     }
+}
+
+/// @fn F039146
+///
+/// The weight a character carries (computeLoad's): its inventory's, plus "carry person weight"
+/// while it carries someone (Character +0x348).
+pub fn carried_weight(inventory: f32, carrying_someone: bool, c: &EncumbranceConstants) -> f32 {
+    if carrying_someone { inventory + c.carry_person_weight } else { inventory }
 }
 
 /// @fn F040360
@@ -75,7 +86,8 @@ pub fn run_speed(athletics: f32, race_min: f32, race_max: f32, maturity: f32) ->
 /// @fn F047058
 ///
 /// Swimming speed: `legs` is the legs' fitness, `equipment` the product of the limb slots' swim
-/// modifiers, `extra` the remaining factor (F? 22179); `legs_out` both legs unusable.
+/// modifiers, `extra` the hunger's (F040424 MedicalSystem::hungerSpeed, through thunk
+/// 0x140022179); `legs_out` both legs unusable.
 #[allow(clippy::too_many_arguments)]
 pub fn swim_speed(
     swim_mult: f32,

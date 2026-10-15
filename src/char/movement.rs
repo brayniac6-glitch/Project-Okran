@@ -351,6 +351,11 @@ pub struct Pathing {
     pub follow: Option<PathFollow>,
     /// Which shut gates this character may pass (its faction's, kenshi_world::navmesh::Pass).
     pub pass: kenshi_world::navmesh::Pass,
+    /// (stand-in) The goal of the last request that found no path, and how many times it has
+    /// been asked for again since: not sent again for 60 asks (a second of a task asking each
+    /// tick) unless the goal moves, so one who can't get somewhere doesn't hold up everyone
+    /// else's paths (the manager answers one a tick).
+    pub failed: Option<([f32; 3], u16)>,
 }
 
 impl Pathing {
@@ -367,6 +372,13 @@ impl Pathing {
         urgent: bool,
         manager: &mut PathManager<O>,
     ) -> bool {
+        if let Some((g, n)) = &mut self.failed
+            && (g[0] - dest[0]).hypot(g[2] - dest[2]) < 20.0
+            && *n < 60
+        {
+            *n += 1;
+            return false;
+        }
         let moving = self.pending || self.follow.is_some();
         if !accepts_goal(
             mover.position_units(),
@@ -384,6 +396,10 @@ impl Pathing {
     /// The manager answered: follow the path, or stand (no path).
     pub fn answer(&mut self, result: PathResult) {
         self.pending = false;
+        self.failed = match &result {
+            PathResult::Found(_) => None,
+            _ => self.last_goal.map(|g| (g, 0)),
+        };
         self.follow = match result {
             PathResult::Found(f) => Some(PathFollow {
                 path: f.follow,

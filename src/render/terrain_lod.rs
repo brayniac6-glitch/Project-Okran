@@ -1,7 +1,7 @@
 //! Kenshi's terrain (Plugin_Terrain_x64.dll): one quadtree over the whole map, each node a patch
 //! of 17 x 17 vertices, split where its error on screen is over the detail threshold and
 //! geomorphed between levels; as the game sets it up (F046700): terrain scale 294912 x 9800,
-//! setDetailThreshold(8, 8, 0), patch size 16 (levels 4 to 10: the finest patch has the
+//! the detail threshold from the options (F045916, [`Detail`]), patch size 16 (levels 4 to 10: the finest patch has the
 //! heightmap's own spacing).
 //!
 //! Spec (the plugin): the node update (0x180003660), the error (0x180003b30: the viewport height
@@ -11,6 +11,16 @@
 //! of the odd vertices the mean of their neighbours across; the node's error the larger of a tenth
 //! of the vertex spacing and the largest morph), the split (0x180003e00) and the merge
 //! (0x1800045b0); children unused for 500 updates are dropped.
+//!
+//! Neighbours (the plugin's node +0x30..+0x48, sides 0 west, 1 east, 2 north, 3 south: x low, x
+//! high, z low, z high; the opposite side is side ^ 1): a node's children are linked to each
+//! other and to the split neighbours' children when they are made (0x180003da0, the children on
+//! a side 0x180003d40). Each node keeps the deepest level along each of its sides (+0xb9..+0xbc,
+//! 0x1800043b0, kept up the parents on a split or merge). A split splits every neighbour (the
+//! node's own, else its nearest parent's on that side) more than 2 levels coarser than the node
+//! (0x1800042c0: level - 3 + 1, the tree's +0xf0 = log2(patch size) - 1); a node merges only
+//! when no neighbour's facing side reaches 3 levels deeper than itself, and does not merge its
+//! children (they keep their state for the next split).
 //!
 //! Materials (the plugin's updateMaterial 0x180013070, each update): a patch whose bounds are
 //! within the material distance of the camera (setMaterialDistance stores it squared,
@@ -22,11 +32,12 @@
 //! kenshi_terrain_vertex.wgsl and kenshi_terrain_prepass.wgsl apply; a morph change touches no
 //! mesh.
 //!
-//! (stand-in) The plugin builds patches on worker threads and stitches neighbours of different
-//! levels with matching index buffers; here patches are built on the frame (a budget per frame)
-//! and the cracks are hidden with skirts. Its merge check against neighbours two levels finer
-//! is not ported. Patch materials are the blend cells' (one mesh per cell a patch covers), not
-//! a material per patch box (F051639).
+//! (stand-in) The plugin builds patches on worker threads (a node splitting with new children
+//! waits for them, state 2); here patches are built on the frame (a budget per frame; a split
+//! forced by a neighbour builds whatever it costs). Its patches are plain grids (one strip,
+//! 0x180005aa0: no stitching nor skirts, the cracks between levels are left); here skirts hide
+//! them. Patch materials are the blend cells' (one mesh per cell a patch covers), not a
+//! material per patch box (F051639).
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -38,12 +49,39 @@ const VERTS: usize = 17;
 /// setPatchSize: levels 4 .. 15 - log2(32) = 10.
 const MIN_LEVEL: u8 = 4;
 const MAX_LEVEL: u8 = 10;
-/// setDetailThreshold(8, 8, 0): the threshold; 8 / 8 = 1 (no distance falloff).
-const THRESHOLD: f32 = 8.0;
+/// The detail threshold the game gives the plugin (F045916 setDetailThreshold from the options,
+/// settings.cfg): a = (1 - "terrain detail") x 30 + 5 the threshold (+0xf4), b = (1 - "terrain
+/// distant") x 30 + 5, c = "terrain threshold" x 10 (+0xfc); the plugin keeps a / b (+0xf8).
+/// The options' defaults: detail 1, distant 0, threshold 750.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Detail {
+    pub threshold: f32,
+    pub ratio: f32,
+    pub falloff: f32,
+}
+
+impl Detail {
+    /// @fn F045916
+    pub fn from_options(detail: f32, distant: f32, threshold: f32) -> Detail {
+        let a = (1.0 - detail) * 30.0 + 5.0;
+        let b = (1.0 - distant) * 30.0 + 5.0;
+        Detail { threshold: a, ratio: a / b, falloff: threshold * 10.0 }
+    }
+}
+
+impl Default for Detail {
+    fn default() -> Self {
+        Detail::from_options(1.0, 0.0, 750.0)
+    }
+}
 /// F046700: setMaterialDistance(30000).
 const MATERIAL_DISTANCE: f32 = 30000.0;
 /// Children unused this many updates are dropped.
 const KEEP_FRAMES: u32 = 500;
+/// The tree's +0xf0 (setPatchSize: log2(16) - 1): the level gap its neighbours are kept within.
+const MAX_GAP: u8 = 3;
+/// The children on each side (0x180035ec0: side + k x 4).
+const SIDE_CHILDREN: [usize; 8] = [0, 1, 0, 2, 2, 3, 1, 3];
 /// Heightmap samples per blend cell and per colour tile.
 const CELL_PX: u32 = 512;
 const TILE_PX: u32 = kenshi_world::COLOUR_TILE_PX;
@@ -79,6 +117,10 @@ struct Node {
     morph: f32,
     /// The update it was last visited in (+0xc0).
     visited: u32,
+    /// +0x30..+0x48: the neighbours west, east, north, south (same level or the nearest made).
+    neighbours: [Option<usize>; 4],
+    /// +0xb9..+0xbc: the deepest level along each side.
+    edges: [u8; 4],
     /// Its meshes in the scene (entity, mesh, piece) and the morph they were built with.
     drawn: Vec<(Entity, Handle<Mesh>, Piece)>,
     drawn_morph: f32,
@@ -103,6 +145,8 @@ pub struct LodTerrain {
     dead: Vec<Entity>,
     /// "DistantTerrain".
     distant: Option<Handle<crate::terrain_material::KenshiTerrainMaterial>>,
+    /// The detail threshold (setDetailThreshold).
+    pub detail: Detail,
 }
 
 impl LodTerrain {
@@ -118,6 +162,7 @@ impl LodTerrain {
             materials: Default::default(),
             dead: Vec::new(),
             distant: None,
+            detail: Detail::default(),
         };
         t.root = t.add(0, -WORLD_SIZE / 2.0, -WORLD_SIZE / 2.0, WORLD_SIZE, None);
         t
@@ -138,6 +183,8 @@ impl LodTerrain {
             hi: Vec3::new(x0 + size, 0.0, z0 + size),
             morph: 1.0,
             visited: 0,
+            neighbours: [None; 4],
+            edges: [level; 4],
             drawn: Vec::new(),
             drawn_morph: f32::NAN,
             far: false,
@@ -162,9 +209,16 @@ impl LodTerrain {
         self.nodes[i].as_mut().expect("node")
     }
 
-    /// A node and its subtree let go.
+    /// A node and its subtree let go (its neighbours' links to it cleared).
     fn remove(&mut self, i: usize) {
         if let Some(n) = self.nodes[i].take() {
+            for (side, nb) in n.neighbours.iter().enumerate() {
+                if let Some(Some(m)) = nb.map(|j| self.nodes[j].as_mut())
+                    && m.neighbours[side ^ 1] == Some(i)
+                {
+                    m.neighbours[side ^ 1] = None;
+                }
+            }
             self.dead.extend(n.drawn.iter().map(|(e, _, _)| *e));
             if let Some(c) = n.children {
                 for k in c {
@@ -183,11 +237,20 @@ impl LodTerrain {
         let centre_y = (n.lo.y + n.hi.y) * 0.5;
         let c = Vec3::new(cam.x, cam.y + (centre_y - cam.y) * 0.4, cam.z);
         let d = (c - c.clamp(n.lo, n.hi)).length().max(1.0);
-        k / d * n.error
+        let mut e = k / d;
+        // farther than the falloff distance the error falls toward a / b of itself, all the way
+        // at twice it
+        let det = self.detail;
+        if det.ratio < 1.0 && det.falloff > 0.0 {
+            let t = ((d - det.falloff) / det.falloff).clamp(0.0, 1.0);
+            e *= t * det.ratio + (1.0 - t);
+        }
+        e * n.error
     }
 
     /// @fn 0x180003660 (Plugin_Terrain)
     fn update_node(&mut self, i: usize, cam: Vec3, k: f32) {
+        let threshold = self.detail.threshold;
         let e = self.error(i, cam, k);
         let frame = self.frame;
         self.node_mut(i).visited = frame;
@@ -198,12 +261,12 @@ impl LodTerrain {
                 None => e,
             };
             let ep = if ep_raw <= e { e * 1.001 } else { ep_raw };
-            let mut morph = if e == ep { 1.0 } else { (THRESHOLD - ep) / (e - ep) };
+            let mut morph = if e == ep { 1.0 } else { (threshold - ep) / (e - ep) };
             let level = n.level;
             if level < MIN_LEVEL {
                 morph = 1.0;
             }
-            if (level >= MIN_LEVEL && e <= THRESHOLD) || level >= MAX_LEVEL {
+            if (level >= MIN_LEVEL && e <= threshold) || level >= MAX_LEVEL {
                 // children unused for a while are let go
                 if let Some(c) = n.children
                     && c.iter().all(|&j| self.node(j).visited + KEEP_FRAMES < frame)
@@ -224,16 +287,59 @@ impl LodTerrain {
             }
             let n = self.node_mut(i);
             n.morph = 1.0;
-            if e < THRESHOLD && n.level > MIN_LEVEL {
+            if e < threshold && n.level > MIN_LEVEL {
                 self.merge(i);
             }
         }
     }
 
+    /// @fn 0x180003da0 (Plugin_Terrain)
+    ///
+    /// `a`'s neighbour on `side` is `b`, and `b`'s on the opposite side `a`.
+    fn link(&mut self, a: usize, b: usize, side: usize) {
+        self.node_mut(a).neighbours[side] = Some(b);
+        self.node_mut(b).neighbours[side ^ 1] = Some(a);
+    }
+
+    /// @fn 0x180003d40 (Plugin_Terrain)
+    fn child_on(&self, i: usize, side: usize, k: usize) -> usize {
+        self.node(i).children.expect("children")[SIDE_CHILDREN[side + k * 4]]
+    }
+
+    /// @fn 0x1800043b0 (Plugin_Terrain)
+    ///
+    /// The deepest level along each side: a split node's from its children on that side, a
+    /// leaf its own level.
+    fn update_edges(&mut self, i: usize) {
+        let n = self.node(i);
+        let edges = match n.children.filter(|_| n.split) {
+            Some(c) => {
+                let e = |k: usize, side: usize| self.node(c[k]).edges[side];
+                [e(0, 0).max(e(2, 0)), e(1, 1).max(e(3, 1)), e(0, 2).max(e(1, 2)), e(2, 3).max(e(3, 3))]
+            }
+            None => [n.level; 4],
+        };
+        self.node_mut(i).edges = edges;
+    }
+
+    /// The edges kept up from node `i` to the root.
+    fn update_edges_up(&mut self, i: usize) {
+        let mut at = Some(i);
+        while let Some(j) = at {
+            self.update_edges(j);
+            at = self.node(j).parent;
+        }
+    }
+
     /// @fn 0x180003e00 (Plugin_Terrain)
     ///
-    /// The node draws its four children (made and built if new).
-    fn split(&mut self, i: usize) {
+    /// The node draws its four children (made, linked to each other and to the split
+    /// neighbours' children, and built if new), then the neighbours too coarse are split; how
+    /// many nodes split (0: it already was).
+    fn split(&mut self, i: usize) -> u32 {
+        if self.node(i).split {
+            return 0;
+        }
         let n = self.node(i);
         let (level, x0, z0, half) = (n.level + 1, n.x0, n.z0, n.size * 0.5);
         let children = match n.children {
@@ -246,6 +352,21 @@ impl LodTerrain {
                     *slot = self.add(level, x, z, half, Some(i));
                 }
                 self.node_mut(i).children = Some(c);
+                self.link(c[0], c[1], 1);
+                self.link(c[0], c[2], 3);
+                self.link(c[3], c[1], 2);
+                self.link(c[3], c[2], 0);
+                for side in 0..4 {
+                    let Some(nb) = self.node(i).neighbours[side] else { continue };
+                    if self.node(nb).children.is_none() {
+                        continue;
+                    }
+                    let opp = side ^ 1;
+                    for k in 0..2 {
+                        let (a, b) = (self.child_on(i, side, k), self.child_on(nb, opp, k));
+                        self.link(a, b, side);
+                    }
+                }
                 c
             }
         };
@@ -259,23 +380,68 @@ impl LodTerrain {
             self.node_mut(c).visited = frame;
         }
         self.node_mut(i).split = true;
+        self.update_edges_up(i);
+        self.enforce(i) + 1
+    }
+
+    /// @fn 0x1800042c0 (Plugin_Terrain)
+    ///
+    /// Each neighbour (the node's own on a side, else its nearest parent's) coarser than
+    /// level - 3 + 1 is split, the side tried again while that splits something.
+    fn enforce(&mut self, i: usize) -> u32 {
+        let need = self.node(i).level as i32 - MAX_GAP as i32 + 1;
+        let mut count = 0;
+        let mut side = 0;
+        while side < 4 {
+            let mut nb = None;
+            let mut at = Some(i);
+            while let Some(j) = at {
+                if nb.is_some() {
+                    break;
+                }
+                nb = self.node(j).neighbours[side];
+                at = self.node(j).parent;
+            }
+            let mut did = 0;
+            if let Some(nb) = nb
+                && (self.node(nb).level as i32) < need
+            {
+                did = self.split(nb);
+                count += did;
+            }
+            if did == 0 {
+                side += 1;
+            }
+        }
+        count
     }
 
     /// @fn 0x1800045b0 (Plugin_Terrain)
-    fn merge(&mut self, i: usize) {
-        if let Some(c) = self.node(i).children {
-            for k in c {
-                if self.node(k).split {
-                    self.merge(k);
-                }
+    ///
+    /// The node draws itself again, unless a neighbour's facing side reaches 3 levels deeper;
+    /// its children keep their own state. (The edges are kept up before it stops being split,
+    /// as the plugin does.)
+    fn merge(&mut self, i: usize) -> bool {
+        let n = self.node(i);
+        if !n.split {
+            return false;
+        }
+        let limit = n.level as u32 + MAX_GAP as u32;
+        for side in 0..4 {
+            if let Some(nb) = n.neighbours[side]
+                && self.node(nb).edges[side ^ 1] as u32 >= limit
+            {
+                return false;
             }
         }
+        self.update_edges_up(i);
         if self.node(i).patch.is_none() {
             self.build(i);
         }
         let n = self.node_mut(i);
         n.split = false;
         n.morph = 1.0;
+        true
     }
 
     /// @fn 0x1800047a0 (Plugin_Terrain)

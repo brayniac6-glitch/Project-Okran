@@ -107,44 +107,38 @@ fn fill(commands: &mut Commands, o: &mut Open, game: &Game) {
     let _ = game;
 }
 
-/// What a line's effects do in the game.
+/// What a line's effects show: the windows (trading, the slave and bail windows, the character
+/// editor) and the leader's talk. (The rest the simulation has done as the line was said,
+/// `kenshi_game::dialogue`.)
 fn apply(game: &mut Game, inv: &mut super::inventory_ui::InventoryWindow, slaves: &mut super::slave_ui::SlaveTrade, conv: &Conversation, effects: &[Effect]) {
     for e in effects {
         match e {
             Effect::Trade => inv.pending_trade = Some(conv.npc),
-            Effect::Recruit => {
-                game.sim.recruit(conv.npc);
-                eprintln!("{} joined the squad", name_of(game, conv.npc));
+            Effect::Recruit => eprintln!("{} joined the squad", name_of(game, conv.npc)),
+            // a new member made the player's own in the character editor
+            Effect::RecruitEdit => {
+                eprintln!("{} joined the squad: the editor opens on them", name_of(game, conv.npc));
+                game.surgery = Some(conv.npc);
             }
-            Effect::Attack => {
-                // the speaker's squad on the one it talks to
-                let pl = game.sim.folk[conv.npc].platoon;
-                let squad: Vec<usize> = game.sim.folk.iter().filter(|p| pl.is_some() && p.platoon == pl && !p.down).map(|p| p.id).collect();
-                let squad = if squad.is_empty() { vec![conv.npc] } else { squad };
-                eprintln!("{} attacks", name_of(game, conv.npc));
-                game.sim.order_attack(&squad, conv.player);
-            }
-            Effect::Alarm => game.sim.alarm(conv.npc, conv.player),
-            Effect::SellSlaves => slaves.pending = Some((true, conv.npc)),
-            Effect::BuySlaves => slaves.pending = Some((false, conv.npc)),
-            Effect::EnslaveCarried => {
-                if let Some(c) = game.sim.folk[conv.player].carrying.take() {
-                    let (owner, faction) = (game.sim.folk[conv.npc].platoon, game.sim.folk[conv.npc].faction.clone().unwrap_or_default());
-                    game.sim.folk[c].carried_by = None;
-                    game.sim.enslave(c, owner, &faction);
-                }
-            }
-            // DA_TALK_TO_LEADER: the conversation taken up by the speaker's squad leader
+            Effect::CharacterEditor => game.surgery = Some(conv.player),
+            Effect::SellSlaves => slaves.pending = Some((super::slave_ui::Mode::Sell, conv.npc)),
+            Effect::BuySlaves => slaves.pending = Some((super::slave_ui::Mode::Buy, conv.npc)),
+            Effect::BuyAnimals(price) => slaves.pending = Some((super::slave_ui::Mode::Animals(*price), conv.npc)),
+            Effect::Bail => slaves.pending = Some((super::slave_ui::Mode::Bail, conv.npc)),
+            // DA_TALK_TO_LEADER: the speaker's squad leader (itself, when it leads: a gate
+            // guard's "Halt", a bandit's "Get over here!") talks with the one spoken to, on its
+            // talk-to-me dialogues (the search, the hold-up). (assumption) Read from the lines
+            // that use it: "Talk to the boss" from a member, the rest from leaders
             Effect::TalkToLeader => {
                 let pl = game.sim.folk[conv.npc].platoon;
-                let leader = game.sim.folk.iter().find(|p| pl.is_some() && p.platoon == pl && p.role == 5 && p.id != conv.npc && !p.down && !p.dead).map(|p| p.id);
+                let leader = game.sim.folk.iter().find(|p| pl.is_some() && p.platoon == pl && p.role == 5 && !p.down && !p.dead).map(|p| p.id).or(Some(conv.npc));
                 if let Some(l) = leader
                     && let Some(c) = game.sim.talk(l, conv.player)
                 {
                     game.sim.npc_talks.push((c, Vec::new()));
                 }
             }
-            Effect::Money(_) | Effect::Relations(_) => {}
+            Effect::Attack | Effect::Alarm | Effect::MassiveAlarm | Effect::EnslaveCarried | Effect::Money(_) | Effect::Relations(_) | Effect::End => {}
         }
     }
 }
@@ -183,6 +177,7 @@ pub fn update(
     mut faces: Query<&mut ImageNode>,
     mut inv: ResMut<super::inventory_ui::InventoryWindow>,
     mut slaves: ResMut<super::slave_ui::SlaveTrade>,
+    mut auto: Local<(u32, usize)>,
 ) {
     let size = window_size(&windows);
     // walking up to someone: talk when near
@@ -265,6 +260,20 @@ pub fn update(
             pick = Some(k);
         }
     }
+    // (testing) KENSHI_DIALOGUE_PICKS="1,2,1": the open conversation answered with these
+    // reply numbers in turn, one a second and a half
+    if let Ok(v) = std::env::var("KENSHI_DIALOGUE_PICKS") {
+        auto.0 += 1;
+        let picks: Vec<usize> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if auto.0 >= 90
+            && let Some(&n) = picks.get(auto.1)
+        {
+            auto.0 = 0;
+            auto.1 += 1;
+            pick = Some(n.saturating_sub(1));
+            eprintln!("dialogue test: reply {n} of {:?}", o.choices.iter().map(|c| c.1.clone()).collect::<Vec<_>>());
+        }
+    }
     if keys.just_pressed(KeyCode::Escape) {
         let o = win.open.take().expect("open");
         close(&mut commands, &o);
@@ -284,6 +293,13 @@ pub fn update(
     }
     let (effects, next) = game.sim.choose(&conv, &id);
     apply(&mut game, &mut inv, &mut slaves, &conv, &effects);
+    // the character editor ends the talk (F040912 0xb), as a recruit the faction has no room
+    // for does
+    if effects.iter().any(|e| matches!(e, Effect::CharacterEditor | Effect::RecruitEdit | Effect::End)) {
+        let o = win.open.take().expect("open");
+        close(&mut commands, &o);
+        return;
+    }
     match next {
         Some(n) => {
             let line = format!("{}: {}", name_of(&game, n.npc), n.npc_text);

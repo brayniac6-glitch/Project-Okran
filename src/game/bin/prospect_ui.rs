@@ -11,9 +11,10 @@
 //! - Map: the world map round the place, the area's size each way, the ticked resource's level
 //!   over it (F035161: water, fertility and stone sampled over a grid, brighter where higher).
 //!
-//! (assumption) The good and poor colours (strings the game makes at start) are green and red;
-//! the altitude is the ground's height in metres; iron and copper (the game marks the resource
-//! objects near) show no overlay, the rewrite's levels for them being flat over a biome.
+//! The good and poor colours are the game's #a8b774 and #59231a (`hud_ui::GREEN`, `RED`).
+//! (assumption) The altitude is the ground's height in metres; iron and copper (the game marks
+//! the resource objects near) show no overlay, the rewrite's levels for them being flat over a
+//! biome.
 use super::Game;
 use super::hud_ui;
 use bevy::prelude::*;
@@ -181,12 +182,13 @@ fn open(commands: &mut Commands, gui: &GuiRes, assets: &AssetServer, game: &mut 
             }
             if let Some(t) = l.get("ValueText") {
                 commands.queue(SetCaption(t, format!("{}", (v * 100.0) as i32)));
+                // F035164: #a8b774 over 0.75, #59231a under 0.5, else #140806
                 let colour = if v > 0.75 {
-                    Color::srgb(0.35, 0.8, 0.3)
+                    hud_ui::GREEN
                 } else if v < 0.5 {
-                    Color::srgb(0.85, 0.3, 0.25)
+                    hud_ui::RED
                 } else {
-                    hud_ui::LIGHT
+                    hud_ui::DARK_TEXT
                 };
                 commands.queue(move |w: &mut World| {
                     let Some(c) = w.get::<kenshi_gui::Caption>(t).map(|c| c.0) else { return };

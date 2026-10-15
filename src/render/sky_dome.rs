@@ -12,7 +12,8 @@ use bevy::shader::ShaderRef;
 
 #[derive(Debug, Clone, Copy, Default, ShaderType)]
 pub struct SkyParams {
-    /// xyz: toward the sun; w: SkyX's uTime ((assumption) 0: the stars do not drift).
+    /// xyz: toward the sun; w: SkyX's uTime (SkyX::update: half its time offset, see
+    /// `drift_stars`).
     pub light: Vec4,
     /// x: the HDR composite's exposure.
     pub exposure: Vec4,
@@ -51,6 +52,20 @@ impl KenshiSkyMaterial {
         self.params.cloud_b.w = light.clouds.y;
         self.params.cloud_c.x = light.clouds.z;
         self.params.sun_colour = light.sun_colour;
+    }
+}
+
+/// SkyX's time (SkyX_x64 SkyX::update: while its time multiplier is not 0 the offset grows by it
+/// x the frame time and uTime is half the offset): F040805 sets the multiplier each frame to
+/// 0.0091667 x the game speed (0x142134810), 0 while paused. `offset` is kept by the caller.
+pub fn drift_stars(offset: &mut f32, dt: f32, speed: f32, paused: bool, skies: &mut Assets<KenshiSkyMaterial>) {
+    let mult = if paused { 0.0 } else { speed * 0.009_166_667 };
+    if mult == 0.0 {
+        return;
+    }
+    *offset += mult * dt;
+    for (_, m) in skies.iter_mut() {
+        m.params.light.w = *offset * 0.5;
     }
 }
 
@@ -126,7 +141,7 @@ pub fn spawn_sky_dome(
 }
 
 /// The main camera (not the water reflection's).
-type MainCamera = (With<Camera3d>, Without<SkyDome>, Without<crate::reflection::ReflectionCamera>);
+type MainCamera = (With<Camera3d>, Without<SkyDome>, Without<crate::reflection::ReflectionCamera>, Without<crate::interior_mask::MaskCamera>);
 
 /// Keep the skydome on the camera.
 pub fn follow_camera(

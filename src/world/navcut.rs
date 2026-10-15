@@ -32,6 +32,9 @@ pub struct Cutter {
     pub hi: f32,
     /// The part it is of (the caller's number; cutters of a part cut together or not at all).
     pub group: u32,
+    /// Furniture (a BUILDING of "path mode" 1 or 2 placed in a town or a building): it cuts a
+    /// building's own navmesh too (its floors), and stops one at a lower height (a bed).
+    pub furniture: bool,
     min: [f32; 2],
     max: [f32; 2],
 }
@@ -57,7 +60,7 @@ impl Cutter {
         let hi = pts.iter().map(|p| p[1]).fold(f32::MIN, f32::max);
         let min = outline.iter().fold([f32::MAX; 2], |m, p| [m[0].min(p[0]), m[1].min(p[1])]);
         let max = outline.iter().fold([f32::MIN; 2], |m, p| [m[0].max(p[0]), m[1].max(p[1])]);
-        Some(Cutter { outline, lo, hi, group: 0, min, max })
+        Some(Cutter { outline, lo, hi, group: 0, furniture: false, min, max })
     }
 }
 
@@ -65,12 +68,13 @@ fn cross(o: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
 }
 
-/// The polygon's signed area (positive counter-clockwise).
+/// The polygon's signed area (positive counter-clockwise), measured from its first corner (world
+/// coordinates in f32 are thousands of metres: products of them lose a small polygon's area).
 fn area(p: &[[f32; 2]]) -> f32 {
-    (0..p.len()).map(|i| {
-        let (a, b) = (p[i], p[(i + 1) % p.len()]);
-        a[0] * b[1] - b[0] * a[1]
-    }).sum::<f32>() * 0.5
+    if p.len() < 3 {
+        return 0.0;
+    }
+    (1..p.len() - 1).map(|i| cross(p[0], p[i], p[i + 1])).sum::<f32>() * 0.5
 }
 
 /// The convex hull, counter-clockwise (monotone chain).
@@ -123,6 +127,15 @@ fn split(p: &[[f32; 2]], a: [f32; 2], b: [f32; 2]) -> (Vec<[f32; 2]>, Vec<[f32; 
     (left, right)
 }
 
+/// A face's corners on the ground plane, counter-clockwise.
+fn poly_of(c: &[[f32; 3]]) -> Vec<[f32; 2]> {
+    let mut p: Vec<[f32; 2]> = c.iter().map(|v| [v[0], v[2]]).collect();
+    if area(&p) < 0.0 {
+        p.reverse();
+    }
+    p
+}
+
 /// Convex `p` less convex `q` (both counter-clockwise): convex pieces.
 fn subtract(p: &[[f32; 2]], q: &[[f32; 2]]) -> Vec<Vec<[f32; 2]>> {
     let mut rest = p.to_vec();
@@ -170,74 +183,100 @@ impl NavWorld {
     /// Cutters for what `key` (a zone, a building) puts on the ground; a key already given is
     /// not cut again. The loaded ground sections they reach are cut now, the rest as they load.
     pub fn add_cutters(&mut self, key: (i64, i64), cutters: Vec<Cutter>) {
-        if !self.cut_keys.insert(key) || cutters.is_empty() {
+        self.add_cutters_many(vec![(key, cutters)]);
+    }
+
+    /// Several keys' cutters at once (`add_cutters`), the sections they reach cut once.
+    pub fn add_cutters_many(&mut self, keyed: Vec<((i64, i64), Vec<Cutter>)>) {
+        let keyed: Vec<_> = keyed.into_iter().filter(|(k, c)| !c.is_empty() && self.cut_keys.insert(*k)).collect();
+        if keyed.is_empty() {
             return;
         }
         // (testing) KENSHI_NO_NAVCUT: the cutters kept but nothing cut
         if std::env::var("KENSHI_NO_NAVCUT").is_ok() {
-            self.cutters.extend(cutters.iter().cloned());
-            for (i, c) in cutters.iter().enumerate() {
-                let i = self.cutters.len() - cutters.len() + i;
-                for gx in (c.min[0] / CELL).floor() as i32..=(c.max[0] / CELL).floor() as i32 {
-                    for gz in (c.min[1] / CELL).floor() as i32..=(c.max[1] / CELL).floor() as i32 {
-                        self.cutter_grid.entry((gx, gz)).or_default().push(i);
+            for (_, cutters) in keyed {
+                self.cutters.extend(cutters.iter().cloned());
+                for (i, c) in cutters.iter().enumerate() {
+                    let i = self.cutters.len() - cutters.len() + i;
+                    for gx in (c.min[0] / CELL).floor() as i32..=(c.max[0] / CELL).floor() as i32 {
+                        for gz in (c.min[1] / CELL).floor() as i32..=(c.max[1] / CELL).floor() as i32 {
+                            self.cutter_grid.entry((gx, gz)).or_default().push(i);
+                        }
                     }
                 }
             }
             return;
         }
         let base = self.cutters.iter().map(|c| c.group + 1).max().unwrap_or(0);
-        let mut cutters = cutters;
-        for c in &mut cutters {
-            c.group += base;
-        }
         let mut touched = HashSet::new();
+        let t_under = std::time::Instant::now();
         if std::env::var("KENSHI_NAV_DEBUG").is_ok() {
-            let mut big: Vec<(f32, f32, f32, [f32; 2])> = cutters.iter().map(|c| (area(&c.outline), c.lo, c.hi, c.min)).collect();
+            let mut big: Vec<(f32, f32, f32, [f32; 2])> = keyed.iter().flat_map(|(_, cs)| cs.iter()).map(|c| (area(&c.outline), c.lo, c.hi, c.min)).collect();
             big.sort_by(|a, b| b.0.total_cmp(&a.0));
             for b in big.iter().take(8) {
                 eprintln!("  cutter {:.0} m2, heights {:.1}..{:.1} at {:?}", b.0, b.1, b.2, b.3);
             }
         }
-        for c in cutters {
-            let i = self.cutters.len();
-            self.key_cutters.entry(key).or_default().push(i);
-            for gx in (c.min[0] / CELL).floor() as i32..=(c.max[0] / CELL).floor() as i32 {
-                for gz in (c.min[1] / CELL).floor() as i32..=(c.max[1] / CELL).floor() as i32 {
-                    self.cutter_grid.entry((gx, gz)).or_default().push(i);
+        for (key, cutters) in keyed {
+            for mut c in cutters {
+                c.group += base;
+                let i = self.cutters.len();
+                self.key_cutters.entry(key).or_default().push(i);
+                for gx in (c.min[0] / CELL).floor() as i32..=(c.max[0] / CELL).floor() as i32 {
+                    for gz in (c.min[1] / CELL).floor() as i32..=(c.max[1] / CELL).floor() as i32 {
+                        self.cutter_grid.entry((gx, gz)).or_default().push(i);
+                    }
                 }
+                for p in [[c.min[0], 0.0, c.min[1]], [c.max[0], 0.0, c.max[1]], [c.min[0], 0.0, c.max[1]], [c.max[0], 0.0, c.min[1]]] {
+                    let (x, y) = tile_of(p);
+                    touched.insert(tile_uid(x, y));
+                }
+                if c.furniture {
+                    touched.extend(self.building_sections_under(&c));
+                }
+                self.cutters.push(c);
             }
-            for p in [[c.min[0], 0.0, c.min[1]], [c.max[0], 0.0, c.max[1]], [c.min[0], 0.0, c.max[1]], [c.max[0], 0.0, c.min[1]]] {
-                let (x, y) = tile_of(p);
-                touched.insert(tile_uid(x, y));
-            }
-            self.cutters.push(c);
         }
+        if std::env::var("KENSHI_NAV_DEBUG").is_ok() {
+            eprintln!("navcut: {} sections touched, found in {:.1} s", touched.len(), t_under.elapsed().as_secs_f64());
+        }
+        let debug = std::env::var("KENSHI_NAV_DEBUG").is_ok();
         for uid in touched {
             if self.sections.contains_key(&uid) || self.pristine.contains_key(&uid) {
+                let t = std::time::Instant::now();
                 self.cut_section(uid);
+                if debug && t.elapsed().as_secs_f64() > 0.5 {
+                    eprintln!("navcut: section {uid} took {:.1} s", t.elapsed().as_secs_f64());
+                }
             }
         }
     }
 
-    /// Whether cutter `i` stands in the way at ground height `y` (metres): reaching from below
-    /// 1.5 m to above 0.6 m over it, and at least 0.4 m tall (lower things, floor plates and
-    /// steps, are walked over).
     /// The cutters of `key` taken away (a building dismantled, destroyed or moved): the
     /// ground they stood on cut again from the faces as loaded, without them.
     pub fn remove_cutters(&mut self, key: (i64, i64)) {
-        self.cut_keys.remove(&key);
-        let Some(ids) = self.key_cutters.remove(&key) else { return };
+        self.remove_cutters_many(&[key]);
+    }
+
+    /// Several keys' cutters taken away at once (`remove_cutters`).
+    pub fn remove_cutters_many(&mut self, keys: &[(i64, i64)]) {
         let mut touched = HashSet::new();
-        for i in ids {
-            let c = &mut self.cutters[i];
-            for p in [[c.min[0], 0.0, c.min[1]], [c.max[0], 0.0, c.max[1]], [c.min[0], 0.0, c.max[1]], [c.max[0], 0.0, c.min[1]]] {
-                let (x, y) = tile_of(p);
-                touched.insert(tile_uid(x, y));
+        for key in keys {
+            self.cut_keys.remove(key);
+            let Some(ids) = self.key_cutters.remove(key) else { continue };
+            for i in ids {
+                let c = self.cutters[i].clone();
+                for p in [[c.min[0], 0.0, c.min[1]], [c.max[0], 0.0, c.max[1]], [c.min[0], 0.0, c.max[1]], [c.max[0], 0.0, c.min[1]]] {
+                    let (x, y) = tile_of(p);
+                    touched.insert(tile_uid(x, y));
+                }
+                if c.furniture {
+                    touched.extend(self.building_sections_under(&c));
+                }
+                // left in place but standing on nothing
+                self.cutters[i].lo = f32::MAX;
+                self.cutters[i].hi = f32::MAX;
             }
-            // left in place but standing on nothing
-            c.lo = f32::MAX;
-            c.hi = f32::MAX;
         }
         for uid in touched {
             if self.pristine.contains_key(&uid) {
@@ -246,9 +285,30 @@ impl NavWorld {
         }
     }
 
+    /// Whether cutter `i` stands in the way at ground height `y` (metres): reaching from below
+    /// 1.5 m to above 0.6 m over it, and at least 0.4 m tall (lower things, floor plates and
+    /// steps, are walked over).
     fn stands_on(&self, i: usize, y: f32) -> bool {
         let c = &self.cutters[i];
+        // (assumption) furniture stops a character from 0.25 m up (a bed; the Havok character
+        // steps over less)
+        if c.furniture {
+            return c.lo < y + 1.5 && c.hi > y + 0.25 && c.hi - c.lo > 0.2;
+        }
         c.lo < y + 1.5 && c.hi > y + 0.6 && c.hi - c.lo > 0.4
+    }
+
+    /// The building sections (their own navmesh) under furniture cutter `c`'s outline, at its
+    /// heights.
+    fn building_sections_under(&self, c: &Cutter) -> Vec<i64> {
+        self.sections
+            .values()
+            .filter(|s| s.info.is_some())
+            .filter(|s| {
+                s.vertices.iter().any(|v| v[0] >= c.min[0] - 2.0 && v[0] <= c.max[0] + 2.0 && v[2] >= c.min[1] - 2.0 && v[2] <= c.max[1] + 2.0 && v[1] < c.hi && v[1] > c.lo - 1.5)
+            })
+            .map(|s| s.uid)
+            .collect()
     }
 
     /// The parts (cutter groups) over section `ground` that stand on its bare ground (as loaded):
@@ -378,7 +438,7 @@ impl NavWorld {
 
     /// Ground section `uid` cut by the cutters over it (from its faces as loaded).
     pub(crate) fn cut_section(&mut self, uid: i64) {
-        let overlay = uid + CUT_UID;
+        let overlay = uid.wrapping_add(CUT_UID);
         // back to the faces as loaded
         if let Some(orig) = self.pristine.get(&uid).cloned() {
             self.unindex(uid);
@@ -393,16 +453,26 @@ impl NavWorld {
             self.index(&orig);
             self.sections.insert(uid, orig);
         } else if let Some(s) = self.sections.get(&uid) {
-            if s.info.is_some() || self.cutters.is_empty() {
+            // a building's own navmesh is cut only by furniture standing on it
+            if self.cutters.is_empty() || (s.info.is_some() && !self.cutters.iter().any(|c| c.furniture && c.lo != f32::MAX)) {
                 return;
             }
             self.pristine.insert(uid, s.clone());
         } else {
             return;
         }
+        let t_start = std::time::Instant::now();
         let mut ground = self.sections[&uid].clone();
         let building = |n: i64| self.sections.get(&n).is_some_and(|s| s.info.is_some());
-        let parts = self.bare_parts(&ground);
+        // a building's own navmesh: its furniture only, and none of its faces that lead out of it
+        // (its doors and stairs) is cut
+        let own = ground.info.is_some();
+        let ground_faces = ground.faces.len();
+        let parts: HashSet<u32> = if own {
+            self.cutters.iter().filter(|c| c.furniture).map(|c| c.group).collect()
+        } else {
+            self.bare_parts(&ground)
+        };
         // each face less the cutters standing on it
         let mut pieces: Vec<(u32, Vec<[f32; 3]>)> = Vec::new();
         let mut cut: Vec<u32> = Vec::new();
@@ -413,7 +483,7 @@ impl NavWorld {
                 continue;
             }
             let edges = face.start_edge..face.start_edge + face.num_edges;
-            if edges.clone().any(|e| ground.links.get(&e).is_some_and(|l| l.iter().any(|x| building(x.0)))) {
+            if edges.clone().any(|e| ground.links.get(&e).is_some_and(|l| l.iter().any(|x| own || building(x.0)))) {
                 continue;
             }
             let corners: Vec<[f32; 3]> = ground.corners(fi).collect();
@@ -427,7 +497,7 @@ impl NavWorld {
             let lo = poly.iter().fold([f32::MAX; 2], |m, p| [m[0].min(p[0]), m[1].min(p[1])]);
             let hi = poly.iter().fold([f32::MIN; 2], |m, p| [m[0].max(p[0]), m[1].max(p[1])]);
             let y = corners.iter().map(|c| c[1]).sum::<f32>() / corners.len() as f32;
-            let near: Vec<usize> = self.cutters_near(lo, hi).into_iter().filter(|&i| parts.contains(&self.cutters[i].group) && self.stands_on(i, y)).collect();
+            let near: Vec<usize> = self.cutters_near(lo, hi).into_iter().filter(|&i| parts.contains(&self.cutters[i].group) && (!own || self.cutters[i].furniture) && self.stands_on(i, y)).collect();
             if near.is_empty() {
                 continue;
             }
@@ -448,7 +518,18 @@ impl NavWorld {
                 n[2] += (a[0] - b[0]) * (a[1] + b[1]);
             }
             let p0 = corners[0];
-            let height = |x: f32, z: f32| if n[1].abs() > 1e-6 { p0[1] - (n[0] * (x - p0[0]) + n[2] * (z - p0[2])) / n[1] } else { y };
+            // (a long thin face's plane is ill-defined: there the height is the face's own, as
+            // its triangles give it)
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            let flat = len > 1e-6 && n[1].abs() > 0.2 * len && area(&poly_of(&corners)) > 0.05;
+            let face_ref = FaceRef { section: uid, face: fi };
+            let height = |x: f32, z: f32| {
+                if flat {
+                    p0[1] - (n[0] * (x - p0[0]) + n[2] * (z - p0[2])) / n[1]
+                } else {
+                    self.height_on(face_ref, [x, y, z])
+                }
+            };
             cut.push(fi);
             for &i in &near {
                 let e = by_group.entry(self.cutters[i].group).or_insert((0, [lo[0], lo[1]]));
@@ -483,7 +564,8 @@ impl NavWorld {
             [c.iter().map(|v| v[0]).sum::<f32>() / n, c.iter().map(|v| v[1]).sum::<f32>() / n, c.iter().map(|v| v[2]).sum::<f32>() / n]
         }).collect();
         for (k, &f) in cut.iter().enumerate() {
-            let gc = ground.faces[f as usize].cluster.max(0) as u32;
+            // (a building's own navmesh has no clusters, -1: kept as `reachable` reads it)
+            let gc = if own { ground.faces[f as usize].cluster as u32 } else { ground.faces[f as usize].cluster.max(0) as u32 };
             overlay_sec.clusters.links.push((k as u32, uid, gc, 0.0));
             ground.clusters.links.push((gc, overlay, k as u32, 0.0));
         }
@@ -497,13 +579,17 @@ impl NavWorld {
             }
             overlay_sec.faces.push(Face { start_edge: start, num_edges: n, cluster: cluster_of[f] as i32, kind: kinds[*f as usize] });
         }
+        let t_faces = t_start.elapsed().as_secs_f64();
         // the pieces' links: to each other, and to the faces round them in any section
         let edge_face: Vec<u32> = overlay_sec.faces.iter().enumerate().flat_map(|(k, f)| std::iter::repeat_n(k as u32, f.num_edges as usize)).collect();
+        // (the pieces' edges by 1 m cell: a building cut into thousands of pieces would
+        // otherwise compare every edge with every other in a 16 m cell)
+        let fine = |v: f32| v.floor() as i32;
         let mut by_cell: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
         for (k, e) in overlay_sec.edges.iter().enumerate() {
             let (a, b) = (overlay_sec.vertices[e.a as usize], overlay_sec.vertices[e.b as usize]);
-            for gx in grid_cell(a[0].min(b[0]))..=grid_cell(a[0].max(b[0])) {
-                for gz in grid_cell(a[2].min(b[2]))..=grid_cell(a[2].max(b[2])) {
+            for gx in fine(a[0].min(b[0]) - 0.05)..=fine(a[0].max(b[0]) + 0.05) {
+                for gz in fine(a[2].min(b[2]) - 0.05)..=fine(a[2].max(b[2]) + 0.05) {
                     by_cell.entry((gx, gz)).or_default().push(k as u32);
                 }
             }
@@ -522,9 +608,9 @@ impl NavWorld {
             let k = k as u32;
             let (a, b) = (overlay_sec.vertices[e.a as usize], overlay_sec.vertices[e.b as usize]);
             let mut seen = HashSet::new();
-            for gx in grid_cell(a[0].min(b[0]))..=grid_cell(a[0].max(b[0])) {
-                for gz in grid_cell(a[2].min(b[2]))..=grid_cell(a[2].max(b[2])) {
-                    // the other pieces
+            // the other pieces
+            for gx in fine(a[0].min(b[0]) - 0.05)..=fine(a[0].max(b[0]) + 0.05) {
+                for gz in fine(a[2].min(b[2]) - 0.05)..=fine(a[2].max(b[2]) + 0.05) {
                     for &o in by_cell.get(&(gx, gz)).into_iter().flatten() {
                         if edge_face[o as usize] == edge_face[k as usize] || !seen.insert((overlay, o)) {
                             continue;
@@ -534,6 +620,10 @@ impl NavWorld {
                             new_links.push((k, (overlay, edge_face[o as usize], o)));
                         }
                     }
+                }
+            }
+            for gx in grid_cell(a[0].min(b[0]))..=grid_cell(a[0].max(b[0])) {
+                for gz in grid_cell(a[2].min(b[2]))..=grid_cell(a[2].max(b[2])) {
                     // the faces of the loaded sections (the ground's uncut ones among them)
                     for &(f, lo, hi) in self.grid.get(&(gx, gz)).into_iter().flatten() {
                         if f.section == uid && cut_set.contains(&f.face) {
@@ -557,6 +647,10 @@ impl NavWorld {
                     }
                 }
             }
+        }
+        let t_links = t_start.elapsed().as_secs_f64();
+        if std::env::var("KENSHI_NAV_DEBUG").is_ok() && t_links > 0.3 {
+            eprintln!("navcut: section {uid}: faces {t_faces:.2} s, links {:.2} s; {} faces, {} pieces, {} piece edges", t_links - t_faces, ground_faces, overlay_sec.faces.len(), overlay_sec.edges.len());
         }
         for (k, l) in new_links {
             overlay_sec.links.entry(k).or_default().push(l);
@@ -629,6 +723,14 @@ mod tests {
 }
 
 impl NavWorld {
+    /// (debugging) The outlines (x, z metres) and heights of the cutters near a point.
+    pub fn cutters_around(&self, x: f32, z: f32, r: f32) -> Vec<(Vec<[f32; 2]>, f32, f32, bool)> {
+        self.cutters_near([x - r, z - r], [x + r, z + r]).into_iter().map(|i| {
+            let c = &self.cutters[i];
+            (c.outline.clone(), c.lo, c.hi, c.furniture)
+        }).collect()
+    }
+
     /// (debugging) The cutters over a point (metres): area, heights.
     pub fn cutters_at(&self, x: f32, z: f32) -> Vec<(f32, f32, f32, usize)> {
         self.cutters_near([x, z], [x, z])
@@ -724,6 +826,28 @@ impl NavWorld {
 impl NavWorld {
     /// (testing) Faces reached from `f` across edges (any, up to `max`), and how many of `f`'s
     /// own edges lead anywhere.
+    /// How many faces an agent of `radius` (metres) reaches from `f`, up to `max`: as `flood`,
+    /// but no gap between walls narrower than the agent (the path search's own rule).
+    pub fn flood_wide(&self, f: FaceRef, max: usize, radius: f32) -> usize {
+        let mut seen = HashSet::from([f]);
+        let mut stack = vec![f];
+        while let Some(g) = stack.pop() {
+            if seen.len() >= max {
+                break;
+            }
+            let face = self.sections[&g.section].faces[g.face as usize];
+            for e in face.start_edge..face.start_edge + face.num_edges {
+                for (n, (a, b)) in self.across(g, e) {
+                    let narrow = crate::navmesh::distance(a, b) < radius * 2.0 && self.gap(g, e);
+                    if !narrow && self.sections[&n.section].faces[n.face as usize].kind != FACE_BLOCKED && seen.insert(n) {
+                        stack.push(n);
+                    }
+                }
+            }
+        }
+        seen.len()
+    }
+
     pub fn flood(&self, f: FaceRef, max: usize) -> (usize, usize) {
         let mut seen = HashSet::from([f]);
         let mut stack = vec![f];

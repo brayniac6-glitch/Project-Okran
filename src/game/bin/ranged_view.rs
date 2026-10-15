@@ -148,7 +148,8 @@ impl AttachPoints {
 /// fight, its first weapon's "bare sword" in hand (else its "mesh"), the sheath left on; out of
 /// one, every weapon in its "hip" and "back" slots sheathed at the race's attachment points
 /// (hip; back, then back2): the weapon's "mesh" and its "sheath".
-/// (stand-in) Kenshi's own draw and sheathe moments and offsets per weapon type are not ported.
+/// Drawn while `Person::weapon_out` (kenshi_game::sim::Sim::weapon_tick: from the start of an
+/// attack to a second after the fight).
 #[allow(clippy::too_many_arguments)]
 pub fn bows(
     mut commands: Commands,
@@ -186,11 +187,22 @@ pub fn bows(
             .flat_map(|(n, s)| p.inventory.sections[s].items.iter().map(move |i| (n, &i.item)))
             .filter(|(_, i)| matches!(i.kind, Some(kenshi_data::ItemType::Weapon | kenshi_data::ItemType::Crossbow)))
             .collect();
+        if std::env::var("KENSHI_WEAPON_DEBUG").is_ok() && game.sim.tick.is_multiple_of(120) && (f.active || p.weapon_out) {
+            eprintln!(
+                "weapons {id}: out {} active {} down {} shooting {} slotted {:?} current {:?}",
+                p.weapon_out,
+                f.active,
+                f.down,
+                f.shooting,
+                slotted.iter().map(|(s, i)| (*s, i.name.clone(), i.kind)).collect::<Vec<_>>(),
+                p.ai.current.as_ref().map(|t| t.task)
+            );
+        }
         let mut drawn: Option<usize> = None;
         if let Some(g) = f.gun.as_ref().filter(|_| f.shooting && !f.down) {
             pieces.push((g.record.clone(), vec!["mesh", if 0 < g.shots { "extra mesh loaded" } else { "extra mesh unloaded" }], prop, Transform::default()));
             drawn = slotted.iter().position(|(_, i)| i.record == g.record);
-        } else if f.active && !f.down {
+        } else if p.weapon_out && !f.down {
             if let Some(k) = slotted.iter().position(|(_, i)| i.kind == Some(kenshi_data::ItemType::Weapon)) {
                 pieces.push((slotted[k].1.record.clone(), vec!["bare sword"], prop, Transform::default()));
                 drawn = Some(k);
@@ -440,7 +452,8 @@ pub fn nest_test(mut game: ResMut<Game>, mut frames: Local<u32>, mut at: Local<O
     }
     let Some(&me) = game.selected.first() else { return };
     let q = game.sim.folk[me].mover.position_units();
-    let (x, z) = (q[0] + 500.0, q[2]);
+    let dist = std::env::var("KENSHI_NEST_DIST").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(500.0);
+    let (x, z) = (q[0] + dist, q[2]);
     let origin = game.zone.origin;
     let y = game.ground(x - origin.x, z - origin.z) + origin.y;
     let name = game.sim.spawn_nest_at([x, y, z]);
@@ -566,7 +579,9 @@ pub fn arm_test(mut game: ResMut<Game>, mut frames: Local<u32>) {
     let ids: Vec<usize> = game.sim.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
     for id in ids {
         for n in &names {
-            if let Some(r) = data.of_type(kenshi_data::ItemType::Weapon).find(|r| &r.name == n) {
+            // (a weapon by that name, else any item: a backpack, armour)
+            let r = data.of_type(kenshi_data::ItemType::Weapon).find(|r| &r.name == n).or_else(|| data.records.values().find(|r| &r.name == n && r.item_type().is_some_and(|t| matches!(t, kenshi_data::ItemType::Container | kenshi_data::ItemType::Armour | kenshi_data::ItemType::Item))));
+            if let Some(r) = r {
                 let mut it = kenshi_char::inventory::Item::from_record(r, 1);
                 it.quality = 50.0;
                 let ok = game.sim.folk[id].inventory.add(it, true);

@@ -3,8 +3,9 @@
 //! Spec: F048162 Biome::Biome (a BIOME_GROUP record: "index" - the colour the biome map marks it
 //! with -, "homeless spawn amount", "homeless spawns" as a SpawnInfoList, "num nests"; the zones
 //! of the 64 x 64 grid whose biome-map colour is the index belong to it, the unmarked ones to
-//! the default biome 18003-gamedata.base), F048100 the biome-map colour at a zone's centre (the
-//! map spans the world; R << 16 | G << 8 | B), F048166 SpawnInfoList::load (each reference a
+//! the default biome 18003-gamedata.base), F048100 the areas map's colour at a zone's centre
+//! (F048151: data/newland/land/areasmap.tga over the world, -147456 .. 147456 on x and z;
+//! R << 16 | G << 8 | B), F048166 SpawnInfoList::load (each reference a
 //! squad template with its weight, the first value, kept when positive; the squad's faction, else
 //! 3943-gamedata.base).
 
@@ -17,7 +18,9 @@ pub const DEFAULT_BIOME: &str = "18003-gamedata.base";
 /// A spawn entry's faction when its squad names none (F048166).
 pub const DEFAULT_SPAWN_FACTION: &str = "3943-gamedata.base";
 
-/// The biome map (data/newland/land/biomemap.png): one colour per pixel over the whole world.
+/// The areas map (F048151: data/newland/land/areasmap.tga, 256 x 256): one colour per pixel over
+/// the whole world, each a BIOME_GROUP's "index". (biomemap.png is the terrain's, for its grass
+/// and slopes, not the regions'.)
 pub struct BiomeMap {
     pub width: u32,
     pub height: u32,
@@ -26,7 +29,7 @@ pub struct BiomeMap {
 
 impl BiomeMap {
     pub fn load(install: &Path) -> Option<BiomeMap> {
-        let img = image::open(install.join("data/newland/land/biomemap.png"))
+        let img = image::open(install.join("data/newland/land/areasmap.tga"))
             .ok()?
             .to_rgb8();
         Some(BiomeMap {
@@ -38,15 +41,15 @@ impl BiomeMap {
 
     /// @fn F048100
     ///
-    /// The map's colour at world (x, z), clamped to the map, as R << 16 | G << 8 | B. The image's
-    /// rows run against z: (assumption, checked) of the four ways to lay the map on the world
-    /// only this one puts Squin in Okran's Gulf and Admag in Vain (the loader setting the image's
-    /// extent, F051626 -> F025f13, is not read yet).
+    /// The map's colour at world (x, z), clamped to the map, as R << 16 | G << 8 | B: its first
+    /// row at z -147456 (checked: Shark, Mud Town and Swamp Village in The Swamp, Rebirth in
+    /// Rebirth, Admag in Stenn Desert, Bark and Heft in The Great Desert, Spring in Stobe's
+    /// Gamble, World's End in Arm of Okran, Mongrel in Fog Islands).
     pub fn colour_at(&self, x: f32, z: f32) -> i32 {
         let col = ((x + WORLD_SIZE / 2.0) / (WORLD_SIZE / self.width as f32)) as i32;
         let row = ((z + WORLD_SIZE / 2.0) / (WORLD_SIZE / self.height as f32)) as i32;
         let col = col.clamp(0, self.width as i32 - 1) as u32;
-        let row = self.height - 1 - row.clamp(0, self.height as i32 - 1) as u32;
+        let row = row.clamp(0, self.height as i32 - 1) as u32;
         let [r, g, b] = self.rgb[(row * self.width + col) as usize];
         (r as i32) << 16 | (g as i32) << 8 | b as i32
     }

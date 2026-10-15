@@ -14,13 +14,50 @@ pub struct Hud {
     /// The squad's portraits made: (their roots, the button, whom it selects, the face widget);
     /// the tab.
     squad: Vec<(Vec<Entity>, Entity, usize, Option<Entity>)>,
+    /// The names over the portraits as last written (a name given later, or renamed, is
+    /// written again): (the NameText widget, the name).
+    squad_names: Vec<(Option<Entity>, String)>,
+    /// The squads' tabs (one per squad, in their order) and the names and shown squad they were
+    /// made for; the squad shown, and the first selected when last looked.
     tab: Option<Built>,
+    tabs_for: (Vec<String>, usize),
+    pub active_squad: usize,
+    seen_first: Option<usize>,
     last: f32,
+    /// (testing) KENSHI_STANCE given.
+    stance_tested: bool,
     banner: Banner,
     /// What each datapanel shows now (rebuilt when it changes).
     rows: HashMap<Entity, Vec<Row>>,
     fonts: Fonts,
+    /// The extending panel (MainBarGUI +0x1a0 ExtendingPanel, its button +0x198): folded away
+    /// (+0x1bc) or not, how far slid (0 out .. 1 folded), and its layout top (+0x1a8).
+    folded: bool,
+    fold: f32,
+    unfolded_top: Option<f32>,
+    /// Hidden by "Toggle main gui" (controls.cfg toggle_bar).
+    hidden: bool,
+    /// The jobs panel's rows (`jobs_panel`).
+    jobs: Jobs,
 }
+
+/// The jobs panel (OrdersPanel's JobsPanel ItemBox, F043076): whose jobs the rows show and what
+/// (each row's text and whether it is drawn at full alpha) at which scroll, the rows (their
+/// containers and remove buttons), the list scrolled by how many rows, and the row being
+/// dragged (its place and where the press was).
+#[derive(Default)]
+struct Jobs {
+    shown: Option<(usize, Vec<(String, bool)>, usize)>,
+    rows: Vec<(Entity, Entity)>,
+    scroll: usize,
+    drag: Option<(usize, Vec2)>,
+    /// (testing) KENSHI_JOBS given.
+    tested: bool,
+}
+
+/// A jobs panel row (OrderCellView): its job's place in the list.
+#[derive(Component)]
+pub struct JobRow(usize);
 
 /// The fonts the panel's own texts use.
 struct Fonts {
@@ -40,9 +77,33 @@ impl Fonts {
 /// Kenshi's light panel text (the banner's "TextColour").
 pub(super) const LIGHT: Color = Color::srgb(0.871, 0.845, 0.81);
 /// Faded panel text.
-const FADED: Color = Color::srgb(0.6, 0.56, 0.5);
-/// A penalty.
-const PENALTY: Color = Color::srgb(0.78, 0.27, 0.22);
+pub(super) const FADED: Color = Color::srgb(0.6, 0.56, 0.5);
+/// The game's colour strings, MyGUI colour tags its texts are written with (std::strings made
+/// at start by the initialisers at F163756 and after): 0x141f49248 "#afa68b", 0x141f49270
+/// "#140806", 0x141f49298 "#492620", 0x141f492c0 "#59231a", 0x141f492e8 "#bf4834",
+/// 0x141f49310 and 0x141f49338 "#a8b774", 0x141f49360 "#444444", 0x141f49388 "#777777",
+/// 0x141f493b0 "#14ffdc".
+pub(super) const fn tag(rgb: u32) -> Color {
+    Color::srgb(((rgb >> 16) & 0xff) as f32 / 255.0, ((rgb >> 8) & 0xff) as f32 / 255.0, (rgb & 0xff) as f32 / 255.0)
+}
+/// 0x141f49248, "#afa68b".
+pub(super) const TAN: Color = tag(0xafa68b);
+/// 0x141f49270, "#140806".
+pub(super) const DARK_TEXT: Color = tag(0x140806);
+/// 0x141f49298, "#492620".
+pub(super) const DARK_RED: Color = tag(0x492620);
+/// 0x141f492c0, "#59231a".
+pub(super) const RED: Color = tag(0x59231a);
+/// 0x141f49310, "#a8b774".
+pub(super) const GREEN: Color = tag(0xa8b774);
+/// 0x141f49360, "#444444".
+pub(super) const GREY: Color = tag(0x444444);
+/// A penalty: F047092 / F047093's red, #59231a.
+pub(super) const PENALTY: Color = RED;
+/// A bonus: F047092's green, #a8b774.
+pub(super) const BONUS: Color = GREEN;
+/// F039272's colour for a moderate load, #afa68b (Overloaded and Heavy in #59231a).
+pub(super) const MODERATE: Color = TAN;
 /// Kenshi_TextboxStandardText's "TextColour" (dark, on the bars).
 const DARK: Color = Color::srgb(0.078, 0.031, 0.024);
 
@@ -52,10 +113,12 @@ pub(super) struct Row {
     pub label: String,
     pub value: String,
     pub colour: Color,
+    /// The line's hover tip (DataPanelLine's tooltip), none when empty.
+    pub tip: String,
 }
 
 pub(super) fn row(label: impl Into<String>, value: impl Into<String>) -> Row {
-    Row { label: label.into(), value: value.into(), colour: LIGHT }
+    Row { label: label.into(), value: value.into(), colour: LIGHT, tip: String::new() }
 }
 
 /// The marker on a datapanel's lines.
@@ -112,6 +175,9 @@ impl Command for SetRows {
                     ..default()
                 })
                 .id();
+            if !r.tip.is_empty() {
+                world.entity_mut(line).insert((Interaction::default(), super::inventory_ui::ItemTip(r.tip.clone())));
+            }
             let l = world.spawn(text(r.label, self.label_colour)).id();
             world.entity_mut(line).add_child(l);
             if !r.value.is_empty() {
@@ -171,12 +237,78 @@ struct Banner {
     visible: bool,
 }
 
+/// @fn F047081
+///
+/// A bonus as a tooltip's value and colour code (`tooltip_ui`): "+n" over 0 in #a8b774, "n" under
+/// in #59231a, "0" in the text colour (F043426). (not ported: the weapon's indoors penalty
+/// itself, CharStats +0x28, shown as 0)
+fn bonus_line(n: i32) -> String {
+    let colour = match n {
+        n if n > 0 => "g",
+        n if n < 0 => "r",
+        _ => "",
+    };
+    if n < 1 { format!("{n}	{colour}") } else { format!("+{n}	{colour}") }
+}
+
 /// The life bar parts of the medical panel, in the order Kenshi lists them.
 const BARS: usize = 9;
 
 fn window_size(windows: &Query<&Window>) -> [f32; 2] {
     windows.iter().next().map_or([1600.0, 900.0], |w| [w.width(), w.height()])
 }
+
+/// The main panel's buttons' tooltips (F043076: the orders panel's, the sneak one its two
+/// strings joined; F043077: the build, shortcut and floor buttons'), shown in its TooltipPanel
+/// (`tooltip_ui`).
+const TIPS: [(&str, &str); 19] = [
+    (
+        "OrdersBlockButton",
+        "This will toggle the selected characters into defensive combat mode. When in defensive mode, a character will focus purely on staying alive and will gain 20 to his melee defense skill. However he will not attempt to make any attacks. This is handy for keeping your weaker characters alive when they are outclassed.",
+    ),
+    (
+        "OrdersHoldButton",
+        "HOLD POSITION means that the selected character won't run off to fight enemies, even to protect his allies.  He will hold his position and only attack any enemy that comes into close range.  He will still use a crossbow normally, but won't move around obstacles to get a shot.  Use this setting to tactically position fighters, or just to keep non-combatants away from the fighting.",
+    ),
+    (
+        "OrdersPassiveButton",
+        "In non-combat mode a character will never initiate combat, even if his allies are fighting or need help. He will only fight when directly attacked, and is less likely to be targeted by enemies.",
+    ),
+    ("OrdersChaseButton", "If this is disabled then the character won't do any of the jobs listed."),
+    (
+        "OrdersTauntButton",
+        "The character will make himself offensive, noisy and conspicuous in an attempt to draw more of the enemy to attack him. Using this enables your experienced and well armoured characters to draw trouble away from your more vulnerable ones.",
+    ),
+    ("OrdersRangedButton", "If enabled then the character will prioritise ranged attacks, melee will be a last resort."),
+    (
+        "OrdersSneakButton",
+        "Activates sneak mode so the character will try to go unnoticed.\nIf the character is unconscious, when he wakes up he will stay down on the ground and crawl to avoid detection.",
+    ),
+    (
+        "OrdersMedicButton",
+        "Pressing this button will order your selected characters to automatically heal everyone else in the squad, including themselves. They will need a medkit in their inventory.",
+    ),
+    (
+        "OrdersRescueButton",
+        "This will order your selected characters to pick up all your wounded allies. If you own any buildings nearby, they will take the wounded and put them in beds. Make sure to heal their wounds first.",
+    ),
+    (
+        "OrdersProspectButton",
+        "This will give you information on the richness of resources at your location. Stone, iron, water, fertility... It's important to check for these things before building an outpost.",
+    ),
+    (
+        "BuildButton",
+        "Opens the BUILD menu.  Here you can place buildings and start your own outpost anywhere in the world, but you should choose a safe area and check availability of resources using the PROSPECT button. You will also need building materials to finish construction.",
+    ),
+    ("ShortcutInventoryButton", "Open character inventory"),
+    ("ShortcutStatsButton", "Open character status window"),
+    ("ShortcutMapButton", "Open world map"),
+    ("ShortcutTechButton", "Open research window"),
+    ("ShortcutSquadButton", "Open squad management window"),
+    ("ShortcutHelpButton", "Open help window"),
+    ("FloorArrowDown", "Change the selected floor, use to move to a certain floor of a building, 0 is ground floor (also: Page Down key)"),
+    ("FloorArrowUp", "Change the selected floor, use to move to a certain floor of a building, 0 is ground floor (also: Page Up key)"),
+];
 
 /// Spawn the panel once the world is ready and no editor is up.
 pub fn open(mut commands: Commands, gui: Res<GuiRes>, assets: Res<AssetServer>, windows: Query<&Window>) {
@@ -206,7 +338,7 @@ pub fn open(mut commands: Commands, gui: Res<GuiRes>, assets: Res<AssetServer>, 
     for r in &ui.roots {
         commands.entity(*r).insert(GlobalZIndex(40));
     }
-    // (TooltipPanel: an empty frame no code of the game's fills)
+    // (TooltipPanel: the panel's tooltips show in its place, F043077's ToolTipFixed: tooltip_ui)
     for hidden in ["TownPanel", "TooltipPanel", "BountyPanel", "LoadingPanel"] {
         if let Some(e) = ui.get(hidden) {
             commands.queue(SetVisible(e, false));
@@ -216,8 +348,31 @@ pub fn open(mut commands: Commands, gui: Res<GuiRes>, assets: Res<AssetServer>, 
     if let Some(e) = ui.get("MoneyLabelText") {
         commands.queue(SetCaption(e, "Money".to_string()));
     }
+    for (name, text) in TIPS {
+        if let Some(e) = ui.get(name) {
+            commands.entity(e).insert(super::inventory_ui::ItemTip(text.to_string()));
+        }
+    }
     let fonts = Fonts::load(&gui.0, &assets);
-    commands.insert_resource(Hud { ui, squad: Vec::new(), last: -1.0, banner: Banner::default(), rows: HashMap::new(), fonts, tab: None });
+    commands.insert_resource(Hud {
+        ui,
+        squad: Vec::new(),
+        squad_names: Vec::new(),
+        last: -1.0,
+        stance_tested: false,
+        banner: Banner::default(),
+        rows: HashMap::new(),
+        fonts,
+        tab: None,
+        tabs_for: (Vec::new(), 0),
+        active_squad: 0,
+        seen_first: None,
+        folded: std::env::var("KENSHI_HUD_FOLD").is_ok(),
+        fold: 0.0,
+        unfolded_top: None,
+        jobs: Jobs::default(),
+        hidden: false,
+    });
 }
 
 /// One life bar's contents.
@@ -266,6 +421,9 @@ fn status_line(sim: &kenshi_game::sim::Sim, id: usize) -> (&'static str, String)
     if m.coma {
         return ("Recovery coma", "You've suffered too much damage. You won't be getting up again until all critical body parts have recovered above 0.".into());
     }
+    if p.playing_dead {
+        return ("Playing dead...", "This person has regained consciousness but is staying down, waiting for all the enemies to leave the area.".into());
+    }
     if p.down {
         return ("Unconscious", "Knocked out cold.".into());
     }
@@ -278,15 +436,38 @@ fn status_line(sim: &kenshi_game::sim::Sim, id: usize) -> (&'static str, String)
     if m.parts.iter().any(|q| q.flesh - q.stun < 0.0) {
         return ("Critical", "Critical injuries will continue to degenerate without medical attention.".into());
     }
-    if 0.0 < p.disguise_blown {
-        let n = p.disguise_blown.ceil() as i32;
-        let cool = if n == 1 { "Cooldown 1 second".to_string() } else { format!("Cooldown {n} seconds") };
-        return ("Disguise Blown!", format!("You've been discovered, somebody has seen through your disguise.\n{cool}"));
+    // the weather or ground hurting it (kenshi_game::hazards; F040447..F040451's lines)
+    if let Some(z) = &p.hazard {
+        use kenshi_game::hazards::{WA_ACID, WA_BURNING, WA_GAS};
+        let pct = (z.protection.clamp(0.0, 1.0) * 100.0).round();
+        let gear = |what: &str| {
+            if z.protection >= 1.0 {
+                "Your gear is protecting you from being horribly burnt.".to_string()
+            } else if z.protection > 0.0 {
+                format!("{what}, your gear is providing you with {pct}% protection.")
+            } else {
+                format!("{what}.")
+            }
+        };
+        return match (z.affect, z.ground) {
+            (WA_ACID, true) if p.water == 3 => ("Acid!", "You are currently submersed in acid, get out of there as soon as you can.".into()),
+            (WA_ACID, true) => ("Feet Burning!", "The ground here is acidic and burns your feet, find some footwear!".into()),
+            (WA_ACID, false) => ("Acid Rain", gear("It is currently raining acid")),
+            (WA_BURNING, _) => ("Burning", gear("You are burning")),
+            (WA_GAS, _) => ("Poison Gas", gear("You are currently breathing in poison gas")),
+            _ => ("Dust Storm", if z.protection > 0.0 { format!("You are in a dust storm, your gear is providing you with {pct}% protection.") } else { "You are in a dust storm, it affects your accuracy in combat.".into() }),
+        };
     }
-    if let Some(s) = p.slave.as_ref().filter(|s| !s.obedient && p.prison.is_none())
-        && 0 < sim.bounty_with(id, &s.faction)
-    {
-        return ("Discovered!", "You've been discovered, somebody has noticed that you are an escaped slave.".into());
+    // found out: an escaping slave or ex-slave, or one in some disguise, while its disguise is
+    // blown (the state object +0x110), with the cooldown left (truncated)
+    let state = sim.slave_state(id);
+    if (state > kenshi_game::slavery::IS_SLAVE || sim.outfit(id).disguise > 0.0) && 0.0 < p.disguise_blown {
+        let n = p.disguise_blown as i32;
+        let cool = if n == 1 { "Cooldown 1 second".to_string() } else { format!("Cooldown {n} seconds") };
+        if state > kenshi_game::slavery::IS_SLAVE {
+            return ("Discovered!", format!("You've been discovered, somebody has noticed that you are an escaped slave.\n{cool}"));
+        }
+        return ("Disguise Blown!", format!("You've been discovered, somebody has seen through your disguise.\n{cool}"));
     }
     if let Some(d) = &p.disguised {
         let name = sim.data.get(d).map_or(d.clone(), |r| r.name.clone());
@@ -307,23 +488,27 @@ fn status_line(sim: &kenshi_game::sim::Sim, id: usize) -> (&'static str, String)
 /// @fn F039272
 ///
 /// The state box's state (the first row) and what hovering it tells: a slave's, an escaped
-/// slave's and an ex-slave's with how much it looks like a slave ("Looks like a slave:",
-/// `Sim::looks_like_slave`), whether it has been seen ("Situation:") and an escapee's time left.
-/// (assumption) The slave lines come from the game's strings in their order (the function is too
-/// large to decompile); "Seen!" is a bounty with its masters.
+/// slave's and an ex-slave's (by the slave state, F039148) with how much it looks like a slave
+/// ("Looks like a slave:", the state object +0xf4 x 100), whether it has been found out
+/// ("Situation:" "Seen!" while its disguise is blown, +0x110) and the hours left (F038568: 12
+/// less the hours escaping, 96 less those as an ex-slave).
 fn state_line(sim: &kenshi_game::sim::Sim, id: usize) -> (&'static str, String) {
     let p = &sim.folk[id];
     let m = &sim.arena.f[id].medical;
     let faction = |f: &str| sim.data.get(f).map_or(f.to_string(), |r| r.name.clone());
-    let looks = |s: &kenshi_game::slavery::Slavery| {
-        let seen = if 0 < sim.bounty_with(id, &s.faction) { "Seen!" } else { "Undiscovered" };
-        format!("\nLooks like a slave: {}%\nSituation: {seen}", (sim.looks_like_slave(id) * 100.0).round() as i32)
+    let looks = || {
+        let seen = if p.disguise_blown > 0.0 { "Seen!" } else { "Undiscovered" };
+        format!("\nLooks like a slave: {}%\nSituation: {seen}", (sim.looks_like_slave(id) * 100.0) as i32)
+    };
+    let left = |s: &kenshi_game::slavery::Slavery, of: f64| {
+        let n = (of - (sim.hours_gone() - s.since)) as i64;
+        if n == 1 { "1 hour".to_string() } else { format!("{n} hours") }
     };
     if m.dead {
         return ("Dead", "This guy is dead and gone.".into());
     }
     if let Some(s) = p.slave.as_ref() {
-        if p.prison.as_ref().is_some_and(|q| q.slave) || s.obedient {
+        if s.state == kenshi_game::slavery::IS_SLAVE {
             return (
                 "Slave",
                 format!(
@@ -333,27 +518,27 @@ fn state_line(sim: &kenshi_game::sim::Sim, id: usize) -> (&'static str, String) 
                 ),
             );
         }
-        if p.prison.is_none() {
-            if s.fled || p.escaped.is_some() {
-                let left = p.escaped.as_ref().map_or(0.0, |e| (e.1 - sim.hours_gone()).max(0.0)).ceil() as i64;
-                let hours = if left == 1 { "1 hour".to_string() } else { format!("{left} hours") };
+        {
+            if s.state == kenshi_game::slavery::ESCAPING_SLAVE {
+                let hours = left(s, 12.0);
                 return (
                     "Escaped slave",
                     format!(
                         "A slave of {} that has been seen escaping. Needs to lay low for a day and avoid getting spotted. {}\nTime remaining: {hours}{}",
                         faction(&s.faction),
                         "Keep your [Looks Like A Slave] level as low as possible, wear clothing or disguises and find a plastic surgeon to restore your hair. Don't get spotted.",
-                        looks(s)
+                        looks()
                     ),
                 );
             }
             return (
                 "Ex-slave",
                 format!(
-                    "Was once a slave of {} but has now escaped. The heat has died down but he still needs to avoid getting found out. {}{}",
+                    "Was once a slave of {} but has now escaped. The heat has died down but he still needs to avoid getting found out. {}\nTime remaining: {}{}",
                     faction(&s.faction),
                     "Keep your [Looks Like A Slave] level as low as possible, wear clothing or disguises and find a plastic surgeon to restore your hair. You should be safe if you stay out of towns.",
-                    looks(s)
+                    left(s, 96.0),
+                    looks()
                 ),
             );
         }
@@ -369,14 +554,161 @@ fn state_line(sim: &kenshi_game::sim::Sim, id: usize) -> (&'static str, String) 
         let what = format!("{:?}", c.kind).trim_start_matches("Crime").to_lowercase();
         return ("Committing Crime!", format!("This character is currently committing {what}, make sure nobody witnesses it."));
     }
-    if let Some((_, until)) = &p.escaped {
-        let left = (until - sim.hours_gone()).max(0.0).ceil() as i64;
-        return ("Escaped Prisoner", format!("This character broke out of prison, if he gets spotted by any guards he is in trouble. Leave town to clear this status. Expires in {left} hours"));
+    if p.escaped.is_some() {
+        // (F039272 shows a fixed 99999 hrs: the status lasts until the character leaves town)
+        return ("Escaped Prisoner", "This character broke out of prison, if he gets spotted by any guards he is in trouble. Leave town to clear this status. 99999 hrs".into());
     }
     if p.bed.is_some() {
         return ("Sleeping...", String::new());
     }
     ("Normal", String::new())
+}
+
+/// @fn F047093
+///
+/// The extended stats (MainBarGUI's "Stats 2" datapanel on ExtendedStatsText, mode 7: the
+/// character's F039272 hands it to its stats, F047093), each line with its tooltip:
+/// - Athletics XP: F047452, the load (F047034, CharStats +0x190, at least 0) x 1.5 while moving
+///   faster than 0.8 x the run speed (F047018); its tip the encumbrance penalty (1 - load) and
+///   the full speed bonus;
+/// - Strength XP: out of combat the walking rate (F047455; its tip the encumbrance bonus, halved
+///   with "Carrying somebody: 200%" while carrying), in combat the weapon's strain (CharStats
+///   +0x184, "Weapon weight:"), unarmed (+0x1f0 = 5) 1 - load ("Encumbrance:");
+/// - Toughness XP: F047453's multiplier: 1, 2 with the left arm crippled, +2 the right, +2 with
+///   blood loss trauma, +2 while the worst part's health share (MedicalSystem +0xa4, F040427) is
+///   under 15 (a share is at most 1: always, so never under 3x, as in Kenshi);
+/// - KO point: getKOPoint (F040402);
+/// - Run speed: CharStats +0x17c x 0.2237 in mph, with the difference from the run speed
+///   (F047080);
+/// - Hunger Rate: hungerRate (F047009) x 100.
+/// (stand-ins: an arm is crippled with no health left, or lost; blood loss trauma (+0x163,
+/// raised by the bleeding and damage of the frame) is bleeding now; the run speed's and
+/// hunger rate's own tooltips (F047088, F047086) are not ported)
+fn extended_stats(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<Row> {
+    use kenshi_char::StatsEnumerated as S;
+    let p = &sim.folk[id];
+    let f = &sim.arena.f[id];
+    let m = &f.medical;
+    let ec = kenshi_char::encumbrance::EncumbranceConstants::default();
+    let strength = kenshi_char::encumbrance::strength_level(f.level(S::StatStrength), 1.0);
+    let load = kenshi_char::encumbrance::load(kenshi_char::encumbrance::carried_weight(p.inventory.weight(), p.carrying.is_some(), &ec), 1.0, strength, &ec);
+    let run = if f.run > 0.0 { f.run } else { sim.run };
+    let tipped = |label: &str, value: String, lines: Vec<String>, about: &str| Row {
+        label: label.into(),
+        value,
+        colour: LIGHT,
+        tip: lines.into_iter().chain(std::iter::once(about.to_string())).collect::<Vec<_>>().join("\n"),
+    };
+    let mut rows = Vec::new();
+    // Athletics XP (F047452)
+    let fast = run * 0.8 < p.own_speed;
+    let athletics = load.max(0.0) * if fast { 1.5 } else { 1.0 };
+    // F047093: the penalty in #59231a, the bonus in #a8b774
+    let mut lines = vec![format!("Encumbrance penalty:\t-{}%\tr", ((1.0 - load) * 100.0) as i32)];
+    if fast {
+        lines.push("Full speed bonus:\t+50%\tg".into());
+    }
+    rows.push(tipped("Athletics XP:", format!("{}%", (athletics * 100.0) as i32), lines, "This is the rate at which your athletics skill is increasing while running."));
+    // Strength XP
+    let carrying = p.carrying.is_some();
+    let unarmed = f.weapon_weight <= 0.0;
+    let strength_xp = if !f.active {
+        kenshi_char::encumbrance::strength_xp_from_walking(load, carrying, &ec)
+    } else if unarmed {
+        1.0 - load
+    } else {
+        f.strain
+    };
+    let shown = (strength_xp * 100.0) as i32;
+    let mut lines = Vec::new();
+    if !f.active {
+        lines.push(format!("Encumbrance bonus:\t{}%\t", if carrying { (shown as f32 * 0.5) as i32 } else { shown }));
+        if carrying {
+            lines.push("Carrying somebody:\t200%\t".into());
+        }
+    } else if unarmed {
+        lines.push(format!("Encumbrance:\t{shown}%\t"));
+    } else {
+        lines.push(format!("Weapon weight:\t{shown}%\t"));
+    }
+    rows.push(tipped("Strength XP:", format!("{shown}%"), lines, "This is the rate at which your strength is increasing."));
+    // Toughness XP (F047453)
+    let crippled = |side_name: &str| {
+        m.parts.iter().any(|q| q.kind == 2 && sim.data.get(&q.id).is_some_and(|r| r.name.contains(side_name)) && (q.slot == 1 || q.health() <= 0.0))
+    };
+    let (left, right) = (crippled("Left"), crippled("Right"));
+    let trauma = 0.0 < m.bleed_rate;
+    let worst = m.parts.iter().filter(|q| !q.robotic).map(|q| (q.treatment + q.flesh) / q.max_health().max(1e-3)).fold(1.0f32, f32::min);
+    let worst = if 0.999 < worst { 1.0 } else { worst };
+    let mut mult = if left { 2.0 } else { 1.0 };
+    let mut lines = Vec::new();
+    if left {
+        lines.push("Crippled left arm:\t+1x\t".to_string());
+    }
+    if right {
+        mult += 2.0;
+        lines.push("Crippled right arm:\t+2x\t".into());
+    }
+    if trauma {
+        mult += 2.0;
+        lines.push("Blood loss trauma:\t+2x\t".into());
+    }
+    if worst < 15.0 {
+        mult += 2.0;
+    }
+    if worst < 0.0 {
+        lines.push("Critical wounds:\t+2x\t".into());
+    }
+    rows.push(tipped("Toughness XP:", format!("{}x", mult as i32), lines, "This is the rate at which your toughness increases when you get hurt."));
+    // KO point (F040402)
+    let ko = kenshi_char::medical::Medical::ko_point(&f.stats, &sim.arena.sh.mc) as i64;
+    let about = format!(
+        "When an injury to a body part goes below your KO point of {} then you are down for good. Your body will enter a coma and won't regain consciousness until all critical body parts have healed above 0.",
+        num(ko)
+    );
+    rows.push(tipped("KO point:", num(ko), vec![], &about));
+    // Run speed (F047080)
+    let mph = (p.own_speed * 0.2237).round() as i32;
+    let diff = ((p.own_speed - run) * 0.2237).round() as i32;
+    let speed = match diff {
+        d if d > 0 => format!("{mph} (+{d}) mph"),
+        d if d < 0 => format!("{mph} (-{}) mph", -d),
+        _ => format!("{mph} mph"),
+    };
+    // (F047093 writes the run speed in its red, 0x141f492c0, whenever it differs, faster too)
+    rows.push(Row { label: "Run speed:".into(), value: speed, colour: if diff != 0 { PENALTY } else { LIGHT }, tip: String::new() });
+    // Hunger Rate (F047009)
+    let [_, _, bed, enc, race_rate] = sim.hunger_c;
+    let activity = if p.down || p.bed.is_some() {
+        kenshi_char::hunger::Activity::Resting
+    } else if load < 1.0 {
+        kenshi_char::hunger::Activity::Encumbered { load }
+    } else {
+        kenshi_char::hunger::Activity::Normal
+    };
+    let rate = kenshi_char::hunger::hunger_rate(activity, 1.0, race_rate, bed, enc);
+    rows.push(row("Hunger Rate:", format!("{}%", (rate * 100.0) as i32)));
+    rows
+}
+
+/// @fn F043077
+///
+/// The extending panel sliding (MainBarGUI's ExtendingPanel: the name, the state box and the
+/// extended stats): out at its layout top, folded down until its bottom meets the information
+/// panel's (F043077: the parent's height less its own, +0x1b4), the extended stats going under
+/// the stats panel. (assumption: it slides over half a second, Kenshi's +0x1b8 rate 0.5)
+pub fn extending_panel(mut hud: ResMut<Hud>, time: Res<Time>, mut nodes: Query<&mut Node>) {
+    let (Some(panel), Some(parent)) = (hud.ui.get("ExtendingPanel"), hud.ui.get("InformationPanel")) else { return };
+    let Ok([mut p, q]) = nodes.get_many_mut([panel, parent]) else { return };
+    let (Val::Px(top), Val::Px(h), Val::Px(ph)) = (p.top, p.height, q.height) else { return };
+    let out = *hud.unfolded_top.get_or_insert(top);
+    let target = if hud.folded { 1.0 } else { 0.0 };
+    let step = time.delta_secs() * 2.0;
+    hud.fold = if hud.fold < target { (hud.fold + step).min(target) } else { (hud.fold - step).max(target) };
+    let want = out + (ph - h - out) * hud.fold;
+    if (top - want).abs() > 0.01 {
+        p.top = Val::Px(want);
+    }
 }
 
 /// A hover tip on a widget (the inventory's tooltip shows it): "title\ndescription", none
@@ -390,14 +722,32 @@ fn tip(commands: &mut Commands, e: Option<Entity>, title: &str, text: &str) {
     }
 }
 
+/// "Cycle squads" (controls.cfg change_squad, Tab): the next squad with people shown and
+/// selected ((assumption) the camera left where it is).
+pub fn cycle_squads(act: super::bindings::Actions, mut hud: ResMut<Hud>, mut game: ResMut<Game>) {
+    if !act.just("change_squad") || game.sim.player_squads.len() < 2 {
+        return;
+    }
+    let n = game.sim.player_squads.len();
+    for step in 1..=n {
+        let k = (hud.active_squad + step) % n;
+        let people: Vec<usize> = game.sim.squad_members(k).into_iter().filter(|&id| !game.sim.folk[id].dead).collect();
+        if !people.is_empty() {
+            hud.active_squad = k;
+            game.selected = people;
+            hud.seen_first = game.selected.first().copied();
+            break;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn update(
     mut commands: Commands,
     mut hud: ResMut<Hud>,
     mut game: ResMut<Game>,
     mut clicks: MessageReader<GuiClick>,
-    mut keys: ResMut<ButtonInput<KeyCode>>,
-    binds: Res<super::bindings::Bindings>,
+    mut presses: ResMut<super::bindings::UiPresses>,
     mut nodes: Query<&mut Node>,
     time: Res<Time>,
     mut open: ResMut<super::OpenBuildings>,
@@ -411,8 +761,29 @@ pub fn update(
             game.sim.outpost_name = ev.text.clone();
         }
     }
+    game.sim.squads_ready();
     for c in clicks.read() {
+        // a squad's tab: that squad shown, its people selected
+        if c.name == "SquadTab"
+            && let Some(k) = hud.tab.as_ref().and_then(|t| t.roots.iter().position(|&r| r == c.widget))
+        {
+            hud.active_squad = k;
+            let people: Vec<usize> = game.sim.squad_members(k).into_iter().filter(|&id| !game.sim.folk[id].dead).collect();
+            if !people.is_empty() {
+                game.selected = people;
+            }
+            hud.seen_first = game.selected.first().copied();
+            continue;
+        }
         match c.name.as_str() {
+            // the extended stats folded away or out again (ExtendedStatsButton, F043077's
+            // delegate 0x140018b10)
+            "ExtendedStatsButton" => {
+                hud.folded = !hud.folded;
+                if let Some(e) = hud.ui.get("ExtendedStatsButton") {
+                    commands.entity(e).insert(kenshi_gui::ui::Checked(hud.folded));
+                }
+            }
             // the floor arrows: another floor of the opened building shown (0 - 3)
             "FloorArrowUp" | "FloorArrowDown" if open.open_any() => {
                 let d = if c.name == "FloorArrowUp" { 1 } else { -1 };
@@ -425,16 +796,43 @@ pub fn update(
                 game.speed = SPEEDS[k.min(SPEEDS.len() - 1)];
                 game.paused = false;
             }
-            "ShortcutInventoryButton" => keys.press(binds.key("toggle_inventory").unwrap_or(KeyCode::KeyI)),
-            "ShortcutStatsButton" => keys.press(binds.key("toggle_stats").unwrap_or(KeyCode::KeyC)),
+            "ShortcutInventoryButton" => presses.next.push("toggle_inventory".into()),
+            "ShortcutStatsButton" => presses.next.push("toggle_stats".into()),
             "OpenToPublicCheckBox" => game.sim.outpost_public = !game.sim.outpost_public,
             "OrdersProspectButton" => {
                 let sel = game.selected.clone();
                 game.sim.order_prospect(&sel);
             }
+            // the Medic and Rescue orders (kenshi_game::routines)
+            "OrdersMedicButton" => {
+                let sel = game.selected.clone();
+                game.sim.order_medic(&sel);
+            }
+            "OrdersRescueButton" => {
+                let sel = game.selected.clone();
+                game.sim.order_rescue(&sel);
+            }
             "OrdersSneakButton" => {
                 let sel = game.selected.clone();
                 game.sim.toggle_sneak(&sel);
+            }
+            // the JOBS button (named "OrdersChaseButton" in the layout): the job list on or off
+            "OrdersChaseButton" => {
+                let sel = game.selected.clone();
+                game.sim.toggle_jobs(&sel);
+            }
+            // the stance orders (kenshi_char::stance)
+            "OrdersBlockButton" | "OrdersHoldButton" | "OrdersPassiveButton" | "OrdersTauntButton" | "OrdersRangedButton" => {
+                use kenshi_game::orders::StanceOrder::*;
+                let which = match c.name.as_str() {
+                    "OrdersBlockButton" => Block,
+                    "OrdersHoldButton" => Hold,
+                    "OrdersPassiveButton" => Passive,
+                    "OrdersTauntButton" => Taunt,
+                    _ => Ranged,
+                };
+                let sel = game.selected.clone();
+                game.sim.toggle_stance(&sel, which);
             }
             _ => {
                 if let Some(&(_, _, id, _)) = hud.squad.iter().find(|(_, b, _, _)| *b == c.widget) {
@@ -450,6 +848,47 @@ pub fn update(
     }
     hud.last = now;
     let ui = hud.ui.clone();
+    // (testing) KENSHI_STANCE=<Block|Hold|Passive|Taunt|Ranged>[,...]: those orders given to the
+    // selection once, at the start
+    if let Ok(v) = std::env::var("KENSHI_STANCE")
+        && now > 3.0
+        && !hud.stance_tested
+    {
+        hud.stance_tested = true;
+        use kenshi_game::orders::StanceOrder::*;
+        let sel = game.selected.clone();
+        for w in v.split(',') {
+            let which = match w {
+                "Block" => Block,
+                "Hold" => Hold,
+                "Passive" => Passive,
+                "Taunt" => Taunt,
+                _ => Ranged,
+            };
+            game.sim.toggle_stance(&sel, which);
+        }
+    }
+    // the stance buttons held down as the first selected has them
+    if let Some(&first) = game.selected.first() {
+        use kenshi_game::orders::StanceOrder::*;
+        for (name, which) in [("OrdersBlockButton", Block), ("OrdersHoldButton", Hold), ("OrdersPassiveButton", Passive), ("OrdersTauntButton", Taunt), ("OrdersRangedButton", Ranged)] {
+            if let Some(e) = ui.get(name) {
+                commands.entity(e).insert(kenshi_gui::ui::Checked(game.sim.has_stance(first, which)));
+            }
+        }
+    }
+    // the JOBS button as the first selected has it (its job list: `jobs_panel`)
+    if let Some(&first) = game.selected.first()
+        && let Some(p) = game.sim.folk.get(first)
+    {
+        if let Some(e) = ui.get("OrdersChaseButton") {
+            commands.entity(e).insert(kenshi_gui::ui::Checked(p.jobs_on));
+        }
+        // SNEAK held down while the first selected sneaks
+        if let Some(e) = ui.get("OrdersSneakButton") {
+            commands.entity(e).insert(kenshi_gui::ui::Checked(p.sneaking));
+        }
+    }
     if let Some(p) = ui.get("PausedPanel") {
         commands.queue(SetVisible(p, game.paused));
     }
@@ -480,7 +919,7 @@ pub fn update(
         let name = sim.display_name(id);
         let faction = p.faction.as_deref().and_then(|s| sim.data.get(s)).map_or(String::new(), |r| r.name.clone());
         // the name, and its faction faded at the right
-        let name_row = vec![Row { label: name, value: faction, colour: FADED }];
+        let name_row = vec![Row { label: name, value: faction, colour: FADED, tip: String::new() }];
         // the medical state (F047087's status list), on the status box
         let (status, about) = status_line(sim, id);
         if let Some(e) = ui.get("HealthText") {
@@ -501,6 +940,35 @@ pub fn update(
         let capacity = ec.carry_weight_mult * f.level(kenshi_char::StatsEnumerated::StatStrength) + ec.encumbrance_base;
         let enc = (p.inventory.weight() / capacity.max(1.0) * 100.0).round() as i32;
         let mut info = vec![row("State:", state), row("Goal:", goal), row("Encumbrance:", format!("{enc}%"))];
+        // the current skill (F039272, its "Current Skill" line): in a fight the wielded weapon's
+        // category's (CharStats +0x3d8: Heavy, Katana, Hacker, Sabre, Martial Arts unarmed,
+        // Polearm; blunt weapons none), else sneaking Stealth, else moving over 9 Athletics
+        // (CharMovement +0xb8). (not ported: a job's own skill, CharStats +0x198, and the
+        // crossbow's lines in ranged mode)
+        {
+            use kenshi_char::StatsEnumerated as S;
+            use kenshi_combat::WeaponCategory as W;
+            let skill = if f.active && !f.shooting {
+                match f.wielded.category {
+                    W::SkillHeavy => Some(("Heavy:", S::StatHeavyweapons)),
+                    W::SkillKatanas => Some(("Katana:", S::StatKatanas)),
+                    W::SkillHackers => Some(("Hacker:", S::StatHackers)),
+                    W::SkillSabres => Some(("Sabre:", S::StatSabres)),
+                    W::SkillUnarmed => Some(("Martial Arts:", S::StatMartialarts)),
+                    W::AttackPolearms => Some(("Polearm:", S::StatPolearms)),
+                    _ => None,
+                }
+            } else if p.sneaking {
+                Some(("Stealth:", S::StatStealth))
+            } else if p.speed > 9.0 {
+                Some(("Athletics:", S::StatAthletics))
+            } else {
+                None
+            };
+            if let Some((label, stat)) = skill {
+                info.push(row(label, (f.level(stat) as i32).to_string()));
+            }
+        }
         // F039271: "Imprisoned, sentence time remaining:"
         if let Some(q) = p.prison.as_ref().filter(|q| !q.slave) {
             let left = (q.until - sim.hours_gone()).max(0.0);
@@ -514,25 +982,75 @@ pub fn update(
             hud.rows(&mut commands, "BountyText", vec![row("Bounty:", format!("c.{} ({})", num(total as i64), factions.join(", ")))], false, LIGHT, false);
             let _ = text;
         }
-        // the combat stats, each with its penalty in red brackets
+        // the combat stats (F047092): the first by the stats' mode (F047026: no weapon, or a
+        // martial arts one, Martial Arts; a crossbow in the ranged stance, Crossbows; else
+        // Attack and Defense), then Strength, Dexterity, Toughness and (not with the crossbow)
+        // Dodge; a bonus "(+N)" in green, a penalty "(N)" in red
         use kenshi_char::StatsEnumerated as S;
-        let stat = |label: &str, base: f32, now: f32| {
-            // a penalty in brackets, in red
-            let (b, n) = (base.floor() as i32, now.floor() as i32);
-            if b <= n {
-                row(label, b.to_string())
-            } else {
-                Row { label: label.into(), value: format!("{n} ({})", n - b), colour: PENALTY }
+        let with = |label: &str, total: f32, bonus: i32| {
+            let n = total as i32;
+            match bonus {
+                0 => row(label, n.to_string()),
+                b if b > 0 => Row { label: label.into(), value: format!("{n} (+{b})"), colour: BONUS, tip: String::new() },
+                b => Row { label: label.into(), value: format!("{n} ({b})"), colour: PENALTY, tip: String::new() },
             }
         };
-        let stats = vec![
-            stat("ATTACK:", f.level(S::StatMeleeAttack), f.attack_level()),
-            stat("DEFENSE:", f.level(S::StatMeleeDefence), f.level(S::StatMeleeDefence)),
-            stat("STRENGTH:", f.level(S::StatStrength), f.level(S::StatStrength)),
-            stat("DEXTERITY:", f.level(S::StatDexterity), f.level(S::StatDexterity)),
-            stat("TOUGHNESS:", f.level(S::StatToughness), f.level(S::StatToughness)),
-            stat("DODGE:", f.level(S::StatDodge), f.level(S::StatDodge)),
-        ];
+        let mode = if f.wielded.category == kenshi_combat::WeaponCategory::SkillUnarmed {
+            1
+        } else if p.stance.ranged && kenshi_combat::arena::ranged_usable(f) {
+            2
+        } else {
+            0
+        };
+        let mut stats = Vec::new();
+        match mode {
+            1 => {
+                let total = f.attack_level();
+                stats.push(with("MARTIAL ARTS:", total, (total - f.level(S::StatMartialarts)).round() as i32));
+            }
+            2 => stats.push(row("CROSSBOWS:", (f.ranged_level(S::StatCrossbows) as i32).to_string())),
+            _ => {
+                // the attack skill (F047043: the attack bonus + melee attack, the weapon's own
+                // skill not in it) and the buffed melee defence (F047044: the defence bonus +
+                // melee defence, +20 in the block stance, "Defensive combat mode")
+                // their tooltips (F047092): the equipment's bonus, the weapon's indoors penalty
+                // ("-" with no weapon), the weather's ("-" with none), the base hit chance; the
+                // block stance's +20 in green and what defense is
+                let dust = if f.dust > 0.0 { (f.dust * 10.0) as i32 } else { 0 };
+                let armed = !f.unarmed();
+                let indoors = if armed { bonus_line(0) } else { "-	".into() };
+                let mut attack = with("ATTACK:", f.attack_level(), f.attack_bonus());
+                attack.tip = [
+                    format!("Total equipment bonuses:	{}", bonus_line(f.gear.attack + f.weapon_mods.0)),
+                    format!("Weapon indoors penalty:	{indoors}"),
+                    format!("Weather penalty:	{}", if dust != 0 { bonus_line(-dust) } else { "-	".into() }),
+                    format!("Base hit chance:	{}%	", f.attack_level() as i32),
+                ]
+                .join("
+");
+                stats.push(attack);
+                let block = if p.stance.block { 20 } else { 0 };
+                let mut defense = with("DEFENSE:", f.melee_defence(true), f.defence_bonus() + block);
+                let mut lines = vec![format!("Total equipment bonuses:	{}", bonus_line(f.defence_bonus()))];
+                if p.stance.block {
+                    lines.push("Defensive combat mode:	+20	g".into());
+                }
+                lines.push(format!("Weapon indoors penalty:	{indoors}"));
+                lines.push("Your defense skill is your chance of blocking enemy attacks.".into());
+                defense.tip = lines.join("
+");
+                stats.push(defense);
+            }
+        }
+        stats.push(row("STRENGTH:", (f.level(S::StatStrength) as i32).to_string()));
+        stats.push(row("DEXTERITY:", (f.level(S::StatDexterity) as i32).to_string()));
+        stats.push(row("TOUGHNESS:", (f.level(S::StatToughness) as i32).to_string()));
+        if mode != 2 {
+            // F047048 buffed against base: the armour's dodge mult
+            let base = f.level(S::StatDodge);
+            let buffed = base * f.gear.dodge;
+            stats.push(with("DODGE:", buffed, (buffed - base + 0.5).floor() as i32));
+        }
         // the bars (F047087): blood, the body parts head to legs, hunger
         let mut bars: Vec<Bar> = Vec::new();
         bars.push(Bar {
@@ -611,7 +1129,7 @@ pub fn update(
             if let Some(e) = ui.get(&format!("LifeBar{}Value", k + 1)) {
                 commands.queue(SetCaption(e, b.value.clone()));
             }
-            let label = vec![Row { label: b.label.clone(), value: b.arrow.clone(), colour: DARK }];
+            let label = vec![Row { label: b.label.clone(), value: b.arrow.clone(), colour: DARK, tip: String::new() }];
             let name = format!("LifeBar{}Datapanel", k + 1);
             hud.rows(&mut commands, &name, label, false, DARK, true);
         }
@@ -619,6 +1137,8 @@ pub fn update(
         // the state box over the stats (StateText), the combat stats below (StatsText)
         hud.rows(&mut commands, "StateText", info, false, LIGHT, false);
         hud.rows(&mut commands, "StatsText", stats, true, LIGHT, false);
+        // the extended stats under the state box (ExtendedStatsText, DatapanelGUI mode 7)
+        hud.rows(&mut commands, "ExtendedStatsText", extended_stats(sim, id), false, LIGHT, false);
     }
     let _ = &mut game;
 }
@@ -688,29 +1208,57 @@ pub fn squad_panel(
     mut images: Query<&mut ImageNode>,
 ) {
     let scale = kenshi_gui::res::ui_scale();
-    // the tab, once
-    if hud.tab.is_none()
+    // the squad shown follows the selection: the first selected one's squad
+    let first = game.selected.first().copied();
+    if first != hud.seen_first {
+        hud.seen_first = first;
+        if let Some(k) = first.and_then(|id| game.sim.player_squad_index(id)) {
+            hud.active_squad = k;
+        }
+    }
+    hud.active_squad = hud.active_squad.min(game.sim.player_squads.len().saturating_sub(1));
+    // the tabs, one per squad (its name), the shown one selected; made again on a change
+    let names: Vec<String> = game.sim.player_squads.iter().map(|s| s.name.to_uppercase()).collect();
+    let want = (names.clone(), hud.active_squad);
+    if hud.tabs_for != want
+        && !names.is_empty()
         && let Some(place) = hud.ui.get("SquadPanel")
     {
-        // on the panel's header (the template's HeaderPlace: 20 in, 37 high of 716 x 220)
+        if let Some(old) = hud.tab.take() {
+            for r in old.roots {
+                commands.entity(r).despawn();
+            }
+        }
+        // on the panel's header (the template's HeaderPlace: 20 in, 37 high of 716 x 220); (as
+        // many as fit) side by side at the tab control's ButtonWidth 200
         let size = hud.ui.sizes.get(&place).copied().unwrap_or([600.0, 200.0]);
-        let faction = game.sim.folk.iter().find(|p| p.player).and_then(|p| p.faction.as_deref()).and_then(|f| game.sim.data.get(f)).map_or("Squad".to_string(), |r| r.name.clone());
-        let def = kenshi_gui::res::WidgetDef {
-            kind: "Button".into(),
-            skin: "Kenshi_SquadTabButton".into(),
-            pos: kenshi_gui::res::Pos::Real([20.0 / 716.0, 0.0, 200.0 * scale / size[0], 37.0 / 220.0]),
-            align: Default::default(),
-            name: "SquadTab".into(),
-            layer: None,
-            props: vec![("Caption".into(), format!("{faction}_0").to_uppercase()), ("StateSelected".into(), "true".into())],
-            user: Vec::new(),
-            children: Vec::new(),
-        };
-        hud.tab = Some(kenshi_gui::ui::spawn(&mut commands, &gui.0, &assets, &[def], Some(place), size));
+        let w = (200.0 * scale).min((size[0] - 40.0 * scale) / names.len() as f32);
+        let defs: Vec<kenshi_gui::res::WidgetDef> = names
+            .iter()
+            .enumerate()
+            .map(|(k, n)| kenshi_gui::res::WidgetDef {
+                kind: "Button".into(),
+                skin: "Kenshi_SquadTabButton".into(),
+                pos: kenshi_gui::res::Pos::Real([(20.0 * scale + k as f32 * w) / size[0], 0.0, w / size[0], 37.0 / 220.0]),
+                align: Default::default(),
+                name: "SquadTab".into(),
+                layer: None,
+                props: vec![("Caption".into(), n.clone()), ("StateSelected".into(), (k == hud.active_squad).to_string())],
+                user: Vec::new(),
+                children: Vec::new(),
+            })
+            .collect();
+        hud.tab = Some(kenshi_gui::ui::spawn(&mut commands, &gui.0, &assets, &defs, Some(place), size));
+        hud.tabs_for = want;
     }
-    let squad: Vec<usize> = game.sim.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
+    let squad: Vec<usize> = if game.sim.player_squads.is_empty() {
+        game.sim.folk.iter().filter(|p| p.player).map(|p| p.id).collect()
+    } else {
+        game.sim.squad_members(hud.active_squad)
+    };
     let made: Vec<usize> = hud.squad.iter().map(|s| s.2).collect();
     if squad != made {
+        hud.squad_names.clear();
         for (roots, _, _, _) in hud.squad.drain(..) {
             for r in roots {
                 commands.entity(r).despawn();
@@ -745,9 +1293,11 @@ pub fn squad_panel(
                 d.children.iter_mut().for_each(|c| scaled(c, scale));
             }
             let b = kenshi_gui::ui::spawn(&mut commands, &gui.0, &assets, &defs, Some(area), area_size);
+            let name = game.sim.display_name(id);
             if let Some(e) = b.get("NameText") {
-                commands.queue(SetCaption(e, game.sim.display_name(id)));
+                commands.queue(SetCaption(e, name.clone()));
             }
+            hud.squad_names.push((b.get("NameText"), name));
             let button = b.get("BorderPanel").unwrap_or(b.roots[0]);
             // (assumption) the status overlays (Kenshi_PortraitImage's BackOverlay and
             // FrontOverlay groups) only show for a status the code sets: hidden here
@@ -757,6 +1307,16 @@ pub fn squad_panel(
                 }
             }
             hud.squad.push((b.roots.clone(), button, id, b.get("PortraitImage")));
+        }
+    }
+    // the names, when one changed
+    for k in 0..hud.squad.len().min(hud.squad_names.len()) {
+        let name = game.sim.display_name(hud.squad[k].2);
+        if hud.squad_names[k].1 != name {
+            if let Some(e) = hud.squad_names[k].0 {
+                commands.queue(SetCaption(e, name.clone()));
+            }
+            hud.squad_names[k].1 = name;
         }
     }
     // the faces
@@ -820,3 +1380,312 @@ pub fn banner(mut commands: Commands, mut hud: ResMut<Hud>, game: Res<Game>, wea
     b.shown = Some(region);
 }
 
+
+/// The main panel's keys (F031456's actions, as its buttons do): the stances (toggle_block,
+/// toggle_hold, toggle_passive, toggle_ranged, toggle_taunt), JOBS (toggle_jobs), the Medic,
+/// Rescue and Prospect orders, the floor arrows (floor_up, floor_down), the next and previous
+/// character of the squad shown (character_next, character_prev) and the panel itself hidden
+/// or shown (toggle_bar).
+pub fn hotkeys(act: super::bindings::Actions, mut hud: ResMut<Hud>, mut game: ResMut<Game>, mut open: ResMut<super::OpenBuildings>) {
+    if act.is_typing() {
+        return;
+    }
+    use kenshi_game::orders::StanceOrder::*;
+    let sel = game.selected.clone();
+    for (action, which) in [("toggle_block", Block), ("toggle_hold", Hold), ("toggle_passive", Passive), ("toggle_ranged", Ranged), ("toggle_taunt", Taunt)] {
+        if act.just(action) {
+            game.sim.toggle_stance(&sel, which);
+        }
+    }
+    if act.just("toggle_jobs") {
+        game.sim.toggle_jobs(&sel);
+    }
+    if act.just("medic") {
+        game.sim.order_medic(&sel);
+    }
+    if act.just("rescue") {
+        game.sim.order_rescue(&sel);
+    }
+    if act.just("prospect") {
+        game.sim.order_prospect(&sel);
+    }
+    for (action, d) in [("floor_up", 1), ("floor_down", -1)] {
+        if act.just(action) && open.open_any() {
+            open.pick = Some((open.floor + d).clamp(0, 3));
+            open.picked_at = open.own;
+        }
+    }
+    for (action, d) in [("character_next", 1i64), ("character_prev", -1)] {
+        if act.just(action) {
+            let squad: Vec<usize> = game.sim.squad_members(hud.active_squad).into_iter().filter(|&id| !game.sim.folk[id].dead).collect();
+            if !squad.is_empty() {
+                let at = game.selected.first().and_then(|f| squad.iter().position(|id| id == f)).map_or(0, |k| (k as i64 + d).rem_euclid(squad.len() as i64) as usize);
+                game.selected = vec![squad[at]];
+            }
+        }
+    }
+    if act.just("toggle_bar") {
+        hud.hidden = !hud.hidden;
+    }
+}
+
+/// The main panel hidden while the character editor is open over the game (the plastic
+/// surgeon's), as the editor at a new game's start has none.
+pub fn hide_under_editor(hud: Option<Res<Hud>>, ed: Option<Res<super::editor::Editor>>, mut vis: Query<&mut Visibility>) {
+    let Some(hud) = hud else { return };
+    // (and while "Toggle main gui" hides it)
+    let want = if ed.is_some() || hud.hidden { Visibility::Hidden } else { Visibility::Inherited };
+    let roots = hud.ui.roots.iter().chain(hud.squad.iter().flat_map(|s| s.0.iter())).chain(hud.tab.iter().flat_map(|t| t.roots.iter()));
+    for &e in roots {
+        if let Ok(mut v) = vis.get_mut(e)
+            && *v != want
+        {
+            *v = want;
+        }
+    }
+}
+
+/// The AI_TASKs whose jobs are drawn at full alpha with JOBS off (F036879: Attacking enemies,
+/// Staying close, Bodyguard, Robotics, Medic, Splint Rigging); the rest are faded then.
+const JOBS_ALWAYS: [u16; 6] = [16, 31, 45, 57, 58, 250];
+/// The job rows' text colour: the game's colour string 0x141f49248, "#afa68b" (F043041).
+const JOB_TEXT: Color = Color::srgb(0xaf as f32 / 255.0, 0xa6 as f32 / 255.0, 0x8b as f32 / 255.0);
+/// The Obedient Slave job (F030705).
+const OBEDIENT_SLAVE: u16 = 187;
+
+/// @fn F043047
+///
+/// The jobs panel (JobsPanel, an ItemBox of Kenshi_OrdersPanelOrder rows, OrderCellView
+/// F043070): the first selected character's jobs, a row each, "{n}: " and the job's name with,
+/// for a job of a target-taking kind (its definition's +0x08), its target's (F043041), in the
+/// game's colour #afa68b; at full alpha while JOBS is on or for the jobs always done
+/// (F036879), else at half (F043026). The info text (JobsPanelInfo) shows only with no jobs.
+/// A row's X removes its job (F043053 -> F036800); a row dragged onto another moves its job
+/// there, or dropped on the panel below the rows to the end (F043049 -> F036810). Rows are 24
+/// high and the panel's width less 4, at the UI scale (F043076).
+/// (stand-in) The slave's Obedient Slave job is a flag here (`Slave::obedient`): its row is
+/// first and stays first. (assumption) The list scrolls by whole rows (a row a wheel notch), its
+/// scroll bar (the ItemBox's VScroll, 18 wide: Kenshi_ScrollBarV's 17 x 1.1, F043076) shown
+/// while the rows do not fit.
+#[allow(clippy::too_many_arguments)]
+pub fn jobs_panel(
+    mut commands: Commands,
+    mut hud: ResMut<Hud>,
+    mut game: ResMut<Game>,
+    gui: Res<GuiRes>,
+    assets: Res<AssetServer>,
+    mut clicks: MessageReader<GuiClick>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    (mut wheel, mut scrolled): (MessageReader<bevy::input::mouse::MouseWheel>, MessageReader<kenshi_gui::GuiScroll>),
+    windows: Query<&Window>,
+    rows: Query<(&JobRow, &Interaction, &bevy::ui::RelativeCursorPosition)>,
+    over: Query<&bevy::ui::RelativeCursorPosition, Without<JobRow>>,
+    (mut nodes, parts): (Query<&mut Node>, Query<&kenshi_gui::Parts>),
+) {
+    let Some(item_box) = hud.ui.get("JobsPanel") else { return };
+    // the rows go in the item box's client area; its scroll bar beside
+    let part = |n: &str| parts.get(item_box).ok().and_then(|p| p.0.get(n).copied());
+    let panel = part("Client").unwrap_or(item_box);
+    let bar = part("VScroll");
+    let first = game.selected.first().copied().filter(|&id| game.sim.folk.get(id).is_some_and(|p| p.player));
+    // (testing) KENSHI_JOBS=<AI_TASK>,...: those jobs given to the first selected once, on the
+    // nearest other person
+    if let (Ok(v), Some(id)) = (std::env::var("KENSHI_JOBS"), first)
+        && !hud.jobs.tested
+    {
+        hud.jobs.tested = true;
+        let at = game.sim.folk[id].mover.position_units();
+        let near = game.sim.folk.iter().filter(|p| p.id != id).min_by(|a, b| {
+            let d = |p: &kenshi_game::sim::Person| {
+                let q = p.mover.position_units();
+                (q[0] - at[0]).hypot(q[2] - at[2])
+            };
+            d(a).total_cmp(&d(b))
+        });
+        let target = near.map_or(id, |p| p.id);
+        for task in v.split(',').filter_map(|t| t.trim().parse::<u16>().ok()) {
+            let label = game.sim.job_label(task, target);
+            game.sim.folk[id].jobs.push(kenshi_game::orders::Job { task, target, label });
+        }
+        eprintln!("jobs test: {:?}", game.sim.folk[id].jobs.iter().map(|j| &j.label).collect::<Vec<_>>());
+    }
+    // the panel clips its rows and tells where the mouse is over it
+    if over.get(panel).is_err() {
+        commands.entity(panel).insert(bevy::ui::RelativeCursorPosition::default());
+        if let Ok(mut n) = nodes.get_mut(panel) {
+            n.overflow = Overflow::clip();
+        }
+    }
+    // the X of a row: its job removed (F043053)
+    let removed: Vec<usize> = clicks
+        .read()
+        .filter(|c| c.name == "RemoveButton")
+        .filter_map(|c| hud.jobs.rows.iter().position(|(_, x)| *x == c.widget))
+        .collect();
+    if let Some(id) = first {
+        for k in removed {
+            let at = hud.jobs.scroll + k;
+            remove_job(&mut game.sim.folk[id], at);
+        }
+    }
+    let scale = kenshi_gui::res::ui_scale();
+    let size = hud.ui.sizes.get(&panel).or_else(|| hud.ui.sizes.get(&item_box)).copied().unwrap_or([300.0, 120.0]);
+    let h = (24.0 * scale).floor().max(1.0);
+    let fit = ((size[1] / h).floor() as usize).max(1);
+    // the job list as the rows show it: its text, and whether at full alpha
+    let list: Vec<(String, bool)> = first.map_or_else(Vec::new, |id| {
+        let p = &game.sim.folk[id];
+        let obedient = p.slave.as_ref().is_some_and(|s| s.obedient);
+        let jobs = obedient.then(|| (OBEDIENT_SLAVE, "Obedient Slave".to_string())).into_iter().chain(p.jobs.iter().map(|j| {
+            let text = match kenshi_ai::task_def::def(j.task) {
+                Some(d) if d.f08 == 0 => d.name.to_string(),
+                _ => j.label.clone(),
+            };
+            (j.task, text)
+        }));
+        jobs.enumerate().map(|(k, (task, text))| (format!("{}: {text}", k + 1), p.jobs_on || JOBS_ALWAYS.contains(&task))).collect()
+    });
+    // the wheel over the panel scrolls it
+    let hovered = over.get(panel).is_ok_and(|r| r.cursor_over());
+    let notches: f32 = wheel.read().map(|w| w.y.signum()).sum();
+    let max = list.len().saturating_sub(fit);
+    if hovered && notches != 0.0 {
+        hud.jobs.scroll = (hud.jobs.scroll as i64 - notches as i64).clamp(0, max as i64) as usize;
+    }
+    // its scroll bar moved
+    for m in scrolled.read() {
+        if Some(m.widget) == bar {
+            hud.jobs.scroll = (m.pos.round() as usize).min(max);
+        }
+    }
+    hud.jobs.scroll = hud.jobs.scroll.min(list.len().saturating_sub(fit));
+    // a row dragged and dropped (F043049): onto another row, or the panel below the rows (the
+    // end); anywhere else nothing
+    let cursor = windows.iter().next().and_then(|w| w.cursor_position());
+    if mouse.just_pressed(MouseButton::Left)
+        && let Some((r, _, _)) = rows.iter().find(|(_, i, _)| **i == Interaction::Pressed)
+        && let Some(c) = cursor
+    {
+        hud.jobs.drag = Some((r.0, c));
+    }
+    if let Some((from, at)) = hud.jobs.drag {
+        if !mouse.pressed(MouseButton::Left) {
+            hud.jobs.drag = None;
+            let moved = cursor.is_some_and(|c| c.distance(at) >= 1.0);
+            let onto = rows.iter().find(|(r, _, rel)| r.0 != from && rel.cursor_over()).map(|(r, _, _)| Some(r.0));
+            let to = onto.or_else(|| hovered.then_some(None));
+            if moved
+                && let (Some(to), Some(id)) = (to, first)
+            {
+                move_job(&mut game.sim.folk[id], from, to);
+            }
+            // the rows made again where they belong
+            hud.jobs.shown = None;
+        } else if let (Some(c), Some(&(e, _))) = (cursor, from.checked_sub(hud.jobs.scroll).and_then(|k| hud.jobs.rows.get(k)))
+            && let Ok(mut n) = nodes.get_mut(e)
+        {
+            // the dragged row follows the mouse
+            n.top = Val::Px((from - hud.jobs.scroll) as f32 * h + c.y - at.y);
+        }
+    }
+    let want = first.map(|id| (id, list.clone(), hud.jobs.scroll));
+    if want == hud.jobs.shown {
+        return;
+    }
+    hud.jobs.shown = want;
+    for (e, _) in hud.jobs.rows.drain(..) {
+        commands.entity(e).try_despawn();
+    }
+    // the info text with no jobs (F043047)
+    if let Some(info) = hud.ui.get("JobsPanelInfo") {
+        commands.queue(SetVisible(info, list.is_empty()));
+    }
+    // the scroll bar while the rows do not fit, the rows narrower by it (F043047)
+    let over_full = list.len() > fit;
+    let w = size[0] - 4.0 * scale - if over_full { (17.0f32 * 1.1).floor() } else { 0.0 };
+    if let Some(b) = bar {
+        commands.entity(b).insert(if over_full { Visibility::Inherited } else { Visibility::Hidden });
+        let (range, pos) = (max as f32, hud.jobs.scroll as f32);
+        commands.queue(move |world: &mut World| {
+            if let Some(mut s) = world.get_mut::<kenshi_gui::Scroll>(b) {
+                s.range = range;
+            }
+        });
+        commands.queue(kenshi_gui::SetScroll(b, pos));
+    }
+    let mut defs = gui.0.layout("Kenshi_OrdersPanelOrder.layout");
+    let design = defs.first().map_or([300.0, 20.0], |d| match d.pos {
+        kenshi_gui::res::Pos::Px(p) => [p[2], p[3]],
+        kenshi_gui::res::Pos::Real(r) => [r[2] * size[0], r[3] * size[1]],
+    });
+    // the cell resized to the row (F043026: its setSize), its parts by their align
+    if let Some(d) = defs.first_mut() {
+        d.pos = kenshi_gui::res::Pos::Px([0.0, 0.0, design[0], design[1]]);
+        d.align = kenshi_gui::res::Align::parse("Stretch");
+    }
+    for (k, (text, full)) in list.iter().enumerate().skip(hud.jobs.scroll).take(fit) {
+        let row = commands
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px((k - hud.jobs.scroll) as f32 * h),
+                    width: Val::Px(w),
+                    height: Val::Px(h),
+                    ..default()
+                },
+                JobRow(k),
+                Interaction::default(),
+                bevy::ui::RelativeCursorPosition::default(),
+            ))
+            .id();
+        commands.entity(panel).add_child(row);
+        let cell = kenshi_gui::ui::spawn_design(&mut commands, &gui.0, &assets, &defs, Some(row), design, [w, h]);
+        if let Some(t) = cell.get("OrderText") {
+            commands.queue(SetCaption(t, text.clone()));
+            commands.queue(move |world: &mut World| {
+                if let Some(c) = world.get::<kenshi_gui::Caption>(t).map(|c| c.0)
+                    && let Some(mut col) = world.get_mut::<TextColor>(c)
+                {
+                    col.0 = JOB_TEXT;
+                }
+            });
+        }
+        commands.queue(SetAlpha(row, if *full { 1.0 } else { 0.5 }));
+        let x = cell.get("RemoveButton").unwrap_or(row);
+        hud.jobs.rows.push((row, x));
+    }
+}
+
+/// F036800 on the jobs panel's list (the Obedient Slave flag first when set): job `k` gone.
+fn remove_job(p: &mut kenshi_game::sim::Person, k: usize) {
+    let obedient = p.slave.as_ref().is_some_and(|s| s.obedient);
+    if obedient && k == 0 {
+        // F039272: "You can remove this job, but beware of the consequences..."
+        if let Some(s) = p.slave.as_mut() {
+            s.obedient = false;
+        }
+        return;
+    }
+    let k = k - obedient as usize;
+    if k < p.jobs.len() {
+        p.jobs.remove(k);
+    }
+}
+
+/// F036810 on the jobs panel's list: job `from` taken out and put in at `to` (of the list
+/// without it), or at the end (None). (stand-in) The Obedient Slave flag's row stays first.
+fn move_job(p: &mut kenshi_game::sim::Person, from: usize, to: Option<usize>) {
+    let skip = p.slave.as_ref().is_some_and(|s| s.obedient) as usize;
+    if from < skip || from - skip >= p.jobs.len() {
+        return;
+    }
+    let job = p.jobs.remove(from - skip);
+    match to {
+        Some(t) => {
+            let t = t.saturating_sub(skip).min(p.jobs.len());
+            p.jobs.insert(t, job);
+        }
+        None => p.jobs.push(job),
+    }
+}

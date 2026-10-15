@@ -3,10 +3,12 @@
 
 pub mod combat_speed;
 pub mod encumbrance;
+pub mod fitness;
 pub mod hunger;
 pub mod inventory;
 pub mod medical;
 pub mod quality;
+pub mod stance;
 pub mod movement;
 pub mod stat_id;
 pub mod stats;

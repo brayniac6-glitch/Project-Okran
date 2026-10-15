@@ -127,6 +127,30 @@ pub fn towns(install: &Path, data: &GameDataContainer) -> Vec<Town> {
     v
 }
 
+/// Every placement of a nest marker (a TOWN of type 8) in the level, with its position: the
+/// markers biomes with "nests at fixed markers only" raise their nests at (F048808). [`towns`]
+/// keeps one of each record; a marker record is placed many times.
+pub fn nest_markers(install: &Path, data: &GameDataContainer) -> Vec<[f32; 3]> {
+    let mut out = vec![];
+    for f in ZONE_FOLDERS {
+        let p = install.join("data/newland/leveldata").join(f).join("leveldata.level");
+        let Ok(level) = kenshi_io::fcs::read(&p) else {
+            continue;
+        };
+        for r in &level.records {
+            for i in &r.instances {
+                let Some(t) = data.get(&i.target) else {
+                    continue;
+                };
+                if t.item_type() == Some(ItemType::Town) && t.ints.get("type") == Some(&8) && !out.contains(&i.position) {
+                    out.push(i.position);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The nearest town to a position across, of a type (10 = any, but type 8 only when asked
 /// for), skipping `except` (F048796; the faction filters are not taken).
 /// @fn F048796

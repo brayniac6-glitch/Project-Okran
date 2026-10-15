@@ -35,7 +35,7 @@ fn main() {
     let m = kenshi_world::navmesh::METRES;
     sim.folk[me].mover.position = [at[0] + f[0] * 20.0 * m, at[1], at[2] + f[2] * 20.0 * m];
     sim.arena.f[me].mover.position = sim.folk[me].mover.position;
-    println!("uniform_of: {:?}", sim.uniform_of(me));
+    println!("outfit: {:?}", sim.outfit(me));
     let mut last = None;
     while sim.t < seconds {
         sim.step();

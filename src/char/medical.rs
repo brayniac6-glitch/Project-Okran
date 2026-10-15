@@ -101,6 +101,9 @@ pub struct BodyPart {
     pub ko_weight: f32,
     pub flesh: f32,
     pub stun: f32,
+    /// +0x4c: a splint's support (F040455 raises it to at most the stun and treatment on the
+    /// part), counted in the part's health; capped so the health with it stays at most 50
+    /// (F040473), it wears off as the limb heals.
     pub bonus: f32,
     pub max_loss: f32,
     pub max_a: f32,
@@ -172,7 +175,7 @@ impl BodyPart {
         self.flesh - self.stun + self.bonus
     }
 
-    fn update_frac(&mut self) {
+    pub fn update_frac(&mut self) {
         self.health_frac = self.health() / self.max_health();
     }
 

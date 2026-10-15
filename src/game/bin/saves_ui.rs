@@ -88,11 +88,16 @@ enum Asked {
 
 /// A list row: its save's place in the list.
 #[derive(Component)]
-pub struct SaveRow(usize);
+pub struct SaveRow(pub usize);
 
 const TICKS: [&str; 5] = ["ResetTickBox", "BuildingsTickBox", "ResearchTickBox", "NPCTickBox", "RelationsTickBox"];
 
 impl SavesPanel {
+    /// No panel open; `current` the save the game in play came from.
+    pub fn with_current(current: Option<String>) -> SavesPanel {
+        SavesPanel { current, ..Default::default() }
+    }
+
     pub fn is_open(&self) -> bool {
         self.open.is_some()
     }

@@ -325,6 +325,185 @@ impl StaticWorld {
     }
 }
 
+impl StaticWorld {
+    /// The distance along the ray from `from` (unit direction `dir`) to the first solid it
+    /// enters within `len`, if any (a solid it starts inside is passed out of): the cells it
+    /// crosses, each solid met in its own frame.
+    pub fn raycast(&self, from: Vec3, dir: Vec3, len: f32) -> Option<f32> {
+        if self.placed.is_empty() || len <= 0.0 {
+            return None;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut best: Option<f32> = None;
+        // the cells under the segment, sampled at a quarter cell
+        let steps = ((len / (CELL * 0.25)).ceil() as i32).max(1);
+        for k in 0..=steps {
+            let p = from + dir * (len * k as f32 / steps as f32);
+            let key = ((p.x / CELL).floor() as i32, (p.z / CELL).floor() as i32);
+            let Some(list) = self.cells.get(&key) else { continue };
+            for &i in list {
+                if !seen.insert(i) {
+                    continue;
+                }
+                let s = &self.placed[i as usize];
+                // the ray against the world bounds first
+                if ray_box(from - (s.lo + s.hi) * 0.5, dir, (s.hi - s.lo) * 0.5, len).is_none() {
+                    continue;
+                }
+                let o = Vec3::from(s.to_local.transform_point3a(Vec3A::from(from)));
+                let d = Vec3::from(s.to_local.transform_vector3a(Vec3A::from(dir)));
+                // (rigid frames: the local direction keeps its length)
+                if let Some(t) = ray_in(&s.solid, o, d, len).filter(|&t| 0.0 < t)
+                    && best.is_none_or(|b| t < b)
+                {
+                    best = Some(t);
+                }
+            }
+        }
+        best
+    }
+
+    /// [`StaticWorld::raycast`] with plain arrays.
+    pub fn raycast_at(&self, from: [f32; 3], dir: [f32; 3], len: f32) -> Option<f32> {
+        self.raycast(Vec3::from(from), Vec3::from(dir), len)
+    }
+}
+
+/// A ray from `o` along `d` against a box of half extents `h` about the origin: the entering
+/// distance within `len` (0 inside).
+fn ray_box(o: Vec3, d: Vec3, h: Vec3, len: f32) -> Option<f32> {
+    let (mut t0, mut t1) = (0.0f32, len);
+    for k in 0..3 {
+        if d[k].abs() < 1e-9 {
+            if o[k] < -h[k] || h[k] < o[k] {
+                return None;
+            }
+            continue;
+        }
+        let (mut a, mut b) = ((-h[k] - o[k]) / d[k], (h[k] - o[k]) / d[k]);
+        if b < a {
+            std::mem::swap(&mut a, &mut b);
+        }
+        t0 = t0.max(a);
+        t1 = t1.min(b);
+        if t1 < t0 {
+            return None;
+        }
+    }
+    Some(t0)
+}
+
+/// A ray against a sphere of radius `r` about `c`: the entering distance within `len`.
+fn ray_sphere(o: Vec3, d: Vec3, c: Vec3, r: f32, len: f32) -> Option<f32> {
+    let m = o - c;
+    let b = m.dot(d);
+    let cc = m.dot(m) - r * r;
+    if cc <= 0.0 {
+        return Some(0.0);
+    }
+    let disc = b * b - d.dot(d) * cc;
+    if b > 0.0 || disc < 0.0 {
+        return None;
+    }
+    let t = (-b - disc.sqrt()) / d.dot(d);
+    (0.0..=len).contains(&t).then_some(t)
+}
+
+/// A ray (the solid's frame) against the solid: the entering distance within `len`.
+fn ray_in(solid: &Solid, o: Vec3, d: Vec3, len: f32) -> Option<f32> {
+    match solid {
+        Solid::Box(h) => ray_box(o, d, *h, len),
+        Solid::Sphere(r) => ray_sphere(o, d, Vec3::ZERO, *r, len),
+        Solid::Capsule { half, radius } => {
+            // the end spheres, and the side (a cylinder about y cut to the segment)
+            let mut best = [ray_sphere(o, d, Vec3::Y * *half, *radius, len), ray_sphere(o, d, -Vec3::Y * *half, *radius, len)]
+                .into_iter()
+                .flatten()
+                .fold(None, |m: Option<f32>, t| Some(m.map_or(t, |m| m.min(t))));
+            let (a, b, c) = (d.x * d.x + d.z * d.z, o.x * d.x + o.z * d.z, o.x * o.x + o.z * o.z - radius * radius);
+            let t = if c <= 0.0 {
+                Some(0.0)
+            } else if a > 1e-12 && b * b - a * c >= 0.0 {
+                Some((-b - (b * b - a * c).sqrt()) / a)
+            } else {
+                None
+            };
+            if let Some(t) = t.filter(|t| (0.0..=len).contains(t))
+                && (o.y + d.y * t).abs() <= *half
+            {
+                best = Some(best.map_or(t, |m| m.min(t)));
+            }
+            best
+        }
+        Solid::Convex(planes) => {
+            let (mut t0, mut t1) = (0.0f32, len);
+            for (n, pd) in planes {
+                let (dn, s) = (n.dot(d), n.dot(o) - pd);
+                if dn.abs() < 1e-9 {
+                    if s > 0.0 {
+                        return None;
+                    }
+                    continue;
+                }
+                let t = -s / dn;
+                if dn < 0.0 {
+                    t0 = t0.max(t);
+                } else {
+                    t1 = t1.min(t);
+                }
+                if t1 < t0 {
+                    return None;
+                }
+            }
+            Some(t0)
+        }
+        Solid::Mesh(m) => {
+            let mut best: Option<f32> = None;
+            let steps = ((len / (m.cell * 0.5)).ceil() as i32).max(1);
+            let mut seen = std::collections::HashSet::new();
+            for k in 0..=steps {
+                let p = o + d * (len * k as f32 / steps as f32);
+                for t in m.near(p, m.cell * 0.5) {
+                    let key = t as *const [Vec3; 3] as usize;
+                    if !seen.insert(key) {
+                        continue;
+                    }
+                    if let Some(u) = ray_triangle(o, d, t)
+                        && u <= len
+                        && best.is_none_or(|b| u < b)
+                    {
+                        best = Some(u);
+                    }
+                }
+            }
+            best
+        }
+    }
+}
+
+/// A ray against a triangle (either side): its distance (Moller-Trumbore).
+fn ray_triangle(o: Vec3, d: Vec3, t: &[Vec3; 3]) -> Option<f32> {
+    let (e1, e2) = (t[1] - t[0], t[2] - t[0]);
+    let p = d.cross(e2);
+    let det = e1.dot(p);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let s = o - t[0];
+    let u = s.dot(p) * inv;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = s.cross(e1);
+    let v = d.dot(q) * inv;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let w = e2.dot(q) * inv;
+    (w >= 0.0).then_some(w)
+}
+
 /// A sphere at `q` (the solid's frame) of radius `r` against the solid: outward normal (solid's
 /// frame) and depth.
 fn sphere_in(solid: &Solid, q: Vec3, r: f32) -> Option<(Vec3, f32)> {
@@ -453,6 +632,21 @@ mod tests {
         w.touches(Vec3::new(0.5, 6.4, 0.0), 0.5, &mut out);
         assert_eq!(out.len(), 1);
         assert!(out[0].0.y > 0.99 && (out[0].1 - 0.1).abs() < 1e-4, "{out:?}");
+    }
+
+    #[test]
+    fn rays_meet_solids() {
+        let s = Solids::new(&[
+            Shape { pose: Pose { rows: Pose::IDENTITY.rows, pos: [50.0, 5.0, 0.0] }, kind: ShapeKind::Box([2.0, 5.0, 2.0]) },
+            Shape { pose: Pose { rows: Pose::IDENTITY.rows, pos: [0.0, 0.0, 30.0] }, kind: ShapeKind::Mesh(vec![[-10., 0., 0.], [10., 0., 0.], [0., 20., 0.]], vec![[0, 1, 2]]) },
+        ]);
+        let w = StaticWorld::new([(Affine3A::IDENTITY, &s)]);
+        let t = w.raycast(Vec3::new(0.0, 5.0, 0.0), Vec3::X, 100.0).unwrap();
+        assert!((t - 48.0).abs() < 1e-4, "{t}");
+        assert!(w.raycast(Vec3::new(0.0, 5.0, 0.0), Vec3::X, 40.0).is_none());
+        assert!(w.raycast(Vec3::new(0.0, 12.0, 0.0), Vec3::X, 100.0).is_none());
+        let t = w.raycast(Vec3::new(0.0, 5.0, 0.0), Vec3::Z, 100.0).unwrap();
+        assert!((t - 30.0).abs() < 1e-4, "{t}");
     }
 
     #[test]

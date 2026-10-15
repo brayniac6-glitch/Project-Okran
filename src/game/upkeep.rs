@@ -247,6 +247,7 @@ impl Sim {
                 locks: Vec::new(),
                 door_saved: Vec::new(),
                 destroyed: false,
+                power_on: None,
             };
             let data = self.data.clone();
             for door in kenshi_world::interior::doors(&data, &self.res, std::slice::from_ref(&place)) {

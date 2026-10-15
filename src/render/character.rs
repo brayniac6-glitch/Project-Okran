@@ -2,7 +2,7 @@
 //! skinned body with its head texture, hair/beard attachments and worn clothing, all on one
 //! skeleton, animated by sampling Ogre keyframes.
 
-use crate::{hair_image, split_head_tile, to_bevy_skinned};
+use crate::{converted_submeshes, hair_image, split_head_tile, to_bevy_skinned, with_poses};
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::prelude::*;
 use kenshi_anim::Rig;
@@ -20,6 +20,9 @@ pub struct CharacterSpec {
     pub hairs: Vec<String>,
     pub wear: Vec<String>,
     pub hair_colour: [f32; 3],
+    /// The COLOR_DATA its clothes are painted with (F037438: the CHARACTER's "color", F037403),
+    /// unless a piece has its own.
+    pub colour: Option<String>,
     /// The female body (the race's "female mesh", heads, skin and ragdoll; clothes' and hairs'
     /// "mesh female").
     pub female: bool,
@@ -33,6 +36,7 @@ impl CharacterSpec {
             hairs: Vec::new(),
             wear: Vec::new(),
             hair_colour: [0.24, 0.16, 0.1],
+            colour: None,
             female: false,
         }
     }
@@ -75,13 +79,23 @@ pub enum Surface {
     /// Hair/beard cards: CPU-tinted image, alpha-masked, double-sided; and the card as Kenshi's
     /// hair shader takes it.
     Hair(Option<Image>, HairCard),
-    /// Clothing: texture and normal map paths from its material spec.
-    Cloth(Option<String>, Option<String>),
+    /// Clothing: texture and normal map paths from its material spec, and its paint.
+    Cloth(Option<String>, Option<String>, Option<ClothPaint>),
     /// An animal's body (Kenshi's "Creature" material): texture and normal map paths, wrapping.
     Creature(Option<String>, Option<String>),
-    /// Body skin with painted-on clothing (undershirts) composited in: the image and the normal
-    /// map path.
-    Painted(Image, Option<String>),
+    /// Body skin with painted-on clothing (a shirt's "vest texture"): the skin's texture and
+    /// normal map paths, then the vest's, laid over the skin in the shader.
+    Vested(Option<String>, Option<String>, String, String),
+}
+
+/// A piece of clothing's paint (F037442, skin.hlsl COLOURING): its material spec's "color map"
+/// (red and green: where colours 1 and 2 go, blue: metalness) and the COLOR_DATA's "color 1" and
+/// "color 2" (0xAARRGGBB) as colours, each's alpha the item's "paint factor 1" / "2" (0 when it
+/// has none: the colour takes the texture's intensity).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClothPaint {
+    pub color_map: String,
+    pub colours: [[f32; 4]; 2],
 }
 
 /// A loaded character: its rig, animations and skinned meshes (joint indices into `rig` order).
@@ -92,6 +106,9 @@ pub struct CharacterAsset {
     pub library: Arc<Vec<ogre_skeleton::Animation>>,
     pub upper_mask: Arc<Vec<bool>>,
     pub parts: Vec<(Mesh, Surface)>,
+    /// Per part: the key it is shared by between looks (the race's body and head, the same mesh
+    /// whatever is worn), none for a part of this look only.
+    pub share: Vec<Option<String>>,
     /// Per animation (library order): the joints it takes over (F046683 override bones).
     pub overrides: Arc<Vec<Vec<usize>>>,
     /// The race's ragdoll ("male ragdoll", F039259) and the one it hangs from a carrier by
@@ -181,49 +198,20 @@ pub fn load_character_shared(
         .iter()
         .find(|h| spec.head.as_deref() == Some(h.name.as_str()))
         .or(heads.first());
-    // painted-on clothing ("vest" textures, e.g. undershirts): the character shader lays each over
-    // the skin by the alpha of its normal map (body = lerp(body, vest, vest normal alpha))
-    let vests: Vec<(dds::Rgba, dds::Rgba)> = spec
-        .wear
-        .iter()
-        .filter_map(|name| armour_named(data, name))
-        .filter_map(|item| {
-            let d = item.files.get("vest texture").and_then(|p| res.path(p))?;
-            let n = item.files.get("vest normalmap").and_then(|p| res.path(p))?;
-            Some((dds::read(&d).ok()?, dds::read(&n).ok()?))
-        })
-        .collect();
+    // painted-on clothing ("vest" textures: shirts, the only slot that has them): the character
+    // shader lays it over the skin by the alpha of its normal map (body = lerp(body, vest, vest
+    // normal alpha)), as Kenshi's does
+    let vest = spec.wear.iter().filter_map(|name| armour_named(data, name)).find_map(|item| Some((file_of(res, item, "vest texture")?, file_of(res, item, "vest normalmap")?)));
     let body_tex = file_of(res, race, &format!("body texture {g}")).or_else(|| file_of(res, race, "body texture male"));
     if std::env::var("KENSHI_ANIMAL_DEBUG").is_ok() {
         eprintln!("race {} files {:?} -> body {body_tex:?}", race.name, race.files);
     }
-    let painted = (!vests.is_empty())
-        .then(|| body_tex.as_ref().and_then(|p| res.path(p)))
-        .flatten()
-        .and_then(|p| dds::read(&p).ok())
-        .map(|mut body| {
-            for (vest, vn) in &vests {
-                if (vest.width, vest.height) != (body.width, body.height)
-                    || (vn.width, vn.height) != (body.width, body.height)
-                {
-                    continue;
-                }
-                for ((b, v), n) in body.pixels.iter_mut().zip(&vest.pixels).zip(&vn.pixels) {
-                    let a = n[3] as f32 / 255.0;
-                    for k in 0..3 {
-                        b[k] = (b[k] as f32 + (v[k] as f32 - b[k] as f32) * a).round() as u8;
-                    }
-                }
-            }
-            crate::rgba_image(&body)
-        });
-    let skin = match painted {
-        Some(img) => Surface::Painted(img, file_of(res, race, &format!("nm {g}")).or_else(|| file_of(res, race, "nm male"))),
+    let nm = file_of(res, race, &format!("nm {g}")).or_else(|| file_of(res, race, "nm male"));
+    let skin = match vest {
+        Some((vd, vn)) => Surface::Vested(body_tex, nm, vd, vn),
         // (assumption) a race whose mesh is under data/animal is drawn with the Creature material
-        None if race.files.get("male mesh").is_some_and(|m| m.to_lowercase().replace('\\', "/").contains("data/animal/")) => {
-            Surface::Creature(body_tex, file_of(res, race, &format!("nm {g}")).or_else(|| file_of(res, race, "nm male")))
-        }
-        None => Surface::Skin(body_tex, file_of(res, race, &format!("nm {g}")).or_else(|| file_of(res, race, "nm male"))),
+        None if race.files.get("male mesh").is_some_and(|m| m.to_lowercase().replace('\\', "/").contains("data/animal/")) => Surface::Creature(body_tex, nm),
+        None => Surface::Skin(body_tex, nm),
     };
     // the hair and beard maps on the head (F037420)
     let unit = |k: i32| {
@@ -254,20 +242,30 @@ pub fn load_character_shared(
             })
         })
         .collect();
-    for (_, m) in to_bevy_skinned(&body, Some(&joint_or(0))) {
+    // the body and its head (only the vertices each uses; the head with the mesh's face poses as
+    // morph targets, F021065), shared by every look of the race and sex
+    let order = converted_submeshes(&body);
+    let mut share: Vec<Option<String>> = Vec::new();
+    for (k, (_, m)) in to_bevy_skinned(&body, Some(&joint_or(0))).into_iter().enumerate() {
+        let sub = order.get(k).copied().unwrap_or(k);
         match (head, split_head_tile(&m)) {
             (Some(h), Some((b, hm))) => {
-                parts.push((b, skin.clone()));
+                parts.push((with_poses(&b, &body, usize::MAX), skin.clone()));
+                share.push(Some(format!("{body_path}#{k}#body")));
                 parts.push((
-                    hm,
+                    with_poses(&hm, &body, sub),
                     Surface::Head(
                         file_of(res, h, "texture map"),
                         file_of(res, h, "normal map"),
                         scalps.clone(),
                     ),
                 ));
+                share.push(Some(format!("{body_path}#{k}#head")));
             }
-            _ => parts.push((m, skin.clone())),
+            _ => {
+                parts.push((m, skin.clone()));
+                share.push(Some(format!("{body_path}#{k}")));
+            }
         }
     }
     // hair and beards
@@ -340,10 +338,33 @@ pub fn load_character_shared(
         };
         let mat = crate::appearance_material(data, item);
         let tex = |k: &str| mat.and_then(|m| file_of(res, m, k));
+        // F037438 / F037442: painted when it has a colour (its own "color", else the
+        // wearer's) and its material a "color map"
+        let colour = item.refs("color").first().map(|(c, _)| c.clone()).or_else(|| spec.colour.clone()).and_then(|c| data.get(&c));
+        let paint = match (colour, tex("color map")) {
+            (Some(c), Some(color_map)) => {
+                let argb = |k: &str| {
+                    let v = c.ints.get(k).copied().unwrap_or(-1) as u32;
+                    [((v >> 16) & 255) as f32 / 255.0, ((v >> 8) & 255) as f32 / 255.0, (v & 255) as f32 / 255.0]
+                };
+                let factor = |k: &str| item.floats.get(k).copied().unwrap_or(0.0);
+                let (c1, c2) = (argb("color 1"), argb("color 2"));
+                Some(ClothPaint {
+                    color_map,
+                    colours: [[c1[0], c1[1], c1[2], factor("paint factor 1")], [c2[0], c2[1], c2[2], factor("paint factor 2")]],
+                })
+            }
+            _ => None,
+        };
+        // (testing) KENSHI_PAINT_DEBUG: each piece's paint
+        if std::env::var("KENSHI_PAINT_DEBUG").is_ok() {
+            eprintln!("paint {}: colour {:?} map {:?} -> {:?}", item.name, colour.map(|c| &c.name), tex("color map"), paint.as_ref().map(|p| p.colours));
+        }
         for (_, m) in to_bevy_skinned(&cm, Some(&joint_or(0))) {
-            parts.push((m, Surface::Cloth(tex("texture map"), tex("normal map"))));
+            parts.push((m, Surface::Cloth(tex("texture map"), tex("normal map"), paint.clone())));
         }
     }
+    share.resize(parts.len(), None);
     if let Some(sh) = shared {
         return Ok(CharacterAsset {
             rig,
@@ -351,6 +372,7 @@ pub fn load_character_shared(
             library: sh.library.clone(),
             upper_mask: sh.upper_mask.clone(),
             parts,
+            share,
             overrides: sh.overrides.clone(),
             ragdoll: sh.ragdoll.clone(),
             carry_ragdoll: sh.carry_ragdoll.clone(),
@@ -373,6 +395,7 @@ pub fn load_character_shared(
         library,
         upper_mask,
         parts,
+        share,
         overrides,
         ragdoll,
         carry_ragdoll,
@@ -449,7 +472,23 @@ pub struct Posture(pub Vec<(usize, f32)>);
 pub struct CharacterHandles<M: Material = StandardMaterial> {
     meshes: Vec<(Handle<Mesh>, Handle<M>)>,
     bindposes: Handle<SkinnedMeshInverseBindposes>,
+    /// Per mesh: the mesh with its morph targets (the head's face poses), if it has any.
+    morphs: Vec<Option<Arc<Mesh>>>,
 }
+
+/// A mesh drawn with morph targets baked in (the head and its face poses): the mesh with them
+/// (kept on the CPU) and the one drawn while none are set (shared); `weights` what is baked now.
+#[derive(Component, Clone, Debug)]
+pub struct MorphBase {
+    pub base: Arc<Mesh>,
+    pub plain: Handle<Mesh>,
+    pub weights: Vec<f32>,
+}
+
+/// The meshes shared between characters (`CharacterAsset::share`) once uploaded (without morph
+/// targets), and the mesh with them, for one that has some.
+type SharedMesh = (Handle<Mesh>, Option<Arc<Mesh>>);
+static SHARED_MESHES: std::sync::Mutex<Option<std::collections::HashMap<String, SharedMesh>>> = std::sync::Mutex::new(None);
 
 /// Upload a character's meshes, each with the material `material` makes for its surface.
 pub fn upload_character_with<M: Material>(
@@ -458,20 +497,40 @@ pub fn upload_character_with<M: Material>(
     bindposes: &mut Assets<SkinnedMeshInverseBindposes>,
     mut material: impl FnMut(&Surface) -> Handle<M>,
 ) -> CharacterHandles<M> {
+    let mut morphs = Vec::new();
     let parts = asset
         .parts
         .iter()
-        .map(|(m, surface)| {
-            let mut m = m.clone();
-            if m.attribute(Mesh::ATTRIBUTE_TANGENT).is_none() {
-                let _ = m.generate_tangents();
-            }
-            (meshes.add(m), material(surface))
+        .enumerate()
+        .map(|(k, (m, surface))| {
+            let key = asset.share.get(k).cloned().flatten();
+            let cached = key.as_ref().and_then(|k| SHARED_MESHES.lock().ok()?.get_or_insert_with(Default::default).get(k).cloned());
+            let (handle, names) = match cached {
+                Some(c) => c,
+                None => {
+                    let mut m = m.clone();
+                    if m.attribute(Mesh::ATTRIBUTE_TANGENT).is_none() {
+                        let _ = m.generate_tangents();
+                    }
+                    // morph targets baked per character (`MorphBase`), not drawn by the GPU
+                    let with = m.morph_target_names().is_some().then(|| Arc::new(m.clone()));
+                    let made = (meshes.add(if with.is_some() { crate::without_morphs(&m) } else { m }), with);
+                    if let Some(k) = key
+                        && let Ok(mut c) = SHARED_MESHES.lock()
+                    {
+                        c.get_or_insert_with(Default::default).insert(k, made.clone());
+                    }
+                    made
+                }
+            };
+            morphs.push(names);
+            (handle, material(surface))
         })
         .collect();
     CharacterHandles {
         meshes: parts,
         bindposes: bindposes.add(SkinnedMeshInverseBindposes::from(asset.rig.inverse_bind())),
+        morphs,
     }
 }
 
@@ -489,14 +548,14 @@ pub fn upload_character(
         .iter()
         .map(|(m, surface)| {
             let mat = match surface.clone() {
-                Surface::Skin(t, n) | Surface::Cloth(t, n) | Surface::Creature(t, n) | Surface::Head(t, n, _) => StandardMaterial {
+                Surface::Skin(t, n) | Surface::Cloth(t, n, _) | Surface::Creature(t, n) | Surface::Head(t, n, _) => StandardMaterial {
                     base_color_texture: t.map(|p| assets.load(p)),
                     normal_map_texture: n.map(|p| assets.load(p)),
                     perceptual_roughness: 0.85,
                     ..default()
                 },
-                Surface::Painted(img, n) => StandardMaterial {
-                    base_color_texture: Some(images.add(img)),
+                Surface::Vested(t, n, _, _) => StandardMaterial {
+                    base_color_texture: t.map(|p| assets.load(p)),
                     normal_map_texture: n.map(|p| assets.load(p)),
                     perceptual_roughness: 0.85,
                     ..default()
@@ -510,12 +569,13 @@ pub fn upload_character(
                     ..default()
                 },
             };
-            (meshes.add(m.clone()), materials.add(mat))
+            (meshes.add(crate::without_morphs(m)), materials.add(mat))
         })
         .collect();
     CharacterHandles {
         meshes: parts,
         bindposes: bindposes.add(SkinnedMeshInverseBindposes::from(asset.rig.inverse_bind())),
+        morphs: asset.parts.iter().map(|(m, _)| m.morph_target_names().is_some().then(|| Arc::new(m.clone()))).collect(),
     }
 }
 
@@ -569,7 +629,7 @@ pub fn spawn_character_with_joints<M: Material>(
         inverse_bindposes: handles.bindposes.clone(),
         joints: joints.clone(),
     };
-    for (mesh, mat) in &handles.meshes {
+    for (k, (mesh, mat)) in handles.meshes.iter().enumerate() {
         let e = commands
             .spawn((
                 Mesh3d(mesh.clone()),
@@ -578,6 +638,11 @@ pub fn spawn_character_with_joints<M: Material>(
                 skin.clone(),
             ))
             .id();
+        // a mesh with morph targets (the head's face poses): drawn plain until its weights are set
+        if let Some(Some(base)) = handles.morphs.get(k) {
+            let n = base.morph_target_names().map_or(0, |n| n.len());
+            commands.entity(e).insert(MorphBase { base: base.clone(), plain: mesh.clone(), weights: vec![0.0; n] });
+        }
         commands.entity(root).add_child(e);
     }
     if !asset.library.is_empty() {

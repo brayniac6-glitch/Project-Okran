@@ -5,8 +5,10 @@ pub mod character;
 pub mod character_material;
 pub mod fog_volume;
 pub mod hdr;
+pub mod interior_mask;
 pub mod local_lights;
 pub mod mipmaps;
+pub mod texture_quality;
 pub mod moons;
 pub mod object_material;
 pub mod particles;
@@ -151,6 +153,120 @@ pub fn appearance_material<'a>(
         }
     }
     rec.files.contains_key("texture map").then_some(rec)
+}
+
+/// The submeshes `to_bevy_skinned` converts, in its order (their numbers in the mesh).
+pub fn converted_submeshes(mesh: &ogre_mesh::Mesh) -> Vec<usize> {
+    mesh.submeshes
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            let geo = if s.use_shared { mesh.shared.as_ref() } else { s.geometry.as_ref() };
+            s.operation == OP_TRIANGLE_LIST && geo.and_then(|g| g.positions()).is_some()
+        })
+        .map(|(k, _)| k)
+        .collect()
+}
+
+/// A vertex attribute's values at the given vertices (the formats meshes here carry).
+fn gather(v: &VertexAttributeValues, at: &[u32]) -> Option<VertexAttributeValues> {
+    use VertexAttributeValues as V;
+    fn pick<T: Copy>(a: &[T], at: &[u32]) -> Vec<T> {
+        at.iter().map(|&i| a[i as usize]).collect()
+    }
+    Some(match v {
+        V::Float32(a) => V::Float32(pick(a, at)),
+        V::Float32x2(a) => V::Float32x2(pick(a, at)),
+        V::Float32x3(a) => V::Float32x3(pick(a, at)),
+        V::Float32x4(a) => V::Float32x4(pick(a, at)),
+        V::Uint16x4(a) => V::Uint16x4(pick(a, at)),
+        V::Unorm8x4(a) => V::Unorm8x4(pick(a, at)),
+        V::Uint8x4(a) => V::Uint8x4(pick(a, at)),
+        _ => return None,
+    })
+}
+
+/// Mesh `m` (converted from submesh `submesh` of `ogre`) cut down to the vertices its triangles
+/// use, with the Ogre mesh's poses on that geometry (a pose's target: 0 the shared geometry, n
+/// submesh n - 1) as its morph targets, by pose name (Kenshi's face morphs, F021065: drawn by
+/// each character's weights).
+pub fn with_poses(m: &Mesh, ogre: &ogre_mesh::Mesh, submesh: usize) -> Mesh {
+    use bevy::mesh::morph::MorphAttributes;
+    let Some(Indices::U32(idx)) = m.indices() else { return m.clone() };
+    let shared = ogre.submeshes.get(submesh).is_some_and(|s| s.use_shared);
+    let target = if shared { 0 } else { submesh.wrapping_add(1) as u16 };
+    // (submesh usize::MAX: the vertices cut down, no poses)
+    let poses: Vec<&ogre_mesh::Pose> = if submesh == usize::MAX { Vec::new() } else { ogre.poses.iter().filter(|p| p.target == target).collect() };
+    let n = m.count_vertices();
+    // the vertices used, in first-use order, and where each old one went
+    let mut new_of = vec![u32::MAX; n];
+    let mut used: Vec<u32> = Vec::new();
+    for &i in idx {
+        if new_of[i as usize] == u32::MAX {
+            new_of[i as usize] = used.len() as u32;
+            used.push(i);
+        }
+    }
+    let mut out = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    for (attr, values) in m.attributes() {
+        if let Some(v) = gather(values, &used) {
+            out.insert_attribute(attr.clone(), v);
+        }
+    }
+    out.insert_indices(Indices::U32(idx.iter().map(|&i| new_of[i as usize]).collect()));
+    if poses.is_empty() || poses.len() > bevy::mesh::morph::MAX_MORPH_WEIGHTS {
+        return out;
+    }
+    let count = used.len();
+    let mut targets = vec![MorphAttributes::new(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO); count * poses.len()];
+    for (k, p) in poses.iter().enumerate() {
+        for &(i, d) in &p.offsets {
+            if let Some(&j) = new_of.get(i as usize).filter(|&&j| j != u32::MAX) {
+                targets[k * count + j as usize].position = Vec3::from(d);
+            }
+        }
+    }
+    out.set_morph_targets(targets);
+    out.set_morph_target_names(poses.iter().map(|p| p.name.clone()).collect());
+    out
+}
+
+/// Mesh `m` without its morph targets (its attributes and triangles only).
+pub fn without_morphs(m: &Mesh) -> Mesh {
+    let mut out = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    for (attr, values) in m.attributes() {
+        out.insert_attribute(attr.clone(), values.clone());
+    }
+    if let Some(i) = m.indices() {
+        out.insert_indices(i.clone());
+    }
+    out
+}
+
+/// Mesh `base`'s morph targets baked in at the weights `weight` gives each by name (Kenshi's
+/// face poses, Ogre's software pose blend: each vertex moved by the weighted sum of its pose
+/// offsets), a mesh of its own without morph targets; None if it has none.
+pub fn baked(base: &Mesh, weight: impl Fn(&str) -> f32) -> Option<Mesh> {
+    let names = base.morph_target_names()?;
+    let targets = base.morph_targets()?;
+    let Some(VertexAttributeValues::Float32x3(pos)) = base.attribute(Mesh::ATTRIBUTE_POSITION) else { return None };
+    let n = pos.len();
+    let mut moved = pos.clone();
+    for (k, name) in names.iter().enumerate() {
+        let w = weight(name);
+        if w == 0.0 {
+            continue;
+        }
+        for (v, p) in moved.iter_mut().enumerate() {
+            let d = targets.get(k * n + v)?.position * w;
+            p[0] += d.x;
+            p[1] += d.y;
+            p[2] += d.z;
+        }
+    }
+    let mut out = without_morphs(base);
+    out.insert_attribute(Mesh::ATTRIBUTE_POSITION, moved);
+    Some(out)
 }
 
 /// Split a character body mesh into (body, head): Kenshi body meshes put the head's UVs in the tile

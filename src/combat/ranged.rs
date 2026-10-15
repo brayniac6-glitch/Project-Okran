@@ -311,6 +311,9 @@ pub struct Bolt {
     pub state: BoltState,
     /// The "live ammo" mesh.
     pub mesh: Option<String>,
+    /// A mounted gun's: (assumption) not stopped by buildings (it stands on them, its barrel
+    /// in its own collision).
+    pub mounted: bool,
 }
 
 /// What a bolt met this tick.
@@ -351,45 +354,49 @@ pub fn fire(gun: &mut Gun, shooter: usize, target: Option<usize>, barrel: [f32; 
         age: 0.0,
         state: BoltState::Flying,
         mesh: gun.live_ammo.clone(),
+        mounted: false,
     }
 }
 
-/// A character as a bolt sees it: an upright cylinder.
+/// A character as bolts and lines of fire meet it: its physics hull (PhysicsHullT, made by
+/// F040654): a box of the race's "hull size X / Y / Z" times its size (Character vtable 0x390),
+/// halved for its half extents; lying down (prone) its height is its larger width.
+/// (assumption) The box stands on the feet, upright and unturned.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Body {
     pub id: usize,
     /// Feet position.
     pub pos: [f32; 3],
-    pub radius: f32,
-    pub height: f32,
+    /// Half extents (x, y, z).
+    pub half: [f32; 3],
     /// Whether the shooter fights them (a hit on anyone else may pass by).
     pub enemy: bool,
 }
 
-/// The distance along `dir` from `from` to where the segment first enters the cylinder, if within
-/// `len`.
-pub fn cylinder_hit(from: [f32; 3], dir: [f32; 3], len: f32, b: &Body) -> Option<f32> {
-    let (ox, oz) = (from[0] - b.pos[0], from[2] - b.pos[2]);
-    let (dx, dz) = (dir[0], dir[2]);
-    let a = dx * dx + dz * dz;
-    let c = ox * ox + oz * oz - b.radius * b.radius;
-    let t = if c <= 0.0 {
-        0.0
-    } else if a < 1e-9 {
-        return None;
-    } else {
-        let bb = ox * dx + oz * dz;
-        let disc = bb * bb - a * c;
-        if disc < 0.0 {
+/// The distance along `dir` from `from` to where the segment first enters the body's box (0 when
+/// it starts inside), if within `len`.
+pub fn body_hit(from: [f32; 3], dir: [f32; 3], len: f32, b: &Body) -> Option<f32> {
+    let lo = [b.pos[0] - b.half[0], b.pos[1], b.pos[2] - b.half[2]];
+    let hi = [b.pos[0] + b.half[0], b.pos[1] + 2.0 * b.half[1], b.pos[2] + b.half[2]];
+    let (mut t0, mut t1) = (0.0f32, len);
+    for k in 0..3 {
+        if dir[k].abs() < 1e-9 {
+            if from[k] < lo[k] || hi[k] < from[k] {
+                return None;
+            }
+            continue;
+        }
+        let (mut a, mut c) = ((lo[k] - from[k]) / dir[k], (hi[k] - from[k]) / dir[k]);
+        if c < a {
+            std::mem::swap(&mut a, &mut c);
+        }
+        t0 = t0.max(a);
+        t1 = t1.min(c);
+        if t1 < t0 {
             return None;
         }
-        (-bb - disc.sqrt()) / a
-    };
-    if !(0.0..=len).contains(&t) {
-        return None;
     }
-    let y = from[1] + dir[1] * t - b.pos[1];
-    (0.0..=b.height).contains(&y).then_some(t)
+    Some(t0)
 }
 
 impl Bolt {
@@ -401,9 +408,22 @@ impl Bolt {
     /// distance its nose drops 8 degrees a second, gone 5000 units later.
     /// (as Kenshi) The drop is a pitch about the world x axis (Node::pitch in world space), so a
     /// bolt flying along x rolls instead of dropping and one flying toward -z climbs.
-    /// (stand-in) Characters are upright cylinders (no physics shapes); the shooter is never hit;
-    /// the ground is `ground(x, z)` (buildings and water are not traced).
-    pub fn update(&mut self, dt: f32, bodies: &[Body], ground: &mut dyn FnMut(f32, f32) -> f32, mut roll: impl FnMut() -> f32) -> Option<BoltHit> {
+    /// Characters are their hulls ([`Body`]); the shooter is never hit; the ground is
+    /// `ground(x, z)`; (not ported) water is not traced.
+    pub fn update(&mut self, dt: f32, bodies: &[Body], ground: &mut dyn FnMut(f32, f32) -> f32, roll: impl FnMut() -> f32) -> Option<BoltHit> {
+        self.update_among(dt, bodies, ground, &mut |_, _, _| None, roll)
+    }
+
+    /// [`Bolt::update`] with the buildings: `walls(from, dir, len)` the distance to the first
+    /// building solid ahead; one stops the bolt as the ground does.
+    pub fn update_among(
+        &mut self,
+        dt: f32,
+        bodies: &[Body],
+        ground: &mut dyn FnMut(f32, f32) -> f32,
+        walls: &mut dyn FnMut([f32; 3], [f32; 3], f32) -> Option<f32>,
+        mut roll: impl FnMut() -> f32,
+    ) -> Option<BoltHit> {
         self.age += dt;
         if self.state != BoltState::Flying {
             return None;
@@ -413,7 +433,7 @@ impl Bolt {
         let ahead = step * 2.0;
         let mut best: Option<(f32, usize, bool)> = None;
         for b in bodies.iter().filter(|b| b.id != self.shooter) {
-            if let Some(t) = cylinder_hit(self.pos, self.dir, ahead, b)
+            if let Some(t) = body_hit(self.pos, self.dir, ahead, b)
                 && best.is_none_or(|(d, _, _)| t < d)
             {
                 best = Some((t, b.id, b.enemy));
@@ -425,6 +445,10 @@ impl Bolt {
                 let p = add(self.pos, scale(self.dir, s));
                 p[1] <= ground(p[0], p[2])
             })
+        };
+        let ground_t = match (ground_t, walls(self.pos, self.dir, ahead)) {
+            (Some(g), Some(w)) => Some(g.min(w)),
+            (g, w) => g.or(w),
         };
         if let Some((t, who, enemy)) = best
             && ground_t.is_none_or(|g| t <= g)
@@ -464,8 +488,7 @@ impl Bolt {
 ///
 /// A mounted gun (GunClassTurret) from its GUN_DATA record, as the GunClass constructor reads it
 /// (no quality): its damage is the building's output rate x 0.75 to x 1.25 (F033802, F033803:
-/// Building::researchOutputRate, F029301).
-/// (stand-in) Research raising the output rate is not applied: the record's "output rate".
+/// Building::researchOutputRate, F029301, as [`Turret::set_output_rate`] keeps it).
 pub fn turret_gun(r: &GameData, output_rate: f32) -> Gun {
     let f = |k: &str| r.floats.get(k).copied().or_else(|| r.ints.get(k).map(|v| *v as f32));
     let shot_speed = f("shot speed").unwrap_or(1.0);
@@ -506,6 +529,13 @@ pub struct Turret {
     /// How fast it turns (rad/s): power factor x "aim speed" x (1 + output rate x 0.01) (F033785).
     /// (assumption) F03c5ce turns the head by this many radians a second.
     pub turn: f32,
+    /// The turning speed at full power, and the power factor.
+    pub full_turn: f32,
+    pub power: f32,
+    /// The building record's "output rate" (+0x1a4) and the rate with research
+    /// (Building::researchOutputRate F029301, the building's vtable 0x3c0).
+    pub base_output: f32,
+    pub output: f32,
     pub gun: Gun,
     pub ranged: Ranged,
     /// The gunner (Task_UseTurret, F031217) and the turret's target.
@@ -516,6 +546,9 @@ pub struct Turret {
     pub building: Option<usize>,
     /// Frames left before the head's movement sound stops ("Turret_Mvt_Stop", F033784).
     pub moving: i32,
+    /// Further teams it shoots at besides its gunner's foes (the player's "shoot first" AI
+    /// option: dangerous neutrals).
+    pub also: Vec<u16>,
 }
 
 /// Half the fire arc (F033781's arc test, the record's "180 degree fire arc").
@@ -525,8 +558,27 @@ pub const TURRET_AIMED: f32 = 1.0 * std::f32::consts::PI / 180.0;
 
 impl Turret {
     pub fn new(at: [f32; 3], facing: f32, pivot: [f32; 3], gun: Gun, power: f32, output_rate: f32) -> Turret {
-        let turn = power * gun.aim_speed * (1.0 + output_rate * 0.01);
-        Turret { at, facing, pivot, yaw: 0.0, pitch: 0.0, turn, gun, ranged: Ranged::default(), operator: None, target: None, furniture: None, building: None, moving: 0 }
+        let full_turn = gun.aim_speed * (1.0 + output_rate * 0.01);
+        Turret { at, facing, pivot, yaw: 0.0, pitch: 0.0, turn: power * full_turn, full_turn, power, base_output: output_rate, output: output_rate, gun, ranged: Ranged::default(), operator: None, target: None, furniture: None, building: None, moving: 0, also: Vec::new() }
+    }
+
+    /// The power factor (ProductionBuilding::powerFactor, F029260: none unpowered, else the
+    /// power received over that needed) taken into the turning speed.
+    pub fn set_power(&mut self, power: f32) {
+        self.power = power;
+        self.turn = power * self.full_turn;
+    }
+
+    /// The building's output rate with its research (F029301: "output rate" x the done
+    /// research's "production mult" for the building record, the player's research reaching
+    /// every building of that record): the damage int(rate x 0.75) .. int(rate x 1.25) (F033802,
+    /// F033803) and the turning speed "aim speed" x (1 + rate x 0.01) (F033785) follow it.
+    pub fn set_output_rate(&mut self, rate: f32) {
+        self.output = rate;
+        self.gun.damage_min = (rate * 0.75) as i32;
+        self.gun.damage_max = (rate * 1.25) as i32;
+        self.full_turn = self.gun.aim_speed * (1.0 + rate * 0.01);
+        self.turn = self.power * self.full_turn;
     }
 
     /// The swivel's pivot in the world.
@@ -653,7 +705,7 @@ mod tests {
         let mut b = fire(&mut g, 0, Some(1), [0.0, 10.0, 0.0], [0.0, 10.0, 300.0], 100.0, 100.0, 0.0, &mut rolls);
         assert_eq!(g.shots, 0);
         assert!((b.dir[2] - 1.0).abs() < 1e-5);
-        let target = Body { id: 1, pos: [0.0, 0.0, 300.0], radius: 3.0, height: 20.0, enemy: true };
+        let target = Body { id: 1, pos: [0.0, 0.0, 300.0], half: [3.0, 10.0, 3.0], enemy: true };
         let mut hit = None;
         for _ in 0..200 {
             if let Some(h) = b.update(1.0 / 60.0, &[target], &mut |_, _| -100.0, || 0.5) {
@@ -667,7 +719,7 @@ mod tests {
 
     #[test]
     fn a_friend_may_be_passed() {
-        let friend = Body { id: 2, pos: [0.0, 0.0, 100.0], radius: 3.0, height: 20.0, enemy: false };
+        let friend = Body { id: 2, pos: [0.0, 0.0, 100.0], half: [3.0, 10.0, 3.0], enemy: false };
         let mut b = Bolt {
             pos: [0.0, 10.0, 90.0],
             dir: [0.0, 0.0, 1.0],
@@ -680,6 +732,7 @@ mod tests {
             age: 0.0,
             state: BoltState::Flying,
             mesh: None,
+            mounted: false,
         };
         assert_eq!(b.update(1.0 / 60.0, &[friend], &mut |_, _| -100.0, || 0.5), None);
         b.pass = 0.0;

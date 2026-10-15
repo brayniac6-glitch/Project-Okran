@@ -2,8 +2,8 @@
 //! player's built ones, each an arena turret ([`kenshi_combat::ranged::Turret`]) manned by
 //! whoever operates it (Task_UseTurret, F031217).
 //!
-//! (stand-in) Kenshi's "Turret gunner" goal (task 146, an urgent AI goal) is not planned: a
-//! town's guard standing near a free turret mans it when an enemy of theirs comes into its reach.
+//! A town's people man its turrets through their packages' jobs Man the turrets (149) and
+//! Turret Gunner Homebuilding (222), planned into Turret gunner (146) (`sim`).
 
 use crate::sim::{OPERATING_MACHINE, Sim, Target};
 use kenshi_combat::ranged::{Turret, turret_gun};
@@ -11,8 +11,6 @@ use kenshi_data::{GameData, GameDataContainer};
 
 /// BuildingFunction 12: a gun turret.
 pub const BF_TURRET: i32 = 12;
-/// How near a guard must stand to a free turret to man it (units).
-pub const GUNNER_REACH: f32 = 200.0;
 
 /// The pivot of a building's swivelling head: the offsets down to its first turning part.
 fn pivot(data: &GameDataContainer, b: &GameData) -> [f32; 3] {
@@ -27,8 +25,8 @@ fn pivot(data: &GameDataContainer, b: &GameData) -> [f32; 3] {
 }
 
 /// The turret a BUILDING record makes at `at` facing `yaw`: its "gun turret" GUN_DATA, its
-/// "output rate" (the damage) and power factor 1.
-/// (stand-in) Power (ProductionBuilding::powerFactor, F029260) is taken as full.
+/// "output rate" (the damage) and power factor 1 (a player's turret's is its base's,
+/// `sync_turrets`).
 pub fn turret_for(data: &GameDataContainer, b: &GameData, at: [f32; 3], yaw: f32) -> Option<Turret> {
     let gun = data.get(&b.refs("gun turret").first()?.0)?;
     let output = b.floats.get("output rate").copied().or_else(|| b.ints.get("output rate").map(|v| *v as f32)).unwrap_or(50.0);
@@ -81,6 +79,30 @@ impl Sim {
                 );
             }
         }
+        // power (F029260): a player's turret drawing power works as the base's supply allows
+        // (F037662's efficiency); (assumption) a town's turrets are powered
+        for k in 0..self.arena.turrets.len() {
+            if let Some(b) = self.arena.turrets[k].building {
+                let p = self.power_efficiency(b);
+                self.arena.turrets[k].set_power(p);
+            }
+        }
+        // the output rate with the research done (F029301): every turret of an improved
+        // building record, the towns' too
+        for k in 0..self.arena.turrets.len() {
+            let t = &self.arena.turrets[k];
+            let record = match (t.furniture, t.building) {
+                (Some(f), _) => self.furn.get(f).map(|x| x.record.clone()),
+                (_, Some(b)) => self.buildings.get(b).map(|x| x.record.clone()),
+                _ => None,
+            };
+            if let Some(r) = record {
+                let rate = t.base_output * self.improvements(&r).0;
+                if rate != t.output {
+                    self.arena.turrets[k].set_output_rate(rate);
+                }
+            }
+        }
         // gunners
         for k in 0..self.arena.turrets.len() {
             let t = &self.arena.turrets[k];
@@ -99,43 +121,39 @@ impl Sim {
             };
             self.arena.turrets[k].operator = gunner;
         }
-        self.man_turrets();
-    }
-
-    /// (stand-in for the "Turret gunner" goal) A free town turret with an enemy of a guard
-    /// nearby in its reach: the guard (a town's character, not fighting, within 200 units) goes
-    /// to man it.
-    fn man_turrets(&mut self) {
-        for k in 0..self.arena.turrets.len() {
-            let t = &self.arena.turrets[k];
-            let Some(f) = t.furniture else { continue };
-            if t.operator.is_some() || self.operators.get(f).copied().flatten().is_some() {
-                continue;
-            }
-            let p0 = t.pivot_world();
-            let guard = self
+        // @fn F033850
+        //
+        // Shoot First (the AI tab, "Shoot first, ask later", the player's flag +0x11a): "Your
+        // turret gunners will shoot at any potentially dangerous but neutral targets, such as
+        // wild animals or bandits, without waiting for them to attack the base first". With no
+        // enemy to shoot a player's gunner takes a neutral whose faction stands under -30 with
+        // the player's, or one of a squad whose +0x34 is 0 or 8 ((assumption) taken as a wild
+        // animal's: of a squad with no people in it, as a herder's goats are not). (not ported)
+        // the town gunners' own pass over neutrals (F0141a0's test).
+        let also: Vec<u16> = if self.ai_options.shoot_first {
+            let kept: std::collections::HashSet<usize> = self.folk.iter().filter(|p| p.race.is_none()).filter_map(|p| p.platoon).collect();
+            let player = crate::sim::PLAYER_FACTION;
+            let mut v: Vec<u16> = self
                 .folk
                 .iter()
-                .filter(|p| !p.player && !p.down && !p.dead && p.race.is_none() && p.operating.is_none() && !self.arena.f[p.id].active)
+                .filter(|p| !p.player && !p.dead)
                 .filter(|p| {
-                    let me = p.mover.position_units();
-                    (me[0] - p0[0]).hypot(me[2] - p0[2]) <= GUNNER_REACH
+                    let wild = p.race.is_some() && p.platoon.is_none_or(|pl| !kept.contains(&pl));
+                    let hostile = p.faction.as_ref().and_then(|f| self.relations.get(f)).is_some_and(|r| r.relation(player) < -30.0);
+                    wild || hostile
                 })
-                .find(|p| {
-                    let me = &self.arena.f[p.id];
-                    self.arena.f.iter().any(|e| {
-                        !e.down
-                            && e.team != me.team
-                            && me.foes.as_ref().is_some_and(|v| v.contains(&e.team))
-                            && t.gun.in_range(p0, e.pos())
-                            && t.in_arc(e.pos())
-                    })
-                })
-                .map(|p| p.id);
-            if let Some(g) = guard {
-                let at = self.furniture_approach[f];
-                self.order_operate_furniture(g, f, at);
-            }
+                .map(|p| self.arena.f[p.id].team)
+                .collect();
+            v.sort();
+            v.dedup();
+            let mine = self.folk.iter().find(|p| p.player).map(|p| self.arena.f[p.id].team);
+            v.retain(|t| Some(*t) != mine);
+            v
+        } else {
+            Vec::new()
+        };
+        for t in self.arena.turrets.iter_mut().filter(|t| t.building.is_some()) {
+            t.also = also.clone();
         }
     }
 

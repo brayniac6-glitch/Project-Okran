@@ -20,6 +20,8 @@ pub enum Question {
     Exit,
     /// The selection dismantles building `b` (its furniture first, if it says so).
     Dismantle { ids: Vec<usize>, building: usize, furniture: bool },
+    /// Person `id` dismissed from the faction (F035103).
+    Dismiss(usize),
     /// Nothing (a note, OK alone).
     Note,
 }
@@ -132,6 +134,12 @@ pub fn update(
                             } else {
                                 g.sim.order_dismantle(&ids, building);
                             }
+                        }
+                    }
+                    Question::Dismiss(id) => {
+                        if let Some(g) = game.as_mut() {
+                            g.sim.dismiss(id);
+                            g.selected.retain(|&s| s != id);
                         }
                     }
                     Question::Note => {}

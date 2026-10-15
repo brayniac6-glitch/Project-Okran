@@ -718,7 +718,7 @@ mod tests {
 
     #[test]
     fn falls_and_rests_on_the_ground() {
-        let p = Phs { version: 1.4, actors: vec![capsule("a", [0.0, 10.0, 0.0])], joints: vec![] };
+        let p = Phs { version: 1.4, actors: vec![capsule("a", [0.0, 10.0, 0.0])], joints: vec![], lights: vec![] };
         let t = Template::new(&p);
         let mut r = Ragdoll::new(&[(t.bodies[0].bind, Quat::IDENTITY)], &[]);
         for _ in 0..300 {
@@ -743,6 +743,7 @@ mod tests {
                 swing: 0.0,
                 actors: [0, 1],
             }],
+            lights: vec![],
         };
         let t = Template::new(&p);
         let poses: Vec<_> = t.bodies.iter().map(|b| (b.bind, Quat::IDENTITY)).collect();

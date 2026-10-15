@@ -5,6 +5,7 @@
 
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::view
+#import kenshi::interior::interior_clipped
 #import kenshi::lighting::{apply_fog, local_lights, main_light, sun_shadow, make_wet, reflection_dir, reflection_mip, to_screen}
 
 struct TerrainParams {
@@ -44,6 +45,7 @@ struct TerrainParams {
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> p: TerrainParams;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var overlay_map: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(62) var interior_mask: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var linear_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var colour_map: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(4) var blend_map: texture_2d<f32>;
@@ -245,6 +247,10 @@ fn compute_biome(k: i32, tc: vec3<f32>, blend: vec2<f32>, normal: vec3<f32>, wei
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    // CLIP_INTERIOR
+    if (interior_clipped(interior_mask, in.position, in.world_position.xyz)) {
+        discard;
+    }
     let origin = p.count_origin.yzw;
     let world_pos = in.world_position.xyz + origin;
     let camera = view.world_position + origin;

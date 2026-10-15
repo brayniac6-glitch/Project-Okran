@@ -171,6 +171,11 @@ impl Rand {
         (self.0 >> 16) & 0x7fff
     }
 
+    /// The CRT's rand(): 0 .. 32767.
+    pub fn rand(&mut self) -> u32 {
+        self.next()
+    }
+
     pub fn unit(&mut self) -> f32 {
         self.next() as f32 / 32767.0
     }

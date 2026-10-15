@@ -16,9 +16,13 @@
 //! Harness stand-ins: Bevy cannot cull a mirrored view's faces the other way round, so the camera
 //! is the unmirrored one at the reflected place (looking along the reflected direction, up
 //! reflected) and the water reads its image flipped left to right; the near plane's clip at the
-//! water is the terrain's discard under the water for views from under it; levels 2 and 3 (queues
-//! 50 and 20: the objects and more) draw as 1; the target is drawn every frame (Kenshi only while
-//! more than 100 of the water's pixels pass its occlusion query, F050971).
+//! water is the terrain's discard under the water for views from under it; the target is drawn
+//! every frame (Kenshi only while more than 100 of the water's pixels pass its occlusion query,
+//! F050971).
+//!
+//! The levels' queues (F050965): 1 adds 5 - 8 and 25; 2 also 50 (Ogre's main queue: the building
+//! parts, objects and characters, `reflect_main_queue`, drawn as their albedo's luma); 3 also 20
+//! and the town manager's call with 1 (not ported: what goes in queue 20 is not found).
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::{CameraProjection, RenderTarget, SubCameraView, visibility::RenderLayers};
@@ -139,7 +143,7 @@ pub fn spawn_reflection(
 #[allow(clippy::type_complexity)]
 pub fn follow_main_camera(
     reflection: Option<Res<WaterReflection>>,
-    main: Query<(&Transform, &Projection), (With<Camera3d>, Without<ReflectionCamera>, Without<PortraitCamera>)>,
+    main: Query<(&Transform, &Projection), (With<Camera3d>, Without<ReflectionCamera>, Without<PortraitCamera>, Without<crate::interior_mask::MaskCamera>)>,
     mut cams: Query<(&mut Transform, &mut Projection), With<ReflectionCamera>>,
 ) {
     let Some(reflection) = reflection else { return };
@@ -155,5 +159,30 @@ pub fn follow_main_camera(
             m.0.fov = main.fov;
             m.0.aspect_ratio = main.aspect_ratio;
         }
+    }
+}
+
+/// "water reflection" 2 and up (F050965 adds queue 50): the building parts, objects and
+/// characters are drawn in the reflection too.
+#[allow(clippy::type_complexity)]
+pub fn reflect_main_queue(
+    mut commands: Commands,
+    reflection: Option<Res<WaterReflection>>,
+    added: Query<
+        Entity,
+        (
+            Without<RenderLayers>,
+            Or<(
+                Added<MeshMaterial3d<crate::object_material::KenshiObjectMaterial>>,
+                Added<MeshMaterial3d<crate::character_material::KenshiCharacterMaterial>>,
+            )>,
+        ),
+    >,
+) {
+    if reflection.is_none_or(|r| r.level < 2) {
+        return;
+    }
+    for e in &added {
+        commands.entity(e).insert(reflected());
     }
 }

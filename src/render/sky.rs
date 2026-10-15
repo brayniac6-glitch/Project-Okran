@@ -322,10 +322,10 @@ impl SkySettings {
 }
 
 impl SkySettings {
-    /// The terrain's main light at an hour (`MainLight` for the terrain material). The HDR
-    /// composite's exposure is EXPOSURE_KEY 0.55 over the adapted scene luminance, clamped to
-    /// MIN_LUMINANCE .. MAX_LUMINANCE ("exposure max"); (assumption: the luminance measure is not
-    /// ported) the adapted luminance taken at the clamp's top by day, its bottom by night.
+    /// The terrain's main light at an hour (`MainLight` for the terrain material). Its
+    /// `exposure` is an estimate the shaders do not use (`to_screen` passes colours through):
+    /// the scene is exposed by the HDR chain (kenshi_render::hdr), which measures and adapts the
+    /// luminance as Kenshi's hdrfp4.hlsl does.
     pub fn terrain_light(&self, hour: f32) -> crate::terrain_material::MainLight {
         let (dir, colour, w, min_lum) = self.main_light(hour);
         let mut fog = self.fog_params();

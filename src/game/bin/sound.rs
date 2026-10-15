@@ -14,11 +14,15 @@
 //! - Volumes: settings.cfg's Music, Ambient, Footstep, Sfx, UI and VO volume (the game's
 //!   "User_Volume_*" game parameters, F028291 - F028296), by the event's kind.
 //!
+//! - Music (F028312, F028318): the region's music sets the Biomes switch and the event to post,
+//!   Music_<music>_Play, which is posted every 0.8 to 1.4 x the "Music frequency" minutes of
+//!   real time (whether or not a piece still plays); a region's music bank goes 60 s after it is
+//!   left.
+//!
 //! (stand-in) Wwise's interactive music (music segments, tracks, switches, kinds 10 - 13) is not
-//! read: a music event plays one of its bank's pieces at random, a new one after the settings'
-//! "Music frequency" minutes. Buses, effects, RTPCs and attenuation curves are not read: a
+//! read: a music event plays one of its bank's pieces at random. Buses, effects, RTPCs and attenuation curves are not read: a
 //! sound plays at its nodes' summed volume, panned and fading with distance by Bevy's spatial
-//! audio (1/100 of a unit a metre). Day is 6:00 to 20:00 (assumption).
+//! audio (1/100 of a unit a metre). Day is from "sunrise" to "sunset" (F040780).
 use super::{Game, MainCam, WorldReady};
 use bevy::audio::{AudioPlayer, AudioSource, PlaybackMode, PlaybackSettings, SpatialListener, SpatialScale, Volume};
 use bevy::prelude::*;
@@ -102,6 +106,8 @@ pub struct Sound {
     ambience: Option<(String, bool)>,
     music: Option<String>,
     music_next: f32,
+    /// Music banks left, unloaded at the time (F028318: 60 s after).
+    music_leaving: Vec<(String, f32)>,
     /// When the piece playing ends (the next is counted from then).
     music_until: f32,
     in_world: bool,
@@ -109,6 +115,8 @@ pub struct Sound {
     /// The tag of the post being started, and the tags to stop.
     cur_tag: Option<u64>,
     stops: Vec<u64>,
+    /// Each character's Surface_Material switch value (Character +0x688, F039207).
+    surfaces: HashMap<usize, &'static str>,
 }
 
 /// The banks loaded at the start (F028319, F028314, F028312).
@@ -156,11 +164,13 @@ impl Sound {
             ambience: None,
             music: None,
             music_next: 0.0,
+            music_leaving: Vec::new(),
             music_until: -1.0e9,
             in_world: false,
             enabled: std::env::var("KENSHI_NO_SOUND").is_err(),
             cur_tag: None,
             stops: Vec::new(),
+            surfaces: HashMap::new(),
         };
         for b in START_BANKS {
             s.load(b);
@@ -227,6 +237,28 @@ impl Sound {
     /// Stop the sounds tagged `tag` (and their sequences).
     pub fn stop_tag(&mut self, tag: u64) {
         self.stops.push(tag);
+    }
+
+    /// The game is unloaded (super::unload_world): what was to play dropped, the region's
+    /// ambience and music banks unloaded; the voices playing are returned to be despawned.
+    pub fn leave_world(&mut self) -> Vec<Entity> {
+        self.posts.clear();
+        self.seqs.clear();
+        self.delayed.clear();
+        self.stops.clear();
+        if let Some((old, _)) = self.ambience.take()
+            && let Some(k) = AMBIENCE.iter().position(|x| *x == old)
+        {
+            self.unload(&format!("SFX_Amb_{}.bnk", AMBIENCE_BANK[k]));
+        }
+        if let Some(old) = self.music.take() {
+            self.unload(&format!("{old}_Music_Bank.bnk"));
+        }
+        for (old, _) in std::mem::take(&mut self.music_leaving) {
+            self.unload(&format!("{old}_Music_Bank.bnk"));
+        }
+        self.music_until = -1.0e9;
+        self.voices.drain(..).map(|v| v.entity).collect()
     }
 
     fn volume(&self, c: Channel) -> f32 {
@@ -386,15 +418,19 @@ pub fn play(mut commands: Commands, mut s: ResMut<Sound>, mut assets: ResMut<Ass
         if std::env::var("KENSHI_SOUND_DEBUG").is_ok() {
             eprintln!("sound: event {} ({} actions)", p.event, actions.len());
         }
+        // (stand-in) one piece of music an event at most
+        let mut music_started = false;
         for a in actions {
             match a {
                 Action::Play(t) => {
                     if s.lib.nodes.contains_key(&t) {
                         start(&mut commands, s, &mut assets, now, t, t, p.at, &sw, p.channel, 0);
                     } else if let Some(&k) = s.event_bank.get(&p.event) {
-                        // (stand-in) interactive music: one of its bank's pieces
+                        // (stand-in) interactive music: one of its bank's pieces (an event's
+                        // several music objects make one piece, not one each)
                         let ids: Vec<u32> = s.banks[k].1.sounds.keys().copied().collect();
-                        if !ids.is_empty() && !s.voices.iter().any(|v| v.root == t) {
+                        if !ids.is_empty() && !music_started && !s.voices.iter().any(|v| v.root == t) {
+                            music_started = true;
                             let pick = ids[(s.rand() * ids.len() as f32) as usize % ids.len()];
                             if let Some(h) = s.audio(pick, &mut assets) {
                                 s.music_until = now + s.lengths.get(&pick).copied().unwrap_or(0.0);
@@ -536,8 +572,9 @@ pub fn regions(
     let Some(r) = w.current else { return };
     let Some(group) = game.sim.data.get(&w.regions[r].biome_group) else { return };
     let int = |k: &str| group.ints.get(k).copied();
+    // Sky's day test (F040780): the hour between the GLOBAL CONSTANTS "sunrise" and "sunset"
     let hour = game.sim.hour();
-    let day = (6.0..20.0).contains(&hour);
+    let day = (game.sim.sunrise as f64) < hour && hour < game.sim.sunset as f64;
     // the state the ambience switches on
     s.switches.insert(name_id("Time_in_Game"), name_id(if day { "day" } else { "night" }));
     if let Some(a) = int("ambience").and_then(|a| AMBIENCE.get(a as usize)) {
@@ -563,35 +600,42 @@ pub fn regions(
             s.ambience = Some(want);
         }
     }
-    // music
+    // music: the region's (F028312): the Biomes switch and Music_<music>_Play to post; the one
+    // left plays on until its bank goes 60 s later (F028318)
     let now = time.elapsed_secs();
     let music = int("music").and_then(|m| MUSIC.get(m as usize)).map(|m| m.to_string());
     if music != s.music {
         if let Some(old) = s.music.take() {
-            s.post(&format!("Music_{old}_Stop"), Channel::Music);
-            // (stand-in) the music playing stops with it
-            let roots: Vec<u32> = s.lib.events.get(&name_id(&format!("Music_{old}_Play"))).map(|a| a.iter().filter_map(|x| if let Action::Play(t) = x { Some(*t) } else { None }).collect()).unwrap_or_default();
-            let stop: Vec<Entity> = s.voices.iter().filter(|v| roots.contains(&v.root)).map(|v| v.entity).collect();
-            for e in stop {
-                commands.entity(e).despawn();
-            }
-            s.unload(&format!("{old}_Music_Bank.bnk"));
+            s.music_leaving.push((old, now + 60.0));
         }
         if let Some(m) = &music {
+            s.music_leaving.retain(|(o, _)| o != m);
             s.load(&format!("{m}_Music_Bank.bnk"));
+            s.switches.insert(name_id("Biomes"), name_id(m));
         }
         s.music = music.clone();
-        // the first piece a little after arriving
-        s.music_next = now + 20.0;
     }
-    if let Some(m) = music
-        && now >= s.music_next
-        && now >= s.music_until + s.music_frequency
-    {
-        s.post(&format!("Music_{m}_Play"), Channel::Music);
-        s.music_next = now + 1.0;
-        // until the piece's length is known (on playing)
-        s.music_until = now + 600.0;
+    for (old, _) in s.music_leaving.iter().filter(|(_, at)| now > *at).cloned().collect::<Vec<_>>() {
+        // (stand-in for UnloadBank stopping its sounds) the music playing from it stops
+        let roots: Vec<u32> = s.lib.events.get(&name_id(&format!("Music_{old}_Play"))).map(|a| a.iter().filter_map(|x| if let Action::Play(t) = x { Some(*t) } else { None }).collect()).unwrap_or_default();
+        let stop: Vec<Entity> = s.voices.iter().filter(|v| roots.contains(&v.root)).map(|v| v.entity).collect();
+        for e in stop {
+            commands.entity(e).despawn();
+        }
+        s.unload(&format!("{old}_Music_Bank.bnk"));
+    }
+    s.music_leaving.retain(|(_, at)| now <= *at);
+    // F028318: on the real-time clock, every 0.8 to 1.4 x the "Music frequency" (the unit random),
+    // the region's music posted when the music volume is above 0 (none posted without one)
+    if now > s.music_next {
+        let u = s.rand();
+        let (lo, hi) = (s.music_frequency * 0.8, s.music_frequency * 1.4);
+        s.music_next = u * (hi - lo) + lo + now;
+        if let Some(m) = music
+            && s.volume(Channel::Music) > 0.0
+        {
+            s.post(&format!("Music_{m}_Play"), Channel::Music);
+        }
     }
 }
 
@@ -650,13 +694,15 @@ pub fn fights(mut s: ResMut<Sound>, mut game: ResMut<Game>, mut down: Local<Vec<
                 let weapon = match (creature, Some(game.sim.arena.f[me].wielded.category)) {
                     (Some("Gorillo"), _) => "Gorillo_Fhand",
                     (Some(c), _) => c,
+                    // drawWeapon (F039274) sets Weapons by the weapon's category (the table at
+                    // 0x141e60c50; unarmed sets none): polearms sound blunt
                     (None, Some(W::SkillKatanas)) => "Katanas",
                     (None, Some(W::SkillSabres)) => "Sabres",
+                    (None, Some(W::SkillBlunt | W::AttackPolearms)) => "Blunt",
+                    (None, Some(W::SkillHeavy)) => "Heavy",
                     (None, Some(W::SkillHackers)) => "Hackers",
-                    // (stand-in) blunt weapons and polearms: their switch values are not named
-                    (None, Some(W::SkillHeavy | W::SkillBlunt)) => "Heavy_Weapons",
-                    (None, Some(W::AttackPolearms)) => "Sabres",
-                    (None, Some(W::SkillBow)) => "Crossbow",
+                    (None, Some(W::SkillBow)) => "Bow",
+                    (None, Some(W::SkillTurret)) => "Turret",
                     _ if robot => "HtH_Punch_Robot",
                     _ => "HtH_Punch",
                 };
@@ -740,6 +786,10 @@ pub fn fights(mut s: ResMut<Sound>, mut game: ResMut<Game>, mut down: Local<Vec<
         }
     }
     let n = game.sim.folk.len();
+    // a game loaded in the program: those down already make no sound
+    if game.is_added() {
+        *down = game.sim.folk.iter().map(|p| p.down || p.dead).collect();
+    }
     down.resize(n, false);
     for id in 0..n {
         let p = &game.sim.folk[id];
@@ -756,56 +806,89 @@ pub fn fights(mut s: ResMut<Sound>, mut game: ResMut<Game>, mut down: Local<Vec<
     }
 }
 
-/// Footsteps ("Footsteps", Surface_Material and Armor_Worn) of everyone walking near the camera.
-/// (stand-in) Kenshi plays them from its animations foot events, not ported: here a step every 9
-/// units walked (at most 5 a second); the ground is sand (barefoot "BFoot_Sand"), a floor above
-/// it wood ("Wood", "BFoot_Wood"); the armour worn is the heaviest (cloth, leather, chain,
-/// plate), a creature its own body.
-pub fn footsteps(mut s: ResMut<Sound>, game: Res<Game>, time: Res<Time>, mut steps: Local<HashMap<usize, f32>>, _ready: Res<WorldReady>) {
-    if game.paused {
-        return;
+/// GroundType (fcs_enums: sand, grass, concrete, wood, metal, water, mud, snow, dirt): the
+/// Surface_Material values F051548 gives, shod and barefoot (its two tables; past them, 9 as
+/// some biomes have, a null name: the switch is left as it was).
+const SURFACES: [&str; 9] = ["Sand", "Grass", "Concrete", "Wood", "Metal", "Water", "Mud", "Snow", "Dirt"];
+const SURFACES_BAREFOOT: [&str; 9] =
+    ["BFoot_Sand", "BFoot_Grass", "Concrete", "BFoot_Wood", "BFoot_Metal", "Water", "Mud", "Snow", "BFoot_Dirt"];
+/// F040611 works the terrain's surface out only this near the camera's target (squared).
+const SURFACE_NEAR: f32 = 120_000.0;
+/// Standing lower than this is in water (F040611).
+const SURFACE_WATER: f32 = 100.0;
+
+/// @fn F051635
+///
+/// The ground type of the terrain under a point: its BIOMES' "ground type", "slope type",
+/// "grass type", "dirt type" or "road type" (F051626's five, by the terrain layer there,
+/// F051634); off the map (no layer) concrete.
+pub fn terrain_surface(data: &kenshi_data::GameDataContainer, biome: Option<&str>, layer: Option<usize>) -> i32 {
+    const KEYS: [&str; 5] = ["ground type", "slope type", "grass type", "dirt type", "road type"];
+    let Some(layer) = layer else { return 2 };
+    let b = biome.and_then(|b| data.get(b));
+    KEYS.get(layer).and_then(|k| b.and_then(|b| b.ints.get(*k).copied())).unwrap_or(0)
+}
+
+/// A footstep's switches (the animations' "Footsteps" events, `kenshi.rs` footsteps): the
+/// Surface_Material and Armor_Worn of person `id` at `at` (scene).
+///
+/// Surface (F040611, kept per character as F039207 does): standing below 100 water; on the
+/// terrain, within ~346 of the camera's target, `terrain` (`terrain_surface`), farther the
+/// value it had; inside a building its "interior material" (Building +0x21c), on one's floor
+/// outside its "exterior material" (+0x220). Barefoot (no boots, not a creature; (assumption)
+/// the original asks the character's sound object) takes the BFoot_ names where there are
+/// some.
+/// (stand-in) The building of a floor outside is the nearest placed one (the original takes
+/// the physics object under the feet).
+///
+/// Armour: the heaviest worn (cloth, leather, chain, plate), a creature its own body.
+pub fn footstep_switches(s: &mut Sound, game: &Game, id: usize, at: Vec3, terrain: i32) -> (&'static str, &'static str) {
+    let p = &game.sim.folk[id];
+    let (_, creature) = race_sound(game, p.id);
+    let ground = game.ground(at.x, at.z);
+    let floor = at.y > ground + 3.0;
+    let boots = p.inventory.equipped().any(|i| i.kind == Some(kenshi_data::ItemType::Armour) && i.slot == 9);
+    let barefoot = !(boots || creature.is_some());
+    let stands = p.mover.position_units()[1];
+    let near = (at - game.focus).length_squared() < SURFACE_NEAR;
+    let index = if stands < SURFACE_WATER {
+        Some(5)
+    } else if let Some(b) = p.inside {
+        let rec = game.sim.placed.get(b).and_then(|pl| game.sim.data.get(&pl.building));
+        Some(rec.and_then(|r| r.ints.get("interior material").copied()).unwrap_or(0))
+    } else if floor {
+        // (stand-in for the physics object under the feet) the nearest building's
+        let me = p.mover.position_units();
+        let nearest = game.sim.placed.iter().min_by(|a, b| {
+            let d = |q: &[f32; 3]| (q[0] - me[0]).powi(2) + (q[2] - me[2]).powi(2);
+            d(&a.position).total_cmp(&d(&b.position))
+        });
+        let rec = nearest.and_then(|pl| game.sim.data.get(&pl.building));
+        Some(rec.and_then(|r| r.ints.get("exterior material").copied()).unwrap_or(0))
+    } else if near || !s.surfaces.contains_key(&id) {
+        Some(terrain)
+    } else {
+        None
+    };
+    let table = if barefoot { &SURFACES_BAREFOOT } else { &SURFACES };
+    if let Some(name) = index.and_then(|i| usize::try_from(i).ok()).and_then(|i| table.get(i)) {
+        s.surfaces.insert(id, name);
     }
-    let dt = time.delta_secs();
-    for p in &game.sim.folk {
-        if p.down || p.dead || p.carried_by.is_some() || p.speed < 2.0 {
-            steps.remove(&p.id);
-            continue;
+    let surface = s.surfaces.get(&id).copied().unwrap_or(table[0]);
+    let armour = match creature {
+        Some(c) => c,
+        None => {
+            let heaviest = p
+                .inventory
+                .equipped()
+                .filter(|i| i.kind == Some(kenshi_data::ItemType::Armour))
+                .filter_map(|i| game.sim.data.get(&i.record).and_then(|r| r.ints.get("material type").copied()))
+                .max()
+                .unwrap_or(0);
+            ["Cloth", "Leather", "Chain", "Plate"][heaviest.clamp(0, 3) as usize]
         }
-        let at = Vec3::from(p.mover.position_units()) - game.zone.origin;
-        if at.distance(game.focus) > 700.0 {
-            continue;
-        }
-        let t = steps.entry(p.id).or_insert(0.0);
-        *t += dt;
-        let every = (9.0 / p.speed).clamp(0.2, 0.9);
-        if *t < every {
-            continue;
-        }
-        *t = 0.0;
-        let (_, creature) = race_sound(&game, p.id);
-        let floor = at.y > game.ground(at.x, at.z) + 3.0;
-        let boots = p.inventory.equipped().any(|i| i.kind == Some(kenshi_data::ItemType::Armour) && i.slot == 9);
-        let surface = match (floor, boots || creature.is_some()) {
-            (true, true) => "Wood",
-            (true, false) => "BFoot_Wood",
-            (false, true) => "sand",
-            (false, false) => "BFoot_Sand",
-        };
-        let armour = match creature {
-            Some(c) => c,
-            None => {
-                let heaviest = p
-                    .inventory
-                    .equipped()
-                    .filter(|i| i.kind == Some(kenshi_data::ItemType::Armour))
-                    .filter_map(|i| game.sim.data.get(&i.record).and_then(|r| r.ints.get("material type").copied()))
-                    .max()
-                    .unwrap_or(0);
-                ["Cloth", "Leather", "Chain", "Plate"][heaviest.clamp(0, 3) as usize]
-            }
-        };
-        s.post_with("Footsteps", Some(at), &[("Surface_Material", surface), ("Armor_Worn", armour)], Channel::Footstep);
-    }
+    };
+    (surface, armour)
 }
 
 /// The interface: a button "General_Click"; a right click with people selected "Right_Click";
@@ -915,15 +998,20 @@ pub fn indoors(mut s: ResMut<Sound>, open: Res<super::OpenBuildings>, views: Que
 /// The buildings sounding near the camera (BUILDING "sounds" -> AMBIENT_SOUND: its "emitter"
 /// played by "Start_Emitter" with Emitters, at the building): started within its "cutoff" x 10
 /// units of the camera's focus, stopped past it.
-/// (assumption) "cutoff" is in metres (x 10 units); a building needing power sounds anyway (the
-/// power grid of others' towns is not kept); "intensity", "efficiency multiplier" and "chance"
-/// are not read.
+/// The emitter (F028321) keeps "cutoff" squared x 100 (units squared: the cutoff is in metres),
+/// "intensity" and "efficiency multiplier" x 100; the intensity goes to the emitter's RTPC
+/// (F028308), which is not read here (no RTPCs are). (assumption) A building needing power
+/// sounds anyway (the power grid of others' towns is not kept); "chance" is not read.
 pub fn emitters(mut s: ResMut<Sound>, game: Res<Game>, time: Res<Time>, mut on: Local<HashMap<u64, ()>>, mut every: Local<f32>, _ready: Res<WorldReady>) {
     *every -= time.delta_secs();
     if *every > 0.0 {
         return;
     }
     *every = 1.0;
+    // a game loaded in the program: its emitters start afresh
+    if game.is_added() {
+        on.clear();
+    }
     let focus = game.focus + game.zone.origin;
     let mut want = HashMap::new();
     for (k, p) in game.sim.placed.iter().enumerate() {
@@ -955,6 +1043,10 @@ pub fn emitters(mut s: ResMut<Sound>, game: Res<Game>, time: Res<Time>, mut on: 
 /// "Building_Place" (Outdoors), a building finished the notification "Building_Complete".
 /// (assumption) Kenshi starts these from its tasks (not decompiled): here from the state.
 pub fn work(mut s: ResMut<Sound>, game: Res<Game>, mut was: Local<HashMap<usize, (bool, bool, bool)>>, mut sites: Local<(usize, usize)>, _ready: Res<WorldReady>) {
+    if game.is_added() {
+        was.clear();
+        *sites = (0, 0);
+    }
     for p in game.sim.folk.iter().filter(|p| p.player) {
         let at = Some(Vec3::from(p.mover.position_units()) - game.zone.origin);
         let still = p.speed < 2.0 && !p.down;
@@ -996,7 +1088,7 @@ pub fn dismantled(mut s: ResMut<Sound>, game: Res<Game>, mut was: Local<u32>, _r
 pub fn doors(mut s: ResMut<Sound>, game: Res<Game>, mut was: Local<Vec<(i32, bool)>>, _ready: Res<WorldReady>) {
     use kenshi_game::sim::{DOOR_CLOSED, DOOR_CLOSING, DOOR_OPEN, DOOR_OPENING};
     let doors = &game.sim.door_states;
-    if was.len() != doors.len() {
+    if was.len() != doors.len() || game.is_added() {
         *was = doors.iter().map(|d| (d.phase, d.broken)).collect();
         return;
     }
@@ -1022,27 +1114,34 @@ pub fn doors(mut s: ResMut<Sound>, game: Res<Game>, mut was: Local<Vec<(i32, boo
     }
 }
 
-/// Creatures near the camera now and then call out ("VO_Creature_Passive", Creature_VO).
-/// (assumption) One creature in view every 6 to 14 s; Kenshi's own timing is not decompiled.
-pub fn creatures(mut s: ResMut<Sound>, game: Res<Game>, time: Res<Time>, mut next: Local<f32>, _ready: Res<WorldReady>) {
+/// @fn F039241
+///
+/// CharacterAnimal's update (vtable slot 29): each animal, once its timer is past (the real-time
+/// clock at 0x1421349b0, F028343: microseconds since it started, running while paused too),
+/// unless it is down, calls out "VO_Creature_Passive" (its Creature_VO) when not fighting
+/// (F02f220) and within 1000 of the camera's target (F039186: squared 1e6), and its next call
+/// comes 20 to 60 s later (20 + the unit random x 40).
+/// (assumption) The timer starts at 0: its first call comes at once.
+pub fn creatures(mut s: ResMut<Sound>, game: Res<Game>, time: Res<Time>, mut next: Local<HashMap<usize, f32>>, _ready: Res<WorldReady>) {
+    if game.is_added() {
+        next.clear();
+    }
     let now = time.elapsed_secs();
-    if now < *next {
-        return;
-    }
-    *next = now + 6.0 + s.rand() * 8.0;
-    let near: Vec<usize> = game
-        .sim
-        .folk
-        .iter()
-        .filter(|p| p.race.is_some() && !p.down && !p.dead)
-        .filter(|p| (Vec3::from(p.mover.position_units()) - game.zone.origin).distance(game.focus) < 800.0)
-        .map(|p| p.id)
-        .collect();
-    if near.is_empty() {
-        return;
-    }
-    let id = near[(s.rand() * near.len() as f32) as usize % near.len()];
-    if let (_, Some(c)) = race_sound(&game, id) {
-        s.post_with("VO_Creature_Passive", Some(place(&game, id)), &[("Creature_VO", c)], Channel::Vo);
+    for p in &game.sim.folk {
+        if p.dead || p.down {
+            continue;
+        }
+        let (_, Some(c)) = race_sound(&game, p.id) else { continue };
+        if now <= next.get(&p.id).copied().unwrap_or(0.0) {
+            continue;
+        }
+        if !game.sim.arena.f.get(p.id).is_some_and(|f| f.active) {
+            let at = place(&game, p.id);
+            if at.distance_squared(game.focus) < 1.0e6 {
+                s.post_with("VO_Creature_Passive", Some(at), &[("Creature_VO", c)], Channel::Vo);
+            }
+        }
+        let u = s.rand();
+        next.insert(p.id, now + u * 40.0 + 20.0);
     }
 }

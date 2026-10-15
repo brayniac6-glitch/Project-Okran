@@ -255,8 +255,17 @@ impl<'a, A: Agent> Planner<'a, A> {
             }
         }
         for (entry, is_target) in needed {
+            // the target condition's children take the finder's target (F001bfc7: each hook
+            // first clears it to none, then fills it when it finds one): none when it finds
+            // nothing, so the solvers that need a target (+0x48) are passed over
             let mut child_target = target.clone();
-            if is_target && let Some(t) = self.agent.find_target(d, &target, pos) {
+            if is_target && d.hook.is_some() {
+                child_target = self.agent.no_target();
+                if let Some(t) = self.agent.find_target(d, &target, pos) {
+                    child_target = t.clone();
+                    self.nodes[n].target2 = t;
+                }
+            } else if is_target && let Some(t) = self.agent.find_target(d, &target, pos) {
                 child_target = t.clone();
                 self.nodes[n].target2 = t;
             }

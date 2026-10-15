@@ -28,6 +28,27 @@ pub const BASH_EVERY: f32 = 1.5;
 const BASH_REACH: f32 = 70.0;
 
 impl Sim {
+    /// DA_OPEN_NEAREST_GATE (F040912 case 0x36, F029271): the shut gate of `speaker`'s town
+    /// nearest it starts opening; (assumption) unlocked to do so.
+    pub fn open_nearest_gate(&mut self, speaker: usize) {
+        let at = self.folk[speaker].mover.position_units();
+        let town = self.folk[speaker].town;
+        let gate = (0..self.door_states.len())
+            .filter(|&d| self.is_gate(d) && !self.door_states[d].gone && self.door_states[d].phase == crate::sim::DOOR_CLOSED)
+            .filter(|&d| town.is_none_or(|t| self.towns.get(t).is_some_and(|tw| tw.contains(self.door_states[d].door.position, 1.0))))
+            .min_by(|&a, &b| {
+                let l = |d: usize| (self.door_states[d].door.position[0] - at[0]).hypot(self.door_states[d].door.position[2] - at[2]);
+                l(a).total_cmp(&l(b))
+            });
+        if let Some(d) = gate {
+            self.door_states[d].locked = false;
+            self.door_states[d].start_open();
+            if std::env::var("KENSHI_DOOR_DEBUG").is_ok() {
+                eprintln!("door: {speaker} has gate {d} opened");
+            }
+        }
+    }
+
     /// The door within `reach` (units) of `at`, nearest first.
     pub fn door_near(&self, at: [f32; 3], reach: f32) -> Option<usize> {
         self.door_states
@@ -39,9 +60,42 @@ impl Sim {
             .map(|(k, ..)| k)
     }
 
-    /// F037658: the player clicks a door: open, it starts closing; shut, it starts opening (a
-    /// locked one only if it is the player's own). Returns what to tell the player, if anything.
-    /// (stand-in) The door answers at once, without a character walking to it.
+    /// The "Open" order (task 72, orderName F044568): the first of `ids` free walks to door `d`
+    /// and toggles it there (`door_order_tick`).
+    pub fn order_door(&mut self, ids: &[usize], d: usize) {
+        let Some(&id) = ids.iter().find(|&&i| self.folk.get(i).is_some_and(|p| !p.down && p.carried_by.is_none())) else { return };
+        let Some(s) = self.door_states.get(d) else { return };
+        let at = s.door.position;
+        self.order_move(&[id], at);
+        self.folk[id].door_order = Some(d);
+    }
+
+    /// The door orders each tick: one within reach of its door (3 x DOOR_REACH of the door or its
+    /// inside point) toggles it; one that stopped short walks on.
+    pub fn door_order_tick(&mut self) {
+        for id in 0..self.folk.len() {
+            let Some(d) = self.folk[id].door_order else { continue };
+            if self.folk[id].down || d >= self.door_states.len() {
+                self.folk[id].door_order = None;
+                continue;
+            }
+            let me = self.folk[id].mover.position_units();
+            let s = &self.door_states[d];
+            let near = |q: [f32; 3]| (q[0] - me[0]).hypot(q[2] - me[2]) < crate::sim::DOOR_REACH * 3.0;
+            if near(s.door.position) || near(s.inside) {
+                self.folk[id].door_order = None;
+                if let Some(say) = self.toggle_door(d) {
+                    self.messages.push(say.to_string());
+                }
+            } else if self.folk[id].ai.orders.is_empty() && self.folk[id].mover.velocity[0].hypot(self.folk[id].mover.velocity[2]) < 0.5 {
+                let at = s.door.position;
+                self.order_move(&[id], at);
+            }
+        }
+    }
+
+    /// F037658: a door toggled: open, it starts closing; shut, it starts opening (a locked one
+    /// only if it is the player's own). Returns what to tell the player, if anything.
     pub fn toggle_door(&mut self, d: usize) -> Option<&'static str> {
         let own = self.door_owner(d).as_deref() == Some(PLAYER_FACTION);
         let s = self.door_states.get_mut(d)?;
@@ -148,8 +202,22 @@ impl Sim {
         self.sync_barriers();
         // everyone's pass through the gates
         let player = self.faction_number(PLAYER_FACTION);
-        let factions: Vec<Option<String>> = self.folk.iter().map(|p| if p.player { Some(PLAYER_FACTION.to_string()) } else { p.faction.clone() }).collect();
-        let numbers: Vec<u32> = factions.iter().map(|f| f.as_deref().map_or(u32::MAX, |f| self.faction_number(f))).collect();
+        // (each tick: the numbers looked up without copying the names)
+        let mut numbers: Vec<u32> = Vec::with_capacity(self.folk.len());
+        for i in 0..self.folk.len() {
+            let n = if self.folk[i].player {
+                player
+            } else {
+                match self.folk[i].faction.as_deref().and_then(|f| self.faction_numbers.get(f).copied()) {
+                    Some(n) => n,
+                    None => match self.folk[i].faction.clone() {
+                        Some(f) => self.faction_number(&f),
+                        None => u32::MAX,
+                    },
+                }
+            };
+            numbers.push(n);
+        }
         for (p, &n) in self.folk.iter_mut().zip(&numbers) {
             p.pathing.pass = Pass { faction: if p.player { player } else { n }, player: p.player, ignore: false };
         }

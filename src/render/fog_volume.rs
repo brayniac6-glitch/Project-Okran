@@ -12,6 +12,12 @@
 //! F023552 (additive: source alpha + one; else alpha blending), F023246 / F023247 / F023243
 //! (the effect's "fog fade in duration" and "fog fade out duration" fade the volumes' alpha).
 //! (assumption) "ground movement" is not ported: a volume keeps its offset from the effect.
+//!
+//! The map's fog features (kenshi_world::fog_features: the swamps' mists and the other standing
+//! fogs) are drawn the same way, and their plane volumes as FogPlaneVolume (F023580 / F023581,
+//! F023573: the hull of the seven planes, where each three meet inside the rest; fog.hlsl
+//! fog_planes_fs: the ray's span between the planes, its edges softened by edgeBlur, brightened
+//! by the sun's height, and beyond 12000 fogged by the atmosphere and the global fog).
 
 use crate::terrain_material::MainLight;
 use bevy::mesh::MeshVertexBufferLayoutRef;
@@ -81,10 +87,29 @@ pub struct FogVolumeParams {
     pub axis: Vec4,
     /// rgb x light, alpha x fade.
     pub colour: Vec4,
-    /// x: density; y: edgeBlur; z: additive (1); w: unused.
+    /// x: density; y: edgeBlur; z: additive (1); w: 1 a plane volume.
     pub consts: Vec4,
     /// xyz: the scene origin in world units (the sphere's break-up reads world positions).
     pub origin: Vec4,
+    /// A plane volume's planes (world units: normal, w; inside where normal . p < w).
+    pub planes: [Vec4; 7],
+    /// The light a plane volume reads: sunDirectionReal (xyz) and sunColour.w; the horizon,
+    /// fog parameters and colour (SharedSkyParams, SkyXFogParams, SharedFogParams).
+    pub sun_real: Vec4,
+    pub horizon: Vec4,
+    pub fog: Vec4,
+    pub fog_colour: Vec4,
+}
+
+impl FogVolumeParams {
+    /// A plane volume's light (fog_planes_fs: sunDirectionReal, sunColour.w, the atmosphere's
+    /// horizon and fog parameters, the global fog's colour).
+    pub fn set_light(&mut self, light: &MainLight) {
+        self.sun_real = light.sun_real.extend(light.sun_colour.w);
+        self.horizon = light.horizon;
+        self.fog = light.fog;
+        self.fog_colour = light.fog_colour;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -106,6 +131,35 @@ pub struct KenshiFogVolumeMaterial {
 }
 
 impl KenshiFogVolumeMaterial {
+    /// A fog feature's plane volume (F023580 / F023573) with its colour, density and edge,
+    /// lit by `light`, and its hull (scene space): None when the planes close nothing.
+    pub fn for_planes(colour: [f32; 4], distance: f32, edge: f32, planes: &[[f32; 4]; 7], light: &MainLight, origin: Vec3) -> Option<(KenshiFogVolumeMaterial, Mesh)> {
+        let (corners, faces) = kenshi_world::fog_features::plane_hull(planes);
+        let mut positions: Vec<[f32; 3]> = Vec::new();
+        for f in faces.iter().filter(|f| f.len() >= 3) {
+            for k in 1..f.len() - 1 {
+                for c in [f[0], f[k], f[k + 1]] {
+                    positions.push((Vec3::from(corners[c]) - origin).to_array());
+                }
+            }
+        }
+        if positions.is_empty() {
+            return None;
+        }
+        let mut mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        let mut params = FogVolumeParams {
+            colour: Vec4::from(colour),
+            // F023565: 1 / the distance; F023566: edgeBlur 1 / the edge
+            consts: Vec4::new(if distance > 0.0 { 1.0 / distance } else { 1.0 }, if edge != 0.0 { 1.0 / edge } else { 0.0 }, 0.0, 1.0),
+            origin: origin.extend(0.0),
+            planes: planes.map(Vec4::from),
+            ..default()
+        };
+        params.set_light(light);
+        Some((KenshiFogVolumeMaterial { params }, mesh))
+    }
+
     /// The material and the hull's transform (scene space) for `d`, lit by `light`.
     /// The hull is the volume's mesh as Kenshi scales it, a little larger so that the
     /// shader's exact shape stays inside it.
@@ -126,6 +180,7 @@ impl KenshiFogVolumeMaterial {
                         colour,
                         consts: Vec4::new(density, 0.0, if v.additive { 1.0 } else { 0.0 }, 0.0),
                         origin: origin.extend(0.0),
+                        ..default()
                     },
                     Transform::from_translation(start).with_scale(Vec3::splat(0.5 * scale * 1.05)),
                 )
@@ -143,6 +198,7 @@ impl KenshiFogVolumeMaterial {
                         colour,
                         consts: Vec4::new(density, 1.0 / 300.0, if v.additive { 1.0 } else { 0.0 }, 0.0),
                         origin: origin.extend(0.0),
+                        ..default()
                     },
                     Transform::from_translation((start + end) * 0.5)
                         .with_rotation(rot)

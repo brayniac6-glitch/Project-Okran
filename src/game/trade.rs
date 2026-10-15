@@ -5,11 +5,15 @@
 //! Town::setup (trade prices), F049418 ShopTraderInventory::restock, F049413 fillFromVendors,
 //! F049397 VendorList::generate; GLOBAL CONSTANTS price multipliers (F046688).
 //!
-//! (stand-in) Items are priced from their record's "value": weapons' and armour's computed
-//! values (material, maker, quality) are not ported, nor the per-item quality factor
-//! (helper 0x1400033c8). The category multipliers are applied by item kind (assumption: the
-//! game folds them into the stored value). A vendor list entry's weight is its first ref value,
-//! else its second (assumption); weapon manufacturers are not picked. Town wealth is 1.
+//! Items are priced from their value: weapons' and armour's computed from material, maker and
+//! quality (kenshi_char::quality, F047094), shops' weapons made by a maker from their vendor
+//! lists' "weapon manufacturers" (F049397). The category multipliers are applied by item kind
+//! (assumption: the game folds them into the stored value). A vendor list entry's weight is its
+//! first ref value, else its second (assumption). Town wealth is 1.
+//! F044582 (helper 0x1400033c8, the last factor of F044608, F047182 and F047262): an item
+//! stolen (F049fb2: its owner, +0x140, not its holder's side, +0x160) from the player's
+//! faction is worth half, then the trade factor of the town its container belongs to. Items
+//! carry no owner here, so none is stolen; the town factor is the trade goods' (`prices.at`).
 use kenshi_char::inventory::{Inventory, Item, Section};
 use kenshi_data::{GameData, GameDataContainer, ItemType};
 use std::collections::HashMap;
@@ -99,6 +103,10 @@ impl TradePrices {
     }
 }
 
+/// Armour::value's multiplier for faction uniforms (F046688 sets it to 0.3, not read from the
+/// GLOBAL CONSTANTS).
+pub const UNIFORM_VALUE: f32 = 0.3;
+
 /// What one of `item` is worth in `town` (F044608 / F047182 / F047262 without the sale
 /// multiplier): its record value times its category's price multiplier, trade goods times the
 /// town's factor, food by how much is left.
@@ -124,8 +132,10 @@ pub fn value(item: &Item, data: &GameDataContainer, c: &PriceConstants, prices: 
         }
     };
     let eaten = item.food.map_or(1.0, |(full, left)| if full > 0.0 { left / full } else { 1.0 });
+    // F047262: armour branded as a faction's uniform (+0x1e8) is worth UNIFORM_VALUE of it
+    let branded = if item.kind == Some(ItemType::Armour) && item.uniform.is_some() { UNIFORM_VALUE } else { 1.0 };
     let _ = r;
-    (base * cat * eaten).max(0.0)
+    (base * cat * eaten * branded).max(0.0)
 }
 
 /// What a trader asks for one of `item`: its value.
@@ -312,10 +322,17 @@ mod tests {
             maker: None,
             model: None,
             uniform: None,
+            contents: None,
+            carry: 1.0,
         };
         assert_eq!(buy_price(&meat, &data, &c, &prices, None), 75);
         assert_eq!(sell_price(&meat, &data, &c, &prices, None), 38);
         let half = Item { food: Some((30.0, 15.0)), ..meat.clone() };
         assert_eq!(buy_price(&half, &data, &c, &prices, None), 38);
+        // armour branded as a faction's uniform: 0.3 of its worth, bought or sold (F047262)
+        let coat = Item { kind: Some(ItemType::Armour), slot: 3, food: None, value: 1000, ..meat.clone() };
+        let branded = Item { uniform: Some("Holy Nation".into()), ..coat.clone() };
+        assert_eq!(buy_price(&branded, &data, &c, &prices, None), (buy_price(&coat, &data, &c, &prices, None) as f32 * 0.3).round() as i32);
+        assert!(sell_price(&branded, &data, &c, &prices, None) < sell_price(&coat, &data, &c, &prices, None));
     }
 }

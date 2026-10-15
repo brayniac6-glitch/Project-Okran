@@ -7,6 +7,7 @@
 
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::view
+#import kenshi::interior::interior_clipped
 #import kenshi::lighting::{apply_fog, local_lights, main_light, sun_shadow, make_wet, reflection_dir, reflection_mip, to_screen}
 
 struct ObjectParams {
@@ -56,6 +57,7 @@ struct ObjectParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(15) var shadow_jitter: texture_2d<f32>;
 // CONSTRUCTION's scaffold
 @group(#{MATERIAL_BIND_GROUP}) @binding(16) var grid_map: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(17) var interior_mask: texture_2d<f32>;
 
 const MAP_BIAS: f32 = -0.5;
 
@@ -84,6 +86,10 @@ fn triplanar_normal(tex: texture_2d<f32>, s: sampler, bias: f32, coord: vec3<f32
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    // CLIP_INTERIOR: grass and foliage
+    if (p.world.y > 0.5 && interior_clipped(interior_mask, in.position, in.world_position.xyz)) {
+        discard;
+    }
     let origin = p.origin_exposure.xyz;
     let world_pos = in.world_position.xyz + origin;
 #ifdef VERTEX_COLORS
@@ -237,6 +243,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
     }
 
     let camera = view.world_position + origin;
+    // the water reflection's view ("water reflection" 2 and up draws queue 50 there; the only
+    // camera under the water): its near plane at the water (harness: the discard), the
+    // G-buffer's first target (writeAlbedo: the albedo's luma, YCoCg Y, in red)
+    if (camera.y < 100.0) {
+        if (world_pos.y < 100.0) {
+            discard;
+        }
+        return vec4<f32>(0.25 * diffuse.r + 0.5 * diffuse.g + 0.25 * diffuse.b, 0.0, 0.0, 1.0);
+    }
     let view_dir = normalize(camera - world_pos);
     let world_size = p.world.x;
     let ambient_mult = textureSample(ambient_map, ambient_sampler, (world_pos.xz + world_size * 0.5) / world_size);

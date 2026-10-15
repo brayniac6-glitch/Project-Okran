@@ -5,7 +5,9 @@
 //! their "% of how commonly used" (only the faction's "hairstyles" when it lists any; none when
 //! the character is "shaved"), a beard for a man the same way, a hair colour of the race's "hair
 //! colors" by their shares ("color 1", 0xRRGGBB), and what they wear: the armour equipped in
-//! their inventory, a backpack among it.
+//! their inventory, a backpack among it; their clothes painted with the CHARACTER's "color"
+//! (F037403), else (assumption) the faction's "color" (the game's fallback, AppearanceHuman
+//! +0x158, is not traced).
 //!
 //! (assumption) The game's own rolls (and its saved morph faces, "morph num") are not decompiled:
 //! each person's are drawn from a generator seeded by their number, so a look stays the same.
@@ -23,13 +25,16 @@ pub fn look_of(data: &GameDataContainer, install: &std::path::Path, p: &Person, 
     let (race, female, mut roll) = kenshi_game::looks_roll::race_and_sex(data, install, p, fallback_race)?;
     let ch = p.character.as_deref().and_then(|c| data.get(c))?;
     let faction = p.faction.as_deref().and_then(|f| data.get(f));
+    let colour = ch.refs("color").first().or_else(|| faction.and_then(|f| f.refs("color").first())).map(|(c, _)| c.clone());
     let mut spec = CharacterSpec::new(&race.name);
     spec.female = female;
+    spec.colour = colour.clone();
     // a named character: its body file's head, hair, beard and hair colour
     if let Some(body) = kenshi_game::body_file::body_of(install, data, &ch.string_id) {
         let shaved = p.shaved || ch.bools.get("shaved").copied().unwrap_or(false);
         let mut spec = spec_of_body(data, race, female, &body, shaved);
         spec.wear = worn(p);
+        spec.colour = colour;
         return Some(spec);
     }
     let heads = refs(data, race, if female { "heads female" } else { "heads male" });
@@ -138,5 +143,5 @@ pub fn worn(p: &Person) -> Vec<String> {
 
 /// A look's key: people who look the same share one body.
 pub fn key(spec: &CharacterSpec) -> String {
-    format!("{}|{}|{:?}|{:?}|{:?}|{:?}", spec.race, spec.female, spec.head, spec.hairs, spec.wear, spec.hair_colour.map(|c| (c * 255.0) as u8))
+    format!("{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}", spec.race, spec.female, spec.head, spec.hairs, spec.wear, spec.hair_colour.map(|c| (c * 255.0) as u8), spec.colour)
 }

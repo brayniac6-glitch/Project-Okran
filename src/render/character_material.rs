@@ -1,7 +1,9 @@
 //! Kenshi's character materials (port_map `render`): data/materials/deferred/character.hlsl
-//! main_fs for skin (body and head), skin.hlsl main_fs for skinned clothing (glossMult 1, no
-//! colouring: (assumption) the clothing's colour map is not read, metalness 0) and character.hlsl
-//! hair_fs for hair (its colour composed into the image; specularMult (assumption) 0), lit by
+//! main_fs for skin (body and head), skin.hlsl main_fs for skinned clothing (glossMult 0: the
+//! game never sets it on the Skinned material, only F046402 on objects; the colour map's
+//! COLOURING and metalness when the piece is painted, `ClothPaint`, else colormap_default.dds:
+//! none) and character.hlsl
+//! hair_fs for hair (its colour composed into the image; specularMult the hair's "specular", F037428), lit by
 //! the deferred main light. See kenshi_character.wgsl.
 //!
 //! Harness stand-ins: the body and head are drawn as their split meshes (Kenshi samples the head
@@ -35,6 +37,11 @@ pub struct CharacterParams {
     pub hair_alpha: Vec4,
     pub beard_alpha: Vec4,
     pub hair_colour: Vec4,
+    /// x: 1 with a vest (painted-on clothing) to lay over the skin; y: 1 painted clothing.
+    pub vest: Vec4,
+    /// Painted clothing's color1 and color2 (rgb, paint factor).
+    pub paint1: Vec4,
+    pub paint2: Vec4,
 }
 
 impl CharacterParams {
@@ -90,6 +97,15 @@ pub struct KenshiCharacterMaterial {
     /// The CSM shadows' jitter map (kenshi::lighting::sun_shadow).
     #[texture(12)]
     pub shadow_jitter: Handle<Image>,
+    /// A skin's painted-on clothing: its texture and normal map (the normal map's alpha lays it
+    /// over the skin).
+    #[texture(13)]
+    pub vest: Handle<Image>,
+    #[texture(14)]
+    pub vest_normal: Handle<Image>,
+    /// Painted clothing's colour map (Skinned's colorMap: trilinear).
+    #[texture(15)]
+    pub color_map: Handle<Image>,
 }
 
 impl Material for KenshiCharacterMaterial {
@@ -132,7 +148,7 @@ impl TerrainLook {
     pub fn character(
         &mut self,
         assets: &AssetServer,
-        images: &mut Assets<Image>,
+        _images: &mut Assets<Image>,
         surface: &Surface,
         origin: Vec3,
     ) -> KenshiCharacterMaterial {
@@ -140,6 +156,8 @@ impl TerrainLook {
         let white = "data/materials/white.dds";
         let none = "data/materials/nothing.dds";
         let mut params = CharacterParams::default();
+        let mut vest: Option<(Handle<Image>, Handle<Image>)> = None;
+        let mut color_map = None;
         // samplers as the texture units: Skinned's diffuseMap / normalMap trilinear (diffuse
         // mipmap_bias -2 in the shader), Character's diffuse, normal, hairMap and beardMap with
         // border addressing (colour 0 0 0 0)
@@ -168,23 +186,27 @@ impl TerrainLook {
                 self.image_with(assets, t.as_deref().unwrap_or(white), skin),
                 self.image_with(assets, n.as_deref().unwrap_or(flat), skin),
             ),
-            Surface::Painted(img, n) => {
-                let mut img = img.clone();
-                // Kenshi samples raw: the composed image's bytes are taken as they are
-                img.texture_descriptor.format = bevy::render::render_resource::TextureFormat::Rgba8Unorm;
-                if let Some(d) = skin.descriptor() {
-                    img.sampler = bevy::image::ImageSampler::Descriptor(d);
-                }
-                (0.0, images.add(img), self.image_with(assets, n.as_deref().unwrap_or(flat), skin))
+            Surface::Vested(t, n, vd, vn) => {
+                vest = Some((self.image_with(assets, vd, skin), self.image_with(assets, vn, skin)));
+                params.vest = Vec4::new(1.0, 0.0, 0.0, 0.0);
+                (0.0, self.image_with(assets, t.as_deref().unwrap_or(white), skin), self.image_with(assets, n.as_deref().unwrap_or(flat), skin))
             }
             Surface::Creature(t, n) => (
                 3.0,
                 self.image_with(assets, t.as_deref().unwrap_or(white), Sampling::Trilinear),
                 self.image_with(assets, n.as_deref().unwrap_or(flat), Sampling::Trilinear),
             ),
-            Surface::Cloth(t, n) => (
+            Surface::Cloth(t, n, paint) => (
                 1.0,
-                self.image_with(assets, t.as_deref().unwrap_or(white), Sampling::Trilinear),
+                {
+                    if let Some(pt) = paint {
+                        color_map = Some(self.image_with(assets, &pt.color_map, Sampling::Trilinear));
+                        params.vest.y = 1.0;
+                        params.paint1 = Vec4::from(pt.colours[0]);
+                        params.paint2 = Vec4::from(pt.colours[1]);
+                    }
+                    self.image_with(assets, t.as_deref().unwrap_or(white), Sampling::Trilinear)
+                },
                 self.image_with(assets, n.as_deref().unwrap_or(flat), Sampling::Trilinear),
             ),
             Surface::Hair(_, card) => {
@@ -203,7 +225,8 @@ impl TerrainLook {
                 )
             }
         };
-        params.kind = Vec4::new(kind, 1.0, 0.4, WATER_HEIGHT);
+        // y: glossMult, never set on the Skinned material (0)
+        params.kind = Vec4::new(kind, 0.0, 0.4, WATER_HEIGHT);
         params.origin_exposure = origin.extend(0.0);
         params.world = Vec4::new(kenshi_world::WORLD_SIZE, 0.0, 0.0, 0.0);
         params.set_light(&self.light);
@@ -221,6 +244,9 @@ impl TerrainLook {
             hair_map,
             beard_map,
             shadow_jitter: self.image(assets, "data/materials/white-noise.png"),
+            vest: vest.as_ref().map_or_else(|| self.image_with(assets, none, Sampling::Border), |v| v.0.clone()),
+            vest_normal: vest.map_or_else(|| self.image_with(assets, none, Sampling::Border), |v| v.1),
+            color_map: color_map.unwrap_or_else(|| self.image_with(assets, "data/items/colormap_default.dds", Sampling::Trilinear)),
         }
     }
 }

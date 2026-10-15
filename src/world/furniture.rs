@@ -155,6 +155,38 @@ pub struct Container {
     pub size: (u32, u32),
 }
 
+/// An item spot of a building's layout (F037792, an ITEM_PLACEMENT_GROUP instance): the group,
+/// its world position (units), turn (quaternion w, x, y, z) and the placement it belongs to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItemSpot {
+    pub group: String,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub placement: usize,
+}
+
+/// The item spots of `placements`: their buildings' and layouts' ITEM_PLACEMENT_GROUP
+/// instances.
+pub fn item_spots(data: &GameDataContainer, layouts: &Layouts, placements: &[Placement]) -> Vec<ItemSpot> {
+    let mut out = vec![];
+    for (pi, p) in placements.iter().enumerate() {
+        let Some(b) = data.get(&p.building) else { continue };
+        let base = [p.position[0], p.world_y.unwrap_or(p.position[1]), p.position[2]];
+        let mut found: Vec<&kenshi_io::fcs::Instance> = b.instances.iter().collect();
+        for name in p.interior.iter().chain(&p.exterior) {
+            found.extend(layouts.for_building(data, &p.building, name));
+        }
+        for i in found {
+            if data.get(&i.target).and_then(|t| t.item_type()) != Some(ItemType::ItemPlacementGroup) {
+                continue;
+            }
+            let o = rotate(p.rotation, i.position);
+            out.push(ItemSpot { group: i.target.clone(), position: [base[0] + o[0], base[1] + o[1], base[2] + o[2]], rotation: i.rotation, placement: pi });
+        }
+    }
+    out
+}
+
 /// The containers of `placements`: the buildings with "has inventory", and the furniture in
 /// buildings (their instances, parts and layouts) that has it. Player-buildable storage
 /// (`base`) is left to the base code: here only what towns and ruins place.

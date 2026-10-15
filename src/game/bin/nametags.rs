@@ -1,4 +1,4 @@
-//! Name tags over heads (Kenshi_CharacterNamePanel.layout, F042142) and the mouse pointer
+//! Name tags over heads (Kenshi_CharacterNamePanel.layout, F042118 makes it, F042119 fills it) and the mouse pointer
 //! (data/gui/pointer/kenshi_pointers.xml).
 //!
 //! A name tag: the character's name in the panel's NameText (Kenshi_TextboxStandardText_Large,
@@ -152,8 +152,9 @@ pub fn update(
         });
         let name = if p.name.is_empty() { game.sim.display_name(id) } else { p.name.clone() };
         if let Some(e) = b.get("NameText") {
-            commands.queue(SetCaption(e, name));
             let selected = game.selected.contains(&id);
+            // F042119: the selected's name in brackets ("[" name "]"), the others' as it is
+            commands.queue(SetCaption(e, if selected { format!("[{name}]") } else { name }));
             let c = if selected { Color::WHITE } else { Color::srgb(0.702, 0.702, 0.702) };
             // the caption's text entity is the widget's child: colour it there
             if let Ok(cap) = captions.get(e)

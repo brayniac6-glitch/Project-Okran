@@ -64,7 +64,11 @@ const FUNCTION_WIND: i32 = 5;
 /// Storage (BUILDING_FUNCTIONALITY "function" 13, StorageBuilding).
 const FUNCTION_STORAGE: i32 = 13;
 
-/// A carrier's errand emptying a full machine (Task_EmptyMachine).
+/// A haul's `from` when it empties no machine: a character ditching what it carries
+/// (`routines`, "Ditch items").
+pub const DITCH: usize = usize::MAX;
+
+/// A carrier's errand emptying a full machine (Task_EmptyMachine), or ditching its own load.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Haul {
     /// The machine emptied and the storage it goes to.
@@ -419,6 +423,11 @@ impl Sim {
     /// [`Sim::farm_tick`].
     pub fn production_tick(&mut self, dt: f32) {
         self.drop_operators();
+        // (a machine runs while it makes something, or burns fuel: its spinners turn,
+        // `PlayerBuilding::running`; (assumption) one stopped winds down over two seconds)
+        for b in self.buildings.iter_mut() {
+            b.running = (b.running - dt * 0.5).max(0.0);
+        }
         let data = self.data.clone();
         for (id, b, stat) in self.operators() {
             if !self.is_production(b) {
@@ -479,6 +488,7 @@ impl Sim {
                 }
                 self.buildings[b].taken[k] -= need;
             }
+            self.buildings[b].running = self.power_efficiency(b).clamp(0.0, 1.0);
             // F029325: the products made by whole units
             let pb = &mut self.buildings[b];
             if pb.made.len() < products.len() {
@@ -766,6 +776,9 @@ impl Sim {
         for (k, fuel, rate) in fuelled {
             let Some((item, per)) = fuel else { continue };
             let pb = &mut self.buildings[k];
+            if pb.fuel > 0.0 {
+                pb.running = load.clamp(0.0, 1.0);
+            }
             pb.fuel -= rate * PRODUCTION_SPEED * load * per * dt;
             if pb.fuel <= 0.0 && demand > 0.0 {
                 if self.take_material_at(owner, k, &item) {
@@ -798,15 +811,18 @@ impl Sim {
                 r.bools.get("has inventory").copied().unwrap_or(false) && function_of(&data, r).is_none_or(|(_, f)| f == FUNCTION_STORAGE)
             })
         };
-        // new errands
+        // new errands: a full machine's operator; a machine with anything in it, its auto-hauler
+        // ("Auto-Haul", `orders`)
         for b in 0..self.buildings.len() {
-            if !self.buildings[b].full {
+            let hauler = (0..self.folk.len()).find(|&i| self.folk[i].auto_haul == Some(b) && !self.folk[i].down && self.folk[i].haul.is_none() && self.at_building(i, b));
+            let has_output = self.buildings[b].storage.as_ref().is_some_and(|s| s.sections.iter().any(|x| !x.items.is_empty()));
+            if !self.buildings[b].full && !(hauler.is_some() && has_output) {
                 continue;
             }
             if self.folk.iter().any(|p| p.haul.as_ref().is_some_and(|h| h.from == b)) {
                 continue;
             }
-            let Some(id) = (0..self.folk.len()).find(|&i| self.folk[i].operate == Some(b) && !self.folk[i].down && self.at_building(i, b)) else {
+            let Some(id) = hauler.or_else(|| (0..self.folk.len()).find(|&i| self.folk[i].operate == Some(b) && !self.folk[i].down && self.at_building(i, b))) else {
                 if std::env::var("KENSHI_BUILD_DEBUG").is_ok() && self.tick % 300 == 0 {
                     eprintln!("building {b} full: no operator by it");
                 }
@@ -845,7 +861,9 @@ impl Sim {
             self.buildings[b].full = false;
             let dest = self.buildings[to].at;
             self.order_move(&[id], dest);
-            self.folk[id].operate = Some(b);
+            if self.folk[id].auto_haul != Some(b) {
+                self.folk[id].operate = Some(b);
+            }
             self.folk[id].haul = Some(Haul { from: b, to, items });
         }
         // errands arriving
@@ -859,8 +877,16 @@ impl Sim {
                 continue;
             }
             for record in &h.items {
-                let Some(pos) = self.folk[id].inventory.sections.iter().enumerate().find_map(|(s, sec)| sec.items.iter().position(|p| p.item.record == *record).map(|k| (s, k))) else { continue };
-                let Some(item) = self.folk[id].inventory.take(pos.0, pos.1) else { continue };
+                // (from the worn backpack too)
+                let inv = &mut self.folk[id].inventory;
+                let item = match inv.sections.iter().enumerate().find_map(|(s, sec)| sec.items.iter().position(|p| p.item.record == *record).map(|k| (s, k))) {
+                    Some((s, k)) => inv.take(s, k),
+                    None => inv.bag_mut().and_then(|b| {
+                        let k = b.sections[0].items.iter().position(|p| p.item.record == *record)?;
+                        b.take(0, k)
+                    }),
+                };
+                let Some(item) = item else { continue };
                 if let Some(store) = self.buildings[h.to].storage.as_mut()
                     && !store.add(item.clone(), false)
                 {
@@ -868,7 +894,19 @@ impl Sim {
                 }
             }
             self.folk[id].haul = None;
-            self.order_operate(&[id], h.from);
+            if h.from == DITCH {
+                if std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
+                    eprintln!("{id} ditched {} things into {}", h.items.len(), h.to);
+                }
+                continue;
+            }
+            if self.folk[id].auto_haul == Some(h.from) {
+                // an auto-hauler back to the machine to wait for more
+                let at = self.buildings[h.from].at;
+                self.order_move(&[id], at);
+            } else {
+                self.order_operate(&[id], h.from);
+            }
             if std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
                 eprintln!("{id} emptied building {} into {}", h.from, h.to);
             }
@@ -926,7 +964,25 @@ pub fn take_one(inv: &mut Inventory, record: &str) -> bool {
             return true;
         }
     }
-    false
+    // (and from a worn backpack)
+    inv.bag_mut().is_some_and(|b| take_one(b, record))
+}
+
+/// One of item `record` taken out of `inv`: a single, its stack one less.
+pub fn take_item(inv: &mut Inventory, record: &str) -> Option<kenshi_char::inventory::Item> {
+    for s in &mut inv.sections {
+        if let Some(k) = s.items.iter().position(|p| p.item.record == record) {
+            let mut one = s.items[k].item.clone();
+            one.quantity = 1;
+            if s.items[k].item.quantity > 1 {
+                s.items[k].item.quantity -= 1;
+            } else {
+                s.items.remove(k);
+            }
+            return Some(one);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

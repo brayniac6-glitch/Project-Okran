@@ -83,8 +83,12 @@ pub struct HitContext {
     pub low_strike: bool,
     /// Attack direction code: 1 down, 5 up, 2/3 sideways, 6 ignores part focus.
     pub direction: i32,
-    /// The victim is of a robot race (race flag +0x7c): every hit sounds as plate (material 3).
+    /// The victim is of a robot race (race flag +0x7c): every hit sounds as plate (material 3)
+    /// and wears its parts (applyDamage F040472: their most health falls as a robotic limb's,
+    /// not an animal's).
     pub robot: bool,
+    /// The victim is an animal (Character vtable 0x248).
+    pub animal: bool,
     /// The global damage factor (G2, 0x142133580).
     pub damage_mult: f32,
     pub race_bleed: f32,
@@ -232,6 +236,10 @@ pub fn resolve_hit(
     d.stun *= ctx.damage_mult;
 
     m.apply_damage(i, d, ctx.race_bleed, c);
+    // F040472: a robot race's every part wears as a robotic limb does (not an animal's)
+    if ctx.robot && !ctx.animal && !m.parts[i].robotic {
+        m.parts[i].max_loss += (d.cut + d.pierce + d.blunt) * 0.04 * c.robot_wear_rate;
+    }
     let wound = d.cut.max(d.pierce) * hc.bleed_rate * d.bleed;
     m.wounds.push(wound);
     HitResult {
@@ -346,6 +354,7 @@ mod tests {
             low_strike: false,
             direction: 0,
             robot: false,
+            animal: false,
             damage_mult: 1.0,
             race_bleed: 1.0,
         }

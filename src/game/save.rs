@@ -42,25 +42,33 @@ pub struct SaveGame {
     #[serde(default)]
     pub research: SavedResearch,
     /// The world (`world`): the unique characters dead (the towns follow from them) and the
-    /// campaigns already run. (stand-in) The squads abroad are made again.
+    /// campaigns already run. The squads abroad are kept with `world` (a save from before it
+    /// has them made again).
     #[serde(default)]
     pub dead_uniques: Vec<String>,
     #[serde(default)]
     pub campaigns_run: Vec<(String, u32)>,
-    /// The towns found (the map's).
+    /// The towns found (the map's), and those been at (named on it).
     #[serde(default)]
     pub discovered: Vec<String>,
+    #[serde(default)]
+    pub explored: Vec<String>,
     /// Items on the ground (`loot`): each as an item (its `section` unused), where it lies
     /// (world units) and its turn; and the towns whose loot has spawned.
     #[serde(default)]
     pub ground: Vec<(SavedItem, [f32; 3], f32)>,
     #[serde(default)]
     pub looted: Vec<String>,
+    /// The item spots taken and waiting to fill again (`loot::ItemSpot`): where each is (world
+    /// units) and when it fills (game hours).
+    #[serde(default)]
+    pub spot_dues: Vec<([f32; 3], f64)>,
     /// The containers with something in them: their record, place (world units) and items.
     #[serde(default)]
     pub boxes: Vec<(String, [f32; 3], Vec<SavedItem>)>,
-    /// The wilds' nests (`nests`): where each stands and whether wiped out; (stand-in) their
-    /// camps and people are made again when their ground loads.
+    /// The wilds' nests (`nests`): where each stands and whether wiped out, their camps and
+    /// people kept with `people` (a save from before it has them made again when their ground
+    /// loads).
     #[serde(default)]
     pub nests: Vec<crate::nests::Nest>,
     /// Everyone in the world, by number (empty in older saves), and the zones in the order
@@ -109,6 +117,8 @@ pub struct SavedNpc {
     pub home: Option<usize>,
     pub town: Option<usize>,
     pub destination: Option<usize>,
+    #[serde(default = "grown")]
+    pub age: f32,
     /// Internal units (the mover's).
     pub position: [f32; 3],
     pub facing: [f32; 3],
@@ -121,6 +131,8 @@ pub struct SavedNpc {
     pub jobs: Vec<Vec<SavedTask>>,
     pub attacks_neutrals: bool,
     pub captures: bool,
+    #[serde(default)]
+    pub duties: u8,
     /// A wandering trader's trip: target town, hours to stay, state, when it arrived.
     pub caravan: Option<(Option<usize>, f32, u8, f64)>,
     pub shop: Option<SavedShop>,
@@ -138,7 +150,8 @@ pub struct SavedNpc {
     pub world_squad: Option<usize>,
     pub away: bool,
     pub eat_timer: f32,
-    pub shopped_at: f64,
+    #[serde(default)]
+    pub shopping: Option<crate::shopping::ShoppingList>,
     #[serde(default)]
     pub disguise_blown: f32,
     #[serde(default)]
@@ -173,6 +186,32 @@ pub struct SavedWorld {
     pub dialog_met: Vec<((usize, usize), f64)>,
     #[serde(default)]
     pub dialog_tags: Vec<((usize, usize), u32)>,
+    /// The player's faction ranks and reputations (crate::dialogue::DialogMemory).
+    #[serde(default)]
+    pub ranks: Vec<(String, i32)>,
+    #[serde(default)]
+    pub reputation: Vec<(String, f32)>,
+    #[serde(default)]
+    pub event_count: Vec<((usize, i32), u32)>,
+    #[serde(default)]
+    pub contracts: Vec<crate::dialogue::Contract>,
+    /// Bounties paid out (crate::dialogue::DialogMemory::claimed), campaigns a dialogue
+    /// triggered (due when) and by whom, campaigns locked (crate::world::World).
+    #[serde(default)]
+    pub claimed: Vec<(usize, String)>,
+    #[serde(default)]
+    pub triggered: Vec<(String, f64)>,
+    #[serde(default)]
+    pub trigger_side: Vec<(String, String)>,
+    #[serde(default)]
+    pub campaigns_locked: Vec<String>,
+    /// The uniques whose death the player was involved in (crate::world::World::involved).
+    #[serde(default)]
+    pub involved: Vec<String>,
+    /// The Kenshi save this game was imported from: the base its saves in Kenshi's layout are
+    /// written over (crate::kenshi_save_over).
+    #[serde(default)]
+    pub kenshi_base: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,7 +234,11 @@ pub struct SavedResearch {
     #[serde(default)]
     pub ai_options: crate::sim::AiOptions,
     #[serde(default)]
-    pub advanced: crate::advanced::Advanced,
+    pub advanced: crate::advanced::Advanced,    /// The player's squads (their platoons and names) and the faction's own name.
+    #[serde(default)]
+    pub player_squads: Vec<crate::squads::PlayerSquad>,
+    #[serde(default)]
+    pub faction_name: String,
 }
 
 /// An inventory's items where they lie.
@@ -214,6 +257,7 @@ fn saved_items(inv: &kenshi_char::inventory::Inventory) -> Vec<SavedItem> {
                 maker: it.item.maker.clone(),
                 model: it.item.model.clone(),
                 uniform: it.item.uniform.clone(),
+                contents: it.item.contents.as_ref().map(saved_items).unwrap_or_default(),
             });
         }
     }
@@ -233,6 +277,7 @@ fn saved_item(item: &kenshi_char::inventory::Item) -> SavedItem {
         maker: item.maker.clone(),
         model: item.model.clone(),
         uniform: item.uniform.clone(),
+        contents: item.contents.as_ref().map(saved_items).unwrap_or_default(),
     }
 }
 
@@ -246,7 +291,11 @@ fn item_of(data: &kenshi_data::GameDataContainer, si: &SavedItem) -> Option<kens
     if let (Some((full, _)), Some(left)) = (item.ammo, si.food_left) {
         item.ammo = Some((full, left));
     }
-    Some(with_grade(data, item, si))
+    let mut item = with_grade(data, item, si);
+    if let Some(c) = item.contents.as_mut() {
+        restore_items(data, c, &si.contents);
+    }
+    Some(item)
 }
 
 /// Saved items back into `inv`, each where it lay (else anywhere it fits).
@@ -271,7 +320,11 @@ pub(crate) fn restore_items(data: &kenshi_data::GameDataContainer, inv: &mut ken
         if let (Some((full, _)), Some(left)) = (item.ammo, si.food_left) {
             item.ammo = Some((full, left));
         }
-        let item = with_grade(data, item, si);
+        let mut item = with_grade(data, item, si);
+        // a backpack's contents
+        if let Some(c) = item.contents.as_mut() {
+            restore_items(data, c, &si.contents);
+        }
         if let Err(item) = inv.put(si.section, item, si.x, si.y) {
             let _ = inv.add(item, false);
         }
@@ -296,6 +349,16 @@ pub struct SavedPerson {
     /// Its bounties (`law`).
     #[serde(default)]
     pub bounties: Vec<crate::law::Bounty>,
+    /// Its combat stance and hold point (`kenshi_char::stance`).
+    #[serde(default)]
+    pub stance: kenshi_char::stance::Stance,
+    #[serde(default)]
+    pub hold_at: Option<[f32; 3]>,
+    /// Its job list and the JOBS toggle.
+    #[serde(default)]
+    pub jobs: Vec<crate::orders::Job>,
+    #[serde(default)]
+    pub jobs_on: bool,
 }
 
 /// An item where it lies: section index, record, how many, cell, and the food (or ammo charges)
@@ -318,6 +381,9 @@ pub struct SavedItem {
     /// A faction uniform's faction (crate::disguise).
     #[serde(default)]
     pub uniform: Option<String>,
+    /// A backpack's contents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contents: Vec<SavedItem>,
 }
 
 /// Where saves go: %APPDATA%\kenshi-rewrite\saves (else ./saves).
@@ -426,9 +492,25 @@ pub fn write_slot(name: &str, save: &SaveGame, kenshi: &crate::kenshi_save::Kens
     let d = slot_dir(name);
     // the Kenshi files written afresh (no squads left from before)
     let _ = std::fs::remove_dir_all(d.join("platoon"));
+    let _ = std::fs::remove_dir_all(d.join("zone"));
     std::fs::create_dir_all(&d)?;
     write(save, &d.join(STATE_FILE))?;
-    crate::kenshi_save::write(&d, kenshi)?;
+    // in Kenshi's layout: over the Kenshi save the game was imported from, else over the newest
+    // of Kenshi's own (read only), else from scratch
+    let base = save
+        .world
+        .as_ref()
+        .and_then(|w| w.kenshi_base.clone())
+        .map(PathBuf::from)
+        .filter(|b| b.join("quick.save").is_file())
+        .or_else(|| kenshi_slots().into_iter().next().map(|s| s.path));
+    match base {
+        Some(b) => crate::kenshi_save_over::write_over(&b, &d, kenshi).or_else(|e| {
+            eprintln!("can't write over {}: {e}; written from scratch", b.display());
+            crate::kenshi_save::write(&d, kenshi)
+        })?,
+        None => crate::kenshi_save::write(&d, kenshi)?,
+    }
     Ok(d)
 }
 
@@ -481,6 +563,10 @@ impl Sim {
                     inventory,
                     look: look(p.id),
                     bounties: p.bounties.clone(),
+                    stance: p.stance,
+                    hold_at: p.hold_at,
+                    jobs: p.jobs.clone(),
+                    jobs_on: p.jobs_on,
                 }
             })
             .collect();
@@ -499,12 +585,16 @@ impl Sim {
             outpost_public: self.outpost_public,
             ai_options: self.ai_options.clone(),
             advanced: self.advanced.clone(),
+            player_squads: self.player_squads.clone(),
+            faction_name: self.faction_name.clone(),
         };
         let mut dead_uniques: Vec<String> = self.world.dead_uniques.iter().cloned().collect();
         dead_uniques.sort();
         let campaigns_run = self.world.campaigns_run.iter().map(|(k, v)| (k.clone(), *v)).collect();
         let mut discovered: Vec<String> = self.world.discovered.iter().cloned().collect();
         discovered.sort();
+        let mut explored: Vec<String> = self.world.explored.iter().cloned().collect();
+        explored.sort();
         let ground = self
             .ground
             .iter()
@@ -518,6 +608,7 @@ impl Sim {
             .collect();
         let mut looted: Vec<String> = self.looted.iter().cloned().collect();
         looted.sort();
+        let spot_dues = self.spots.iter().filter(|s| s.item.is_none() && s.due.is_finite() && s.due > 0.0).map(|s| (s.at, s.due)).collect();
 
         // with the people kept, the nests keep their camps and people too
         let nests = self.nests.clone();
@@ -534,8 +625,10 @@ impl Sim {
             dead_uniques,
             campaigns_run,
             discovered,
+            explored,
             ground,
             looted,
+            spot_dues,
             boxes,
             nests,
             people,
@@ -579,6 +672,7 @@ impl Sim {
             platoon: p.platoon,
             offset: p.offset,
             home: p.home,
+            age: p.age,
             town: p.town,
             destination: p.destination,
             position: p.mover.position,
@@ -592,6 +686,7 @@ impl Sim {
             jobs,
             attacks_neutrals: p.attacks_neutrals,
             captures: p.captures,
+            duties: p.duties,
             caravan: p.caravan.as_ref().map(|c| (c.target, c.stay, c.state, c.arrived)),
             shop: p.shop.as_ref().map(|s| SavedShop { stock: saved_items(&s.stock), money: s.money, restock_at: s.restock_at, template: s.template.clone(), town: s.town }),
             bounties: p.bounties.clone(),
@@ -611,7 +706,7 @@ impl Sim {
             world_squad: p.world_squad,
             away: p.away,
             eat_timer: p.eat_timer,
-            shopped_at: p.shopped_at,
+            shopping: p.shopping.clone(),
             disguise_blown: p.disguise_blown,
             female: p.female,
             personality: p.personality,
@@ -652,6 +747,16 @@ impl Sim {
             dialog_has: m.has.iter().map(|(k, v)| (k.clone(), *v)).collect(),
             dialog_met: m.met.iter().map(|(k, v)| (*k, *v)).collect(),
             dialog_tags: m.tags.iter().map(|(k, v)| (*k, *v)).collect(),
+            ranks: m.ranks.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+            reputation: m.reputation.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+            event_count: m.event_count.iter().map(|(k, v)| (*k, *v)).collect(),
+            contracts: self.contracts.clone(),
+            claimed: m.claimed.iter().cloned().collect(),
+            triggered: self.world.triggered.clone(),
+            trigger_side: self.world.trigger_side.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            campaigns_locked: self.world.campaigns_locked.iter().cloned().collect(),
+            involved: self.world.involved.iter().cloned().collect(),
+            kenshi_base: self.kenshi_base.clone(),
         }
     }
 
@@ -668,6 +773,10 @@ impl Sim {
         }
         self.world.squads = w.squads;
         self.world.next_check = w.next_check;
+        self.world.triggered = w.triggered;
+        self.world.trigger_side = w.trigger_side.into_iter().collect();
+        self.world.campaigns_locked = w.campaigns_locked.into_iter().collect();
+        self.world.involved = w.involved.into_iter().collect();
         for (faction, default, rels) in w.relations {
             let r = self.relations.entry(faction.clone()).or_insert_with(|| kenshi_ai::faction::FactionRelations { faction, ..Default::default() });
             r.default_relation = default;
@@ -690,6 +799,8 @@ impl Sim {
         let ids: Vec<usize> = self.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
         let data = self.data.clone();
         // the buildings, their storage made again from their records and refilled
+        // the outposts are worked out again from the buildings (base::assign_outposts)
+        self.outposts.clear();
         self.buildings = save
             .buildings
             .iter()
@@ -706,6 +817,7 @@ impl Sim {
         self.world.dead_uniques = save.dead_uniques.iter().cloned().collect();
         self.nests = save.nests.clone();
         self.world.discovered.extend(save.discovered.iter().cloned());
+        self.world.explored.extend(save.explored.iter().cloned());
         // the ground's items as they lay; the towns already looted spawn none again
         self.looted = save.looted.iter().cloned().collect();
         // the containers' contents: those loaded now refilled, the others when their zone loads
@@ -714,6 +826,9 @@ impl Sim {
             b.inventory.sections.iter_mut().for_each(|s| s.items.clear());
         }
         self.refill_boxes(0);
+        // the item spots taken keep waiting (those loaded now, the others as their zone loads)
+        self.saved_spot_dues = save.spot_dues.clone();
+        self.apply_spot_dues(0);
         self.ground.clear();
         for (si, at, yaw) in &save.ground {
             let Some(r) = self.data.get(&si.record) else { continue };
@@ -749,6 +864,10 @@ impl Sim {
         self.ai_options = save.research.ai_options.clone();
         self.advanced = save.research.advanced.clone();
         self.arena.sh.damage_mult = self.advanced.damage;
+        // (the fresh world's people: their squads made anew) the faction's name
+        self.faction_name = save.research.faction_name.clone();
+        self.player_squads.clear();
+        self.squads_ready();
         for p in self.folk.iter_mut() {
             p.build = None;
             p.operate = None;
@@ -764,9 +883,17 @@ impl Sim {
             p.down = sp.down;
             p.dead = sp.dead;
             p.bounties = sp.bounties.clone();
+            p.stance = sp.stance;
+            p.hold_at = sp.hold_at;
+            p.jobs = sp.jobs.clone();
+            p.jobs_on = sp.jobs_on;
             p.ai.queue.clear();
             // the kit, item by item where it lay
-            let mut inv = kenshi_char::inventory::Inventory::character();
+            // (an animal's: its sections, its backpack as saved)
+            let mut inv = match p.race.as_ref().and(p.character.as_deref()).and_then(|c| data.get(c)) {
+                Some(a) => crate::sim::animal_inventory(&data, a, false),
+                None => kenshi_char::inventory::Inventory::character(),
+            };
             restore_items(&data, &mut inv, &sp.inventory);
             p.inventory = inv;
             let f = &mut self.arena.f[id];
@@ -808,6 +935,8 @@ impl Sim {
         self.owners.iter_mut().for_each(|o| *o = None);
         self.bed_taken.iter_mut().for_each(|o| *o = None);
         self.slave_squads.clear();
+        self.prisoner_squads.clear();
+        self.start_slaves = false;
         self.met.clear();
         self.bark_next.clear();
         self.seen_player.clear();
@@ -823,6 +952,7 @@ impl Sim {
             let id = self.add_person(at, Vec::new(), None, sp.platoon, sp.faction.clone(), sp.role);
             debug_assert_eq!(id, i);
             if let Some(animal) = sp.race.as_ref().and(sp.character.as_deref()) {
+                self.folk[id].age = sp.age;
                 self.make_animal(id, animal);
             }
             let p = &mut self.folk[id];
@@ -836,12 +966,14 @@ impl Sim {
             p.player = sp.player;
             p.offset = sp.offset;
             p.home = sp.home;
+            p.age = sp.age;
             p.town = sp.town;
             p.destination = sp.destination;
             p.down = sp.down;
             p.dead = sp.dead;
             p.attacks_neutrals = sp.attacks_neutrals;
             p.captures = sp.captures;
+            p.duties = sp.duties;
             p.caravan = sp.caravan.map(|(target, stay, state, arrived)| kenshi_ai::caravan::Caravan { target, stay, state, arrived });
             p.bounties = sp.bounties.clone();
             p.prison = sp.prison.clone();
@@ -857,7 +989,7 @@ impl Sim {
             p.world_squad = sp.world_squad;
             p.away = sp.away;
             p.eat_timer = sp.eat_timer;
-            p.shopped_at = sp.shopped_at;
+            p.shopping = sp.shopping.clone();
             p.disguise_blown = sp.disguise_blown;
             p.female = sp.female;
             p.personality = sp.personality;
@@ -876,7 +1008,11 @@ impl Sim {
                     })
                     .collect();
             }
-            let mut inv = kenshi_char::inventory::Inventory::character();
+            // (an animal's: its sections, its backpack as saved)
+            let mut inv = match sp.race.as_ref().and(sp.character.as_deref()).and_then(|c| data.get(c)) {
+                Some(a) => crate::sim::animal_inventory(&data, a, false),
+                None => kenshi_char::inventory::Inventory::character(),
+            };
             restore_items(&data, &mut inv, &sp.inventory);
             p.inventory = inv;
             for (k, l) in sp.limbs.iter().enumerate().take(4) {
@@ -951,6 +1087,12 @@ impl Sim {
             m.has = w.dialog_has.iter().cloned().collect();
             m.met = w.dialog_met.iter().cloned().collect();
             m.tags = w.dialog_tags.iter().cloned().collect();
+            m.ranks = w.ranks.iter().cloned().collect();
+            m.reputation = w.reputation.iter().cloned().collect();
+            m.event_count = w.event_count.iter().cloned().collect();
+            self.contracts = w.contracts.clone();
+            m.claimed = w.claimed.iter().cloned().collect();
+            self.kenshi_base = w.kenshi_base.clone();
             m.running.clear();
             self.pending_world = Some(w.clone());
         }
@@ -958,6 +1100,8 @@ impl Sim {
         self.t = save.t;
         self.tick = save.tick;
         self.money = save.money;
+        // the outposts are worked out again from the buildings (base::assign_outposts)
+        self.outposts.clear();
         self.buildings = save
             .buildings
             .iter()
@@ -974,6 +1118,7 @@ impl Sim {
         self.world.dead_uniques = save.dead_uniques.iter().cloned().collect();
         self.world.campaigns_run = save.campaigns_run.iter().cloned().collect();
         self.world.discovered.extend(save.discovered.iter().cloned());
+        self.world.explored.extend(save.explored.iter().cloned());
         self.world.started = false;
         self.nests = save.nests.clone();
         self.looted = save.looted.iter().cloned().collect();
@@ -982,6 +1127,9 @@ impl Sim {
             b.inventory.sections.iter_mut().for_each(|s| s.items.clear());
         }
         self.refill_boxes(0);
+        // the item spots taken keep waiting (those loaded now, the others as their zone loads)
+        self.saved_spot_dues = save.spot_dues.clone();
+        self.apply_spot_dues(0);
         self.ground.clear();
         for (si, at, yaw) in &save.ground {
             let Some(item) = item_of(&data, si) else { continue };
@@ -999,6 +1147,10 @@ impl Sim {
         self.ai_options = save.research.ai_options.clone();
         self.advanced = save.research.advanced.clone();
         self.arena.sh.damage_mult = self.advanced.damage;
+        // the squads as saved (the people keep their platoons)
+        self.faction_name = save.research.faction_name.clone();
+        self.player_squads = save.research.player_squads.clone();
+        self.squads_ready();
         // the player's characters (in number order, as saved) with their looks
         let ids: Vec<usize> = self.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
         ids.iter().enumerate().map(|(k, &id)| (id, save.players.get(k).and_then(|sp| sp.look.clone()))).collect()
@@ -1026,17 +1178,23 @@ mod tests {
                 medical: Medical::default(),
                 down: false,
                 dead: false,
-                inventory: vec![SavedItem { section: 9, record: "x".into(), quantity: 2, x: 1, y: 3, food_left: Some(10.0), quality: None, maker: None, model: None, uniform: None }],
+                inventory: vec![SavedItem { section: 9, record: "x".into(), quantity: 2, x: 1, y: 3, food_left: Some(10.0), quality: None, maker: None, model: None, uniform: None, contents: Vec::new() }],
                 look: None,
                 bounties: Vec::new(),
+                stance: Default::default(),
+                hold_at: None,
+                jobs: Vec::new(),
+                jobs_on: false,
             }],
             buildings: Vec::new(),
             research: SavedResearch::default(),
             dead_uniques: Vec::new(),
             campaigns_run: Vec::new(),
             discovered: Vec::new(),
+            explored: Vec::new(),
             ground: Vec::new(),
             looted: Vec::new(),
+            spot_dues: Vec::new(),
             boxes: Vec::new(),
             nests: Vec::new(),
             people: Vec::new(),
@@ -1052,4 +1210,9 @@ mod tests {
         assert_eq!(back.players[0].inventory[0].food_left, Some(10.0));
         let _ = std::fs::remove_dir_all(dir);
     }
+}
+
+/// Saves from before ages were kept: grown.
+fn grown() -> f32 {
+    1.0
 }

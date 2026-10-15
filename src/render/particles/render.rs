@@ -289,7 +289,7 @@ pub fn draw_particles(
     assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<KenshiParticleMaterial>>,
-    cams: Query<&GlobalTransform, (With<Camera3d>, Without<crate::reflection::ReflectionCamera>)>,
+    cams: Query<&GlobalTransform, (With<Camera3d>, Without<crate::reflection::ReflectionCamera>, Without<crate::interior_mask::MaskCamera>)>,
     mut effects: Query<&mut ParticleEffect>,
     mut fx: Option<ResMut<super::effects::Effects>>,
     mut draws: Query<(&mut Transform, &mut Visibility, &mut MeshMaterial3d<KenshiParticleMaterial>), Without<ParticleEffect>>,

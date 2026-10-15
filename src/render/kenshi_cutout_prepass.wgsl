@@ -3,6 +3,7 @@
 // leave no depth behind. CHARACTER picks the character material's layout, else the object's.
 
 #import bevy_pbr::prepass_io::VertexOutput
+#import kenshi::interior::interior_clipped
 #ifdef PREPASS_FRAGMENT
 #import bevy_pbr::prepass_io::FragmentOutput
 #endif
@@ -28,6 +29,7 @@ struct Params {
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var normal_map: texture_2d<f32>;
 #ifndef CHARACTER
 @group(#{MATERIAL_BIND_GROUP}) @binding(16) var grid_map: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(17) var interior_mask: texture_2d<f32>;
 #endif
 
 fn cut(in: VertexOutput) {
@@ -49,6 +51,10 @@ fn cut(in: VertexOutput) {
         }
     }
 #else
+    // CLIP_INTERIOR on grass and foliage (ObjectParams world.y), as the main pass
+    if (p.rest[6].y > 0.5 && interior_clipped(interior_mask, in.position, in.world_position.xyz)) {
+        discard;
+    }
     // the main pass's coverage boost (kenshi_object.wgsl, an enhancement)
     let size = vec2<f32>(textureDimensions(normal_map));
     let dx = dpdx(uv * p.first.xy * size);

@@ -21,10 +21,14 @@
 //! over its "fog fade in duration" once it starts and out over its "fog fade out duration" once
 //! it stops (F023246, F023247, F023243); `crate::fog_volume` draws them.
 //!
-//! Not ported: the effects' lights ("lights": no effect of the game's data has one, and
-//! the renderer has no pass for local lights), sounds, the lightning's
-//! damage to characters (F023403) and its aiming at a nearby object (F045501), the per-region
-//! list of running effect types (F023398's +0x90), and saving (F023422..F023445).
+//! A POINT_LIGHTING system is aimed at the object nearest its random point (F023424 with
+//! F045501 over the list at 0x142134690 +0x2a0; (assumption) the towns): within 2000 of it on x
+//! and z, 10 above the ground there.
+//!
+//! An effect's harm to characters (F023403) is kenshi_game::hazards' `Harm`. Not ported: the
+//! effects' lights ("lights") and sounds ("sound"): no EFFECT of the game's data has either;
+//! the per-region list of running effect types (F023398's +0x90), and saving
+//! (F023422..F023445).
 //! (stand-in) The manager's pool of finished systems (F033120) is not kept: a new system is
 //! made each time.
 
@@ -93,6 +97,9 @@ pub struct EffectDef {
     /// Its fog volumes (F023263), filled in by `Effects::new`.
     pub fog: Vec<crate::fog_volume::FogVolumeDef>,
     pub max_view_distance: f32,
+    /// "affect type" (WeatherAffecting: 1 dust, 2 acid, 3 burning, 4 gas): what it does to
+    /// characters within its radius.
+    pub affect: i32,
     pub effect_radius: f32,
     /// The size of its emitters (the boxes' and circles' largest side, scaled; x 1.5).
     pub size: f32,
@@ -194,6 +201,7 @@ impl EffectDef {
             fog_fade_out: f("fog fade out duration"),
             fog: Vec::new(),
             max_view_distance: f("maximum view distance"),
+            affect: i("affect type") as i32,
             effect_radius: f("effect radius"),
             size,
             wind_affectors: Arc::new(wind_affectors),
@@ -247,6 +255,11 @@ impl EffectInstance {
 
     pub fn system(&mut self) -> &mut System {
         &mut self.fx.system
+    }
+
+    /// Started and not yet told to stop.
+    pub fn is_running(&self) -> bool {
+        self.state == EffState::Running
     }
 
     /// @fn F023267
@@ -376,6 +389,8 @@ pub struct WorldView<'a> {
     pub sun_colour: Vec3,
     /// World minus scene positions (the scene's origin).
     pub origin: Vec3,
+    /// The towns' positions (world units): where lightning is aimed.
+    pub towns: &'a [Vec3],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -401,9 +416,7 @@ struct EffHandler {
     /// +0x38 / +0x39.
     active: bool,
     visible: bool,
-    #[allow(dead_code)]
     strength: f32,
-    #[allow(dead_code)]
     effect_radius: f32,
     age: f32,
     ttl: f32,
@@ -411,17 +424,30 @@ struct EffHandler {
     region_timer: f32,
 }
 
-/// Kenshi's rand(): randRange and randInt over the MSVC generator.
+/// @fn F050502
+///
+/// The game's randRange(a, b): a + (b - a) x rand() / 32768 (not Ogre's / RAND_MAX).
 fn rand_range(rng: &mut Rand, a: f32, b: f32) -> f32 {
-    rng.range(a, b)
+    let u = (rng.rand() as f64 * (1.0 / 32768.0)) as f32;
+    u * (b - a) + a
 }
 
-/// (stand-in) randInt(a, b): uniform over a..=b.
+/// @fn F050500
+///
+/// The game's unit random: rand() / 32768.
+fn rand_unit(rng: &mut Rand) -> f32 {
+    (rng.rand() as f64 * (1.0 / 32768.0)) as f32
+}
+
+/// @fn F050548
+///
+/// The game's randInt(a, b): a less rand() x -1/32768 times b - a + 1 (truncated), held to at
+/// most b and at least a.
 fn rand_int(rng: &mut Rand, a: i32, b: i32) -> i32 {
-    if b <= a {
-        return a;
-    }
-    (a + (rng.unit() * (b - a + 1) as f32) as i32).min(b)
+    let u = (rng.rand() as f64 * (-1.0 / 32768.0)) as f32;
+    let v = a - (u * (b - a + 1) as f32) as i32;
+    let v = if b >= v { v } else { b };
+    if v >= a { v } else { a }
 }
 
 impl EffHandler {
@@ -444,14 +470,44 @@ impl EffHandler {
             infinite: d.ttl.1 <= 0.0,
             region_timer: 0.0,
         };
-        h.region_check(d, 0.0, w);
+        // the constructor runs the base check, whatever the handler becomes
+        h.base_region_check(d, 0.0, w);
         h
+    }
+
+    /// The handler's region check (vtable): a global point's own (F023390), else F023369.
+    fn region_check(&mut self, d: &EffectDef, dt: f32, w: &mut WorldView) {
+        if let Kind::GlobalPoint { dist_sq, near_sq } = self.kind {
+            self.global_point_check(dist_sq, near_sq, dt);
+        } else {
+            self.base_region_check(d, dt, w);
+        }
+    }
+
+    /// @fn F023390
+    ///
+    /// A global point's region check: until it runs, every 0.2 s, it starts once within the
+    /// inner ring (its +0x6c: the group's ring squared, F023434). No region or zone test, and
+    /// nothing here stops it: the group does beyond the kill distance (F023435), or its time to
+    /// live runs out.
+    fn global_point_check(&mut self, dist_sq: f32, near_sq: f32, dt: f32) {
+        if self.active {
+            return;
+        }
+        self.region_timer -= dt;
+        if self.region_timer <= 0.0 {
+            if dist_sq <= near_sq {
+                self.active = true;
+                self.visible = true;
+            }
+            self.region_timer = 0.2;
+        }
     }
 
     /// @fn F023369
     ///
     /// Every second (two while it runs): whether its zone is in its region and loaded.
-    fn region_check(&mut self, d: &EffectDef, dt: f32, w: &mut WorldView) {
+    fn base_region_check(&mut self, d: &EffectDef, dt: f32, w: &mut WorldView) {
         self.region_timer -= dt;
         if self.region_timer > 0.0 {
             return;
@@ -468,10 +524,6 @@ impl EffHandler {
                 }
             } else {
                 self.visible = true;
-            }
-            if let Kind::GlobalPoint { dist_sq, near_sq } = self.kind {
-                // (stand-in) F023390: within the outer ring
-                self.visible &= dist_sq <= near_sq * 4.0;
             }
             self.region_timer = if self.visible { 2.0 } else { 1.0 };
             self.active = self.visible;
@@ -710,7 +762,17 @@ impl Group {
             EffectType::Global => (Vec3::ZERO, Kind::Global),
             // F023424
             EffectType::Point | EffectType::PointLighting => {
-                let p = random_point(self.region, d, rng, w);
+                let mut p = random_point(self.region, d, rng, w);
+                // the lightning at the nearest town, somewhere within 2000 of it on the ground
+                if d.ty == EffectType::PointLighting
+                    && std::env::var("KENSHI_EFFECTS_NEAR").is_err()
+                    && let Some(t) = w.towns.iter().min_by(|a, b| a.distance_squared(p).total_cmp(&b.distance_squared(p)))
+                {
+                    p = *t;
+                    p.x += rand_range(rng, -2000.0, 2000.0);
+                    p.z += rand_range(rng, -2000.0, 2000.0);
+                    p.y = (w.ground)(p.x, p.z).0 + 10.0;
+                }
                 (p, Kind::Point { lightning: d.ty == EffectType::PointLighting })
             }
             // F023426, F023425
@@ -817,7 +879,7 @@ impl Group {
         let mut pos = Vec3::ZERO;
         for _ in 0..10 {
             let a = rand_range(rng, 0.0, std::f32::consts::TAU);
-            let dist = rng.unit().sqrt() * (rmax - rmin) + rmin;
+            let dist = rand_unit(rng).sqrt() * (rmax - rmin) + rmin;
             pos = w.target;
             pos.x += a.cos() * dist;
             pos.z += a.sin() * dist;
@@ -1013,7 +1075,7 @@ impl Effects {
                 .zip(layer)
                 .and_then(|(t, l)| t.get(l).copied().flatten())?;
             let (e, min_speed, probability) = slot;
-            if probability <= 0.0 || speed < min_speed || probability < self.rng.unit() {
+            if probability <= 0.0 || speed < min_speed || probability < rand_unit(&mut self.rng) {
                 return None;
             }
             at.y = ground_y;
@@ -1025,8 +1087,10 @@ impl Effects {
     /// @fn F037795
     ///
     /// An effect on a building at world position `at`, turned `rot`.
-    /// (stand-in) Kenshi attaches it unstarted and starts it with the building's lights; here it
-    /// starts at once.
+    /// Kenshi attaches it unstarted; a building's effects run while it is complete, switched
+    /// on (a UseableStuff's setOn, F029284; the caller leaves out those of one stored off) and
+    /// in view (F037702 / F037859). (stand-in) Here it starts at once and runs while its zone is
+    /// loaded: the building's view state and its switching at play are not followed.
     pub fn attach(&mut self, effect: usize, at: Vec3, rot: bevy::math::Quat) {
         let seed = (self.rng.unit() * 32767.0) as u32;
         let mut i = EffectInstance::new(&self.defs[effect], seed, &self.ground);
@@ -1204,6 +1268,28 @@ impl Effects {
                     let effect = h.effect;
                     for i in h.instances() {
                         add(i, effect);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The running weather effects that hurt (their EFFECT's "affect type"), in loaded zones:
+    /// (affect type, world position, reach, strength). Reach: its "effect radius", else (0:
+    /// the game's own guess) its emitters' size.
+    pub fn harmful(&self) -> Vec<(i32, Vec3, f32, f32)> {
+        let mut out = Vec::new();
+        for gs in &self.groups {
+            for g in gs {
+                let d = &self.defs[g.effect];
+                if d.affect == 0 {
+                    continue;
+                }
+                for h in &g.handlers {
+                    if h.zone_flag && h.instance.as_ref().is_some_and(|i| i.is_running()) {
+                        let r = if h.effect_radius > 0.0 { h.effect_radius } else { d.size.max(100.0) };
+                        out.push((d.affect, h.position, r, h.strength));
                     }
                 }
             }

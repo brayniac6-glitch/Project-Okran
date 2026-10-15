@@ -8,7 +8,7 @@ fn main() {
         println!("squad {} ({}, {} people) at {:?}", sq.id, sq.template, sq.characters.len(), sq.position.map(|v| v as i32));
         for c in &sq.characters {
             let strength = c.stats.iter().find(|(k, _)| k == "strength").map(|x| x.1);
-            println!("  {} [{}] at {:?}: strength {strength:?}, {} parts, blood {:.0}, hunger {:.2}, {} items, race {:?} female {}", c.name, c.template, c.position.map(|v| v as i32), c.parts.len(), c.blood, c.hunger, c.items.len(), c.appearance.race, c.appearance.female);
+            println!("  {} [{}] at {:?}: strength {strength:?}, {} parts, blood {:.0}, hunger {:.2}, {} items, race {:?} female {}, slave state {} escaped {} blown {:.0}", c.name, c.template, c.position.map(|v| v as i32), c.parts.len(), c.blood, c.hunger, c.items.len(), c.appearance.race, c.appearance.female, c.slave_state, c.escaped, c.disguise_blown);
         }
     }
     if let Some(out) = a.get(1) {

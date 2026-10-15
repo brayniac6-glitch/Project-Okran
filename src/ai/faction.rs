@@ -11,6 +11,9 @@ pub const ALLY_RELATION: f32 = 50.0;
 /// At or below this relation factions are enemies.
 pub const ENEMY_RELATION: f32 = -30.0;
 
+/// The player's faction ("Nameless").
+pub const PLAYER_FACTION: &str = "204-gamedata.base";
+
 /// One relation entry.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Relation {
@@ -63,6 +66,11 @@ impl FactionRelations {
     ///
     /// A faction's relations as the game sets them up: to every faction the lower of the two
     /// factions' "default relation", itself forced allied at 100, then its own `relations` list.
+    ///
+    /// The player's faction keeps no relations of its own: PlayerFactionRelations' entry for a
+    /// faction (F041507, vtable +0x50) is that faction's entry for the player, so the player
+    /// faction's `relations` list (Dust Bandits -100, ...) is the listed factions' relation to
+    /// the player, and the player's to each faction is the faction's to it.
     pub fn from_data(r: &GameData, data: &kenshi_data::GameDataContainer) -> Self {
         let mine = default_relation(r);
         let mut relations: HashMap<String, Relation> = data
@@ -87,6 +95,24 @@ impl FactionRelations {
                     forced_ally: false,
                     relation: v[0] as f32,
                 });
+        }
+        if r.string_id == PLAYER_FACTION {
+            // each faction's own entry for the player
+            for o in data.of_type(kenshi_data::ItemType::Faction) {
+                if o.string_id == r.string_id {
+                    continue;
+                }
+                let listed = r.refs("relations").iter().any(|(sid, _)| *sid == o.string_id);
+                if let Some((_, v)) = o.refs("relations").iter().find(|(sid, _)| *sid == r.string_id)
+                    && !listed
+                {
+                    relations.entry(o.string_id.clone()).or_default().relation = v[0] as f32;
+                }
+            }
+        } else if let Some(player) = data.get(PLAYER_FACTION)
+            && let Some((_, v)) = player.refs("relations").iter().find(|(sid, _)| *sid == r.string_id)
+        {
+            relations.entry(PLAYER_FACTION.to_string()).or_default().relation = v[0] as f32;
         }
         FactionRelations {
             faction: r.string_id.clone(),

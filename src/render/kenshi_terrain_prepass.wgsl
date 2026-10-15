@@ -15,6 +15,7 @@
 #ifdef DEFERRED_PREPASS
 #import bevy_pbr::rgb9e5
 #endif
+#import kenshi::interior::interior_clipped
 
 #ifdef MORPH_TARGETS
 // The instance_index parameter must match vertex_in.instance_index. This is a work around for a wgpu dx12 bug.
@@ -201,9 +202,15 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
     return out;
 }
 
+// CLIP_INTERIOR, as the main pass (kenshi_terrain.wgsl)
+@group(#{MATERIAL_BIND_GROUP}) @binding(62) var interior_mask: texture_2d<f32>;
+
 #ifdef PREPASS_FRAGMENT
 @fragment
 fn fragment(in: VertexOutput) -> FragmentOutput {
+    if (interior_clipped(interior_mask, in.position, in.world_position.xyz)) {
+        discard;
+    }
     var out: FragmentOutput;
 
 #ifdef NORMAL_PREPASS
@@ -238,5 +245,13 @@ fn fragment(in: VertexOutput) -> FragmentOutput {
 #endif
 
     return out;
+}
+#else
+// depth only (the shadows): the material may discard, so a fragment stage runs
+@fragment
+fn fragment(in: VertexOutput) {
+    if (interior_clipped(interior_mask, in.position, in.world_position.xyz)) {
+        discard;
+    }
 }
 #endif // PREPASS_FRAGMENT

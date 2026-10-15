@@ -58,11 +58,13 @@ pub struct Scroll {
     vertical: bool,
 }
 
-/// An edit box's text, and whether it takes the keyboard.
+/// An edit box's text, and whether it takes the keyboard; `max` its "MaxTextLength" (MyGUI's
+/// default 2048 when unset).
 #[derive(Component, Debug, Clone, Default)]
 pub struct EditText {
     pub text: String,
     pub focused: bool,
+    pub max: usize,
 }
 
 /// A scroll bar moved.
@@ -318,9 +320,11 @@ fn widget(
             ctx.commands.entity(e).add_child(img);
         }
     }
-    // the caption
+    // the caption (a button whose skin is all picture, with no text part, shows none: the map's
+    // centre button's "O")
     let caption = prop("Caption");
-    let texty = matches!(target.as_str(), "TextBox" | "EditBox" | "Button") || caption.is_some();
+    let picture_button = target == "Button" && ctx.gui.skins.get(skin_name).is_some_and(|s| !s.parts.is_empty() && !s.parts.iter().any(|p| p.kind == PartKind::Text));
+    let texty = !picture_button && (matches!(target.as_str(), "TextBox" | "EditBox" | "Button") || caption.is_some());
     if texty {
         // MyGUI's default font (core_settings.xml) when the widget names none
         let font = prop("FontName")
@@ -363,7 +367,11 @@ fn widget(
     }
     if def.kind == "EditBox" && prop("Static").as_deref() != Some("true") && prop("ReadOnly").as_deref() != Some("true") {
         ctx.commands.entity(e).insert((
-            EditText { text: prop("Caption").unwrap_or_default(), focused: false },
+            EditText {
+                text: prop("Caption").unwrap_or_default(),
+                focused: false,
+                max: prop("MaxTextLength").and_then(|m| m.parse().ok()).unwrap_or(2048),
+            },
             Interaction::default(),
             bevy::ui::RelativeCursorPosition::default(),
         ));
@@ -403,6 +411,15 @@ fn widget(
             && let Some(cap) = ctx.built.get(&format!("{}.Caption", def.name))
         {
             ctx.commands.queue(SetCaption(cap, caption_prop[0].1.clone()));
+        }
+        // a scroll view's and an item box's bars show only while their canvas is larger than
+        // their view (MyGUI's ScrollViewBase): hidden here until their user shows them
+        if target == "ScrollView" || target == "ItemBox" {
+            for bar in ["VScroll", "HScroll"] {
+                if let Some(&b) = parts.0.get(bar) {
+                    ctx.commands.entity(b).insert(Visibility::Hidden);
+                }
+            }
         }
         // a scroll bar: its track place takes the mouse, its track (the thumb) shows the position
         if target == "ScrollBar" {
@@ -459,12 +476,50 @@ fn widget(
     e
 }
 
+/// A skin as one nine-sliced picture (Bevy's TextureSlicer), when its parts are a MyGUI frame's
+/// 3 x 3 grid side by side on its texture: the corners kept at their size, the edges and the
+/// middle stretched, as the parts' aligns do. A node Bevy lays out at any size can wear it (a
+/// tooltip's box, sized by its text).
+pub fn sliced(gui: &Gui, assets: &AssetServer, skin: &str) -> Option<ImageNode> {
+    let s = gui.skins.get(skin)?;
+    let tex = s.texture.as_ref()?;
+    let rects: Vec<Rect> = s
+        .parts
+        .iter()
+        .filter(|p| matches!(p.kind, PartKind::Image | PartKind::Tile))
+        .filter_map(|p| p.state("normal").and_then(|st| st.rect))
+        .map(rect)
+        .collect();
+    if rects.len() != 9 {
+        return None;
+    }
+    let min = rects.iter().fold(Vec2::MAX, |m, r| m.min(r.min));
+    let max = rects.iter().fold(Vec2::MIN, |m, r| m.max(r.max));
+    let tl = rects.iter().find(|r| r.min == min)?;
+    let br = rects.iter().find(|r| r.max == max)?;
+    Some(ImageNode {
+        image: assets.load(tex.clone()),
+        rect: Some(Rect { min, max }),
+        image_mode: NodeImageMode::Sliced(TextureSlicer {
+            border: BorderRect::from([tl.width(), br.width(), tl.height(), br.height()]),
+            center_scale_mode: SliceScaleMode::Stretch,
+            sides_scale_mode: SliceScaleMode::Stretch,
+            max_corner_scale: 1.0,
+        }),
+        ..default()
+    })
+}
+
 /// Set a widget's caption (its text entity's text), once spawned.
 pub struct SetCaption(pub Entity, pub String);
 
 impl Command for SetCaption {
     type Out = ();
     fn apply(self, world: &mut World) {
+        // an edit box's own text too: what is typed goes on from what it shows
+        if let Some(mut e) = world.get_mut::<EditText>(self.0) {
+            e.text = self.1.clone();
+        }
         let Some(t) = world.get::<Caption>(self.0).map(|c| c.0) else { return };
         if let Some(mut text) = world.get_mut::<Text>(t) {
             text.0 = self.1;
@@ -637,12 +692,14 @@ impl Command for SetScroll {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn typing(
     mut keys: MessageReader<bevy::input::keyboard::KeyboardInput>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut boxes: Query<(Entity, &Interaction, &mut EditText, Option<&Caption>, Option<&bevy::ui::RelativeCursorPosition>, &InheritedVisibility)>,
     mut texts: Query<&mut Text>,
     mut out: MessageWriter<GuiEdit>,
+    time: Res<Time<Real>>,
 ) {
     use bevy::input::ButtonState;
     use bevy::input::keyboard::Key;
@@ -654,35 +711,42 @@ fn typing(
         }
     }
     let events: Vec<_> = keys.read().filter(|k| k.state == ButtonState::Pressed).cloned().collect();
+    // MyGUI's text cursor: a bar after the text, blinking (on half a second, off half)
+    let blink = time.elapsed_secs() % 1.0 < 0.5;
     for (e, _, mut t, cap, _, shown) in &mut boxes {
         // a box gone from view lets the keyboard go
         if !shown.get() {
             t.focused = false;
         }
-        if !t.focused {
-            continue;
-        }
-        let before = t.text.clone();
-        for k in &events {
-            match &k.logical_key {
-                Key::Backspace => {
-                    t.text.pop();
-                }
-                Key::Enter | Key::Escape => t.focused = false,
-                _ => {
-                    if let Some(s) = &k.text {
-                        t.text.extend(s.chars().filter(|c| !c.is_control()));
+        if t.focused {
+            let before = t.text.clone();
+            for k in &events {
+                match &k.logical_key {
+                    Key::Backspace => {
+                        t.text.pop();
+                    }
+                    Key::Enter | Key::Escape => t.focused = false,
+                    _ => {
+                        if let Some(s) = &k.text {
+                            let room = t.max.saturating_sub(t.text.chars().count());
+                            t.text.extend(s.chars().filter(|c| !c.is_control()).take(room));
+                        }
                     }
                 }
             }
-        }
-        if t.text != before {
-            if let Some(c) = cap
-                && let Ok(mut tx) = texts.get_mut(c.0)
-            {
-                tx.0 = t.text.clone();
+            if t.text != before {
+                out.write(GuiEdit { widget: e, text: t.text.clone() });
             }
-            out.write(GuiEdit { widget: e, text: t.text.clone() });
+        }
+        // what it shows: its text, and the cursor while it has the keyboard
+        let want = if t.focused && blink { format!("{}|", t.text) } else { t.text.clone() };
+        if let Some(c) = cap
+            && let Ok(tx) = texts.get(c.0)
+            && tx.0 != want
+            && (t.focused || tx.0 == format!("{}|", t.text))
+            && let Ok(mut tx) = texts.get_mut(c.0)
+        {
+            tx.0 = want;
         }
     }
 }

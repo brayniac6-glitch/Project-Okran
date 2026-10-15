@@ -15,11 +15,11 @@
 //! foes), and the faction's numbers. Its SQUADS tab (the SQD button; F035124): each squad as a
 //! Kenshi_SquadBox (its name, its size of 20) with its people's portraits
 //! (Kenshi_SquadsPanel_PortraitCharacter), and the faction's size of 256.
-//! (stand-in) The window shows these five tabs (the overview's dialogue and AI tabs are not
-//! ported), switched by buttons over them; a queued research's or item's progress is shown
-//! after its name; the repeat button's state is in its caption; every town is on the map (not
-//! only those found); the map's way round as the biome map's (rows against z); squads can't be
-//! made or moved between yet (one squad).
+//! Its DIALOGUE tab: the message log; its AI tab (F035130): the AI options' tick boxes and the
+//! follow formation, the hovered one's tooltip below. The queues are Kenshi_ItemListItem rows
+//! (`item_list_rows`: name, hours left, progress bar, X). (stand-in) The tabs are switched by
+//! buttons over them; the repeat button's state is in its caption; the map's way round as the
+//! biome map's (rows against z).
 use super::Game;
 use super::build_ui::{ListRow, list_rows};
 use super::hud_ui;
@@ -85,6 +85,18 @@ pub(super) struct Open {
     items: Vec<String>,
     item: Option<String>,
     craft_shown: (Vec<String>, u32, bool, usize),
+    /// The squads tab: each squad's name and people as drawn (and how many faces they had), the
+    /// boxes shown (squad, box, name box, DELETE), the portraits (widget, person), the squads
+    /// scrolled past, a portrait being dragged (person, its picture).
+    squads_shown: Vec<(String, Vec<usize>)>,
+    squads_shown_portraits: usize,
+    squad_boxes: Vec<(usize, Entity, Option<Entity>, Option<Entity>)>,
+    squad_portraits: Vec<(Entity, usize)>,
+    squad_scroll: usize,
+    squad_drag: Option<(usize, Entity)>,
+    squad_test_frames: u32,
+    /// The queues' rows' X buttons: (button, list, place).
+    queue_x: Vec<(Entity, u8, usize)>,
 }
 
 /// The research types: the RESEARCH records' "category", in name order.
@@ -95,10 +107,11 @@ fn types(game: &Game) -> Vec<String> {
     out
 }
 
-fn redraw(commands: &mut Commands, o: &mut Open, game: &Game) {
+fn redraw(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, assets: &AssetServer) {
     for r in o.rows.drain(..) {
         commands.entity(r).despawn();
     }
+    o.queue_x.clear();
     for (name, on) in [("ResearchTab", o.tab == 0), ("CraftTab", o.tab == 1), ("MapTab", o.tab == 2), ("FactionTab", o.tab == 3), ("SquadsTab", o.tab == 4), ("MessagesTab", o.tab == 5), ("AITab", o.tab == 6)] {
         if let Some(e) = o.ui.get(name) {
             commands.queue(SetVisible(e, on));
@@ -109,7 +122,7 @@ fn redraw(commands: &mut Commands, o: &mut Open, game: &Game) {
     }
     match o.tab {
         1 => {
-            redraw_crafting(commands, o, game);
+            redraw_crafting(commands, o, game, gui, assets);
             return;
         }
         3 => {
@@ -149,17 +162,23 @@ fn redraw(commands: &mut Commands, o: &mut Open, game: &Game) {
         o.rows.push(list_rows(commands, l, BLUEPRINTS, &rows, chosen, &font, (4.0, 2.0, 92.0, 96.0)));
     }
     if let Some(l) = o.ui.get("ResearchQueueList") {
-        let rows: Vec<(String, bool)> = sim
+        // F035825: its name, the hours left (F046251), how far along
+        let rows: Vec<(String, String, f32)> = sim
             .research_queue
             .iter()
             .enumerate()
             .filter_map(|(k, id)| {
                 let r = sim.data.get(id)?;
                 let time = kenshi_game::production::research_time(r).max(0.01);
-                Some(if k == 0 { (format!("{}  {:.0}%", r.name, sim.research_progress / time * 100.0), true) } else { (r.name.clone(), true) })
+                let done = if k == 0 { (sim.research_progress / time).clamp(0.0, 1.0) } else { 0.0 };
+                Some((r.name.clone(), research_hours(time, sim.research_rate, done), done))
             })
             .collect();
-        o.rows.push(list_rows(commands, l, QUEUE, &rows, None, &font, (2.0, 2.0, 96.0, 96.0)));
+        let list_w = o.ui.sizes.get(&l).map_or(200.0, |s| s[0]);
+        let fs2 = kenshi_io::cfg::load(&game.root, "settings.cfg").f32("font size2", 3.0);
+        let (column, xs) = item_list_rows(commands, gui, assets, l, list_w, fs2, QUEUE, &rows);
+        o.rows.push(column);
+        o.queue_x.extend(xs);
     }
     // the bench message: no bench, or why research waits
     if let Some(e) = o.ui.get("ResearchBenchMessage") {
@@ -174,9 +193,79 @@ fn redraw(commands: &mut Commands, o: &mut Open, game: &Game) {
     describe(commands, o, game);
 }
 
+/// @fn F046251
+///
+/// A queued research's hours left: its time over the rate (when there is one), less the share
+/// done, rounded up, at least 1, "<" before it under an hour; "{1,num} hr" for one, else
+/// "{1,num} hrs".
+fn research_hours(time: f32, rate: f32, done: f32) -> String {
+    let mut h = time;
+    if rate > 1e-6 {
+        h /= rate;
+    }
+    let h = h * (1.0 - done);
+    let n = (h.ceil() as i64).max(1);
+    let less = if h < 1.0 { "<" } else { "" };
+    if n == 1 { format!("{less}{n} hr") } else { format!("{less}{n} hrs") }
+}
+
+/// The research and crafting queues' rows (ReorderableListItem cells, Kenshi_ItemListItem.layout,
+/// F035994): a row (font size2 + 12 high, the list's width; F035579) a queued thing, its name,
+/// its value on the right, its progress bar as wide as its share done of the value's width
+/// (F035825), and its X (RemoveButton) taking it off. Returns the rows' column and the X
+/// buttons with their list and place. (not ported) Dragging a row to reorder the queue.
+#[allow(clippy::too_many_arguments)]
+fn item_list_rows(commands: &mut Commands, gui: &GuiRes, assets: &AssetServer, list: Entity, list_w: f32, font_size2: f32, tag: u8, rows: &[(String, String, f32)]) -> (Entity, Vec<(Entity, u8, usize)>) {
+    let scale = kenshi_gui::res::ui_scale();
+    let h = ((font_size2 + 12.0) * scale).floor().max(8.0);
+    let w = list_w * 0.96;
+    let column = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(2.0),
+                top: Val::Percent(2.0),
+                width: Val::Percent(96.0),
+                height: Val::Percent(96.0),
+                flex_direction: FlexDirection::Column,
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            ZIndex(2),
+        ))
+        .id();
+    commands.entity(list).add_child(column);
+    let defs = gui.0.layout("Kenshi_ItemListItem.layout");
+    let mut xs = Vec::new();
+    for (k, (name, value, done)) in rows.iter().enumerate() {
+        let row = commands.spawn((Node { width: Val::Percent(100.0), height: Val::Px(h), flex_shrink: 0.0, ..default() }, ListRow(tag, k), Interaction::default())).id();
+        commands.entity(column).add_child(row);
+        let cell = kenshi_gui::ui::spawn(commands, &gui.0, assets, &defs, Some(row), [w, h]);
+        if let Some(t) = cell.get("ItemName") {
+            commands.queue(SetCaption(t, name.clone()));
+        }
+        if let Some(t) = cell.get("ItemValue") {
+            commands.queue(SetCaption(t, value.clone()));
+        }
+        if let Some(p) = cell.get("Progress") {
+            let share = *done;
+            commands.queue(move |w: &mut World| {
+                if let Some(mut n) = w.get_mut::<Node>(p) {
+                    n.width = Val::Percent(86.0 * share);
+                    n.overflow = Overflow::clip();
+                }
+            });
+        }
+        if let Some(x) = cell.get("RemoveButton") {
+            xs.push((x, tag, k));
+        }
+    }
+    (column, xs)
+}
+
 /// The crafting tab: the stations, the chosen one's items and queue, the repeat button, the
 /// item's description.
-fn redraw_crafting(commands: &mut Commands, o: &mut Open, game: &Game) {
+fn redraw_crafting(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, assets: &AssetServer) {
     let sim = &game.sim;
     o.stations = sim.crafting_benches();
     if o.station >= o.stations.len() {
@@ -197,17 +286,19 @@ fn redraw_crafting(commands: &mut Commands, o: &mut Open, game: &Game) {
     }
     let pb = station.map(|b| &sim.buildings[b]);
     if let Some(l) = o.ui.get("CraftQueue") {
-        let rows: Vec<(String, bool)> = pb.map_or(Vec::new(), |pb| {
+        // (not ported) the crafting cell's value text
+        let rows: Vec<(String, String, f32)> = pb.map_or(Vec::new(), |pb| {
             pb.craft_queue
                 .iter()
                 .enumerate()
-                .map(|(k, i)| {
-                    let pct = pb.made.first().copied().unwrap_or(0.0).clamp(0.0, 1.0) * 100.0;
-                    (if k == 0 { format!("{}  {pct:.0}%", name_of(i)) } else { name_of(i) }, true)
-                })
+                .map(|(k, i)| (name_of(i), String::new(), if k == 0 { pb.made.first().copied().unwrap_or(0.0).clamp(0.0, 1.0) } else { 0.0 }))
                 .collect()
         });
-        o.rows.push(list_rows(commands, l, CRAFT_QUEUE, &rows, None, &font, (2.0, 2.0, 96.0, 96.0)));
+        let list_w = o.ui.sizes.get(&l).map_or(200.0, |s| s[0]);
+        let fs2 = kenshi_io::cfg::load(&game.root, "settings.cfg").f32("font size2", 3.0);
+        let (column, xs) = item_list_rows(commands, gui, assets, l, list_w, fs2, CRAFT_QUEUE, &rows);
+        o.rows.push(column);
+        o.queue_x.extend(xs);
     }
     if let Some(e) = o.ui.get("QueueRepeat") {
         let on = pb.is_some_and(|pb| pb.craft_repeat);
@@ -251,6 +342,31 @@ fn redraw_crafting(commands: &mut Commands, o: &mut Open, game: &Game) {
     commands.queue(hud_ui::SetRows { panel: p2, rows: right, font: o.fonts.0.clone(), label_colour: hud_ui::LIGHT, centre: false });
 }
 
+/// @fn F048704
+///
+/// A town marker's tooltip (tooltip_type 4, its tooltip_data the town, F035094): its name
+/// (once explored, else its unexplored name) in #492620, "Faction:" in #492620 and the faction
+/// in #afa68b, "Relations:" and the player's faction's relation with it ("{1,num}") in
+/// #afa68b, then for a town "Residents:" in #492620 over its resident factions. (not ported)
+/// The town's own lines between (+0xe0's list), its residents (+0xf0, the factions of the
+/// squads living there) and its "Hostile Occupiers:".
+fn town_tip(sim: &kenshi_game::sim::Sim, t: &kenshi_world::town::Town, shown: &str) -> String {
+    let mut lines = vec![format!("{shown}		t")];
+    if let Some(f) = t.faction.as_ref().and_then(|f| sim.data.get(f)) {
+        lines.push(format!("Faction:	{}	h", f.name));
+        let mine = sim.folk.iter().find(|p| p.player).and_then(|p| p.faction.clone());
+        let rel = mine.as_ref().and_then(|m| sim.relations.get(m).cloned()).or_else(|| mine.as_ref().and_then(|m| sim.data.get(m)).map(|r| kenshi_ai::faction::FactionRelations::from_data(r, &sim.data)));
+        let theirs = mine.as_ref().and_then(|m| f.refs("relations").iter().find(|(o, _)| o == m).map(|(_, v)| v[0] as f32));
+        let ours = rel.as_ref().and_then(|r| r.relations.get(&f.string_id).map(|x| x.relation));
+        let default = f.ints.get("default relation").copied().unwrap_or(0) as f32;
+        let r = ours.or(theirs).unwrap_or(default);
+        lines.push(format!("Relations:	{}	c", hud_ui::num(r as i64)));
+    }
+    lines.push("Residents:		t".into());
+    lines.join("
+")
+}
+
 /// The map tab (F035108): the world map at its zoom round its centre, the towns' markers and
 /// names, the player's characters'.
 fn redraw_map(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, assets: &AssetServer) {
@@ -291,7 +407,7 @@ fn redraw_map(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, 
         .id();
     commands.entity(clip).add_child(img);
     let ui_png = gui.0.file("Kenshi_UI.png").map(|f| assets.load::<Image>(f.to_string()));
-    let marker = |commands: &mut Commands, at: Vec2, rect: [f32; 4], tint: Color| {
+    let marker = |commands: &mut Commands, at: Vec2, rect: [f32; 4], tint: Color| -> Entity {
         let e = commands
             .spawn((
                 Node { position_type: PositionType::Absolute, left: Val::Px(at.x - rect[2] * 0.25), top: Val::Px(at.y - rect[3] * 0.25), width: Val::Px(rect[2] * 0.5), height: Val::Px(rect[3] * 0.5), ..default() },
@@ -299,11 +415,13 @@ fn redraw_map(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, 
             ))
             .id();
         commands.entity(clip).add_child(e);
+        e
     };
-    // the towns found (assumption: as Kenshi's, the map shows a town once the player has been
-    // near it): Kenshi_MapMarkers' group by the town's type
+    // the towns found (F048883): Kenshi_MapMarkers' group by the town's type
     let mut names: Vec<Rect> = Vec::new();
-    let mut found: Vec<_> = game.sim.towns.iter().filter(|t| game.sim.world.discovered.contains(&t.record)).collect();
+    // (testing) KENSHI_MAP_ALL: every town shown
+    let all = std::env::var("KENSHI_MAP_ALL").is_ok();
+    let mut found: Vec<_> = game.sim.towns.iter().filter(|t| all || game.sim.world.discovered.contains(&t.record)).collect();
     found.sort_by_key(|t| !(t.kind == 1 || t.kind == 2));
     for t in found {
         let at = to_px(t.position[0], t.position[2]);
@@ -318,15 +436,23 @@ fn redraw_map(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, 
             9 => [1158.0, 25.0, 32.0, 32.0],
             _ => [1083.0, 25.0, 32.0, 32.0],
         };
-        marker(commands, at, rect, Color::WHITE);
+        let m = marker(commands, at, rect, Color::WHITE);
+        // its name: until the player has been at it (F048883's explored), its "unexplored name"
+        // when it has one (F048888)
+        let shown = if game.sim.world.explored.contains(&t.record) {
+            t.name.clone()
+        } else {
+            game.sim.data.get(&t.record).and_then(|r| r.strings.get("unexplored name")).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| t.name.clone())
+        };
+        commands.entity(m).insert((Interaction::default(), super::inventory_ui::ItemTip(town_tip(&game.sim, t, &shown))));
         // a name over another's is left out (the bigger places drawn first keep theirs)
-        let est = Rect::new(at.x + 10.0, at.y - 8.0, at.x + 10.0 + t.name.len() as f32 * o.fonts.0.1 * 0.55, at.y - 8.0 + o.fonts.0.1 * 1.2);
+        let est = Rect::new(at.x + 10.0, at.y - 8.0, at.x + 10.0 + shown.len() as f32 * o.fonts.0.1 * 0.55, at.y - 8.0 + o.fonts.0.1 * 1.2);
         let free = names.iter().all(|r| r.intersect(est).is_empty());
         if free && (t.kind == 1 || t.kind == 2 || o.map_zoom >= 3.0) {
             names.push(est);
             let name = commands
                 .spawn((
-                    Text::new(t.name.clone()),
+                    Text::new(shown),
                     TextFont { font: bevy::text::FontSource::Handle(o.fonts.0.0.clone()), font_size: bevy::text::FontSize::Px(o.fonts.0.1), ..default() },
                     TextColor(hud_ui::LIGHT),
                     TextShadow::default(),
@@ -336,12 +462,26 @@ fn redraw_map(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, 
             commands.entity(clip).add_child(name);
         }
     }
-    // the player's characters (the selected brighter)
+    // the player's characters in kenshi_colours' "MarkerPlayer" (#8dcdff; (assumption) the
+    // selected lighter)
     for p in game.sim.folk.iter().filter(|p| p.player && !p.dead) {
         let q = p.mover.position_units();
-        let tint = if game.selected.contains(&p.id) { Color::srgb(0.4, 1.0, 0.4) } else { Color::srgb(0.25, 0.7, 0.25) };
+        let tint = if game.selected.contains(&p.id) { Color::srgb(0.8, 0.93, 1.0) } else { Color::srgb_u8(0x8d, 0xcd, 0xff) };
         marker(commands, to_px(q[0], q[2]), [1305.0, 27.0, 32.0, 32.0], tint);
     }
+    // the camera (the layout's CameraMarker: Kenshi_MapMarkers' Camera, a RotatingSkin turned with
+    // the camera; 0.0078125 of the 4096 canvas, so 32 of the map's pixels) where it looks
+    let cam = game.focus + game.zone.origin;
+    let at = to_px(cam.x, cam.z);
+    let w = (side * 0.0078125).max(12.0);
+    let e = commands
+        .spawn((
+            Node { position_type: PositionType::Absolute, left: Val::Px(at.x - w * 0.5), top: Val::Px(at.y - w * 0.5), width: Val::Px(w), height: Val::Px(w), ..default() },
+            ImageNode { image: ui_png.clone().unwrap_or_default(), rect: Some(Rect::new(1278.0, 29.0, 1310.0, 61.0)), ..default() },
+            UiTransform::from_rotation(Rot2::radians(-game.yaw)),
+        ))
+        .id();
+    commands.entity(clip).add_child(e);
 }
 
 /// The faction tab (F035125, F035113): the player's faction's name and numbers, every faction's
@@ -505,26 +645,45 @@ fn redraw_faction(commands: &mut Commands, o: &mut Open, game: &Game) {
     let mine = sim.folk.iter().find(|p| p.player).and_then(|p| p.faction.clone());
     let rel = mine.as_ref().and_then(|f| sim.relations.get(f).cloned()).or_else(|| mine.as_ref().and_then(|f| sim.data.get(f)).map(|r| kenshi_ai::faction::FactionRelations::from_data(r, &sim.data)));
     if let Some(e) = o.ui.get("FactionNameText") {
-        commands.queue(SetCaption(e, mine.as_deref().and_then(|f| sim.data.get(f)).map_or("Nameless".to_string(), |r| r.name.clone())));
+        let _ = &mine;
+        commands.queue(SetCaption(e, sim.player_faction_name()));
     }
     if let Some(e) = o.ui.get("lbFactionName") {
         commands.queue(SetCaption(e, "FACTION NAME".to_string()));
     }
     if let Some(p) = o.ui.get("FactionInfoPanel") {
         let members = sim.folk.iter().filter(|p| p.player && !p.dead).count();
-        let rows = vec![
+        let mut rows = vec![
             hud_ui::row("Members:", format!("{members}")),
             hud_ui::row("Money:", format!("c.{}", sim.money)),
             hud_ui::row("Buildings:", format!("{}", sim.buildings.iter().filter(|b| b.done).count())),
             hud_ui::row("Bounties:", format!("c.{}", sim.folk.iter().filter(|p| p.player).flat_map(|p| p.bounties.iter()).map(|b| b.amount).sum::<i32>())),
         ];
+        // F035126: the active contracts, then the upcoming events, each under its heading (in
+        // the game's colour 0x141f49360, #444444). (stand-in) A contract is
+        // its leader and the hours it has left; an event is a campaign a dialogue set coming,
+        // with the hours to it
+        let heading = |s: &str| hud_ui::Row { label: s.into(), value: String::new(), colour: hud_ui::GREY, tip: String::new() };
+        rows.push(heading("---Active Contracts---"));
+        let now = sim.hours_gone();
+        for c in &sim.contracts {
+            rows.push(hud_ui::row(format!("{}:", sim.display_name(c.leader)), format!("{:.0} hrs", (c.until - now).max(0.0))));
+        }
+        rows.push(heading("---Upcoming Events---"));
+        for (rec, at) in &sim.world.triggered {
+            let name = sim.data.get(rec).map_or(rec.clone(), |r| r.name.clone());
+            rows.push(hud_ui::row(format!("{name}:"), format!("{:.0} hrs", (at - now).max(0.0))));
+        }
         commands.queue(hud_ui::SetRows { panel: p, rows, font: o.fonts.0.clone(), label_colour: hud_ui::LIGHT, centre: false });
     }
     let Some(panel) = o.ui.get("RelationsPanel") else { return };
-    // the factions with a name, by their relation (friends first)
+    // the factions the player's faction has a relation with (F035139: its relations map, the
+    // factions met; a hidden one left out), by their relation
+    let met: std::collections::HashSet<&String> = rel.as_ref().map(|r| r.relations.keys().collect()).unwrap_or_default();
     let mut list: Vec<(String, f32)> = sim
         .data
         .of_type(ItemType::Faction)
+        .filter(|f| met.contains(&f.string_id))
         .filter(|f| Some(&f.string_id) != mine.as_ref() && !f.name.starts_with('_') && !f.bools.get("not real").copied().unwrap_or(false))
         .map(|f| {
             // the relation as the player's faction holds it, else as the other holds it, else its default
@@ -569,47 +728,183 @@ fn redraw_faction(commands: &mut Commands, o: &mut Open, game: &Game) {
     }
 }
 
-/// The squads tab (F035124): each squad (one: the player's) as a Kenshi_SquadBox with its
-/// people's portraits, the faction's size.
+/// The squads tab (F035124, F035170): each of the player's squads a Kenshi_SquadBox (its name to
+/// type over, its size of "max squad size", DELETE, its people's portraits), three to a view and
+/// the wheel for more; the faction's size of 256.
 fn redraw_squads(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, assets: &AssetServer, portraits: &super::portraits::Portraits) {
     for e in o.map_nodes.drain(..) {
         commands.entity(e).despawn();
     }
-    let members: Vec<usize> = game.sim.folk.iter().filter(|p| p.player && !p.dead).map(|p| p.id).collect();
+    o.squad_boxes.clear();
+    o.squad_portraits.clear();
+    let sim = &game.sim;
+    let members = sim.folk.iter().filter(|p| p.player && !p.dead && p.race.is_none()).count();
     if let Some(e) = o.ui.get("FactionSizeText") {
-        commands.queue(SetCaption(e, format!("{}/256", members.len())));
+        commands.queue(SetCaption(e, format!("{members}/256")));
     }
+    o.squads_shown = (0..sim.player_squads.len()).map(|k| (sim.player_squads[k].name.clone(), sim.squad_members(k))).collect();
+    o.squads_shown_portraits = o.squads_shown.iter().flat_map(|(_, m)| m.iter()).filter(|id| portraits.by.contains_key(id)).count();
     let Some(panel) = o.ui.get("SquadsPanel") else { return };
     let size = o.ui.sizes.get(&panel).copied().unwrap_or([800.0, 600.0]);
-    let mut defs = gui.0.layout("Kenshi_SquadBox.layout");
-    if let Some(d) = defs.first_mut() {
-        d.pos = kenshi_gui::res::Pos::Px([0.0, 0.0, size[0], size[1] * 0.3]);
-    }
-    let b = kenshi_gui::ui::spawn(commands, &gui.0, assets, &defs, Some(panel), size);
-    o.map_nodes.extend(b.roots.iter().copied());
-    let faction = game.sim.folk.iter().find(|p| p.player).and_then(|p| p.faction.as_deref()).and_then(|f| game.sim.data.get(f)).map_or("Squad".to_string(), |r| r.name.clone());
-    if let Some(e) = b.get("SquadNameText") {
-        commands.queue(SetCaption(e, format!("{faction}_0").to_uppercase()));
-    }
-    if let Some(e) = b.get("SquadSizeText") {
-        commands.queue(SetCaption(e, format!("{} / 20", members.len())));
-    }
-    let Some(area) = b.get("PortraitsPanel") else { return };
-    let asize = b.sizes.get(&area).copied().unwrap_or([600.0, 100.0]);
-    let side = asize[1] * 0.9;
-    for (k, &id) in members.iter().enumerate() {
-        let mut defs = gui.0.layout("Kenshi_SquadsPanel_PortraitCharacter.layout");
+    let shown = 3usize;
+    o.squad_scroll = o.squad_scroll.min(o.squads_shown.len().saturating_sub(shown));
+    let max = sim.max_squad_size();
+    for k in o.squad_scroll..(o.squad_scroll + shown).min(o.squads_shown.len()) {
+        let (name, people) = o.squads_shown[k].clone();
+        let mut defs = gui.0.layout("Kenshi_SquadBox.layout");
         if let Some(d) = defs.first_mut() {
-            d.pos = kenshi_gui::res::Pos::Px([4.0 + k as f32 * (side + 6.0), asize[1] * 0.05, side, side]);
+            d.pos = kenshi_gui::res::Pos::Px([0.0, (k - o.squad_scroll) as f32 * size[1] * 0.3, size[0], size[1] * 0.3]);
         }
-        let pb = kenshi_gui::ui::spawn(commands, &gui.0, assets, &defs, Some(area), asize);
-        if let Some(e) = pb.get("NameText") {
-            commands.queue(SetCaption(e, game.sim.display_name(id)));
+        let b = kenshi_gui::ui::spawn(commands, &gui.0, assets, &defs, Some(panel), size);
+        o.map_nodes.extend(b.roots.iter().copied());
+        if let Some(e) = b.get("SquadNameText") {
+            commands.queue(SetCaption(e, name.to_uppercase()));
         }
-        if let (Some(e), Some((_, image))) = (pb.get("PortraitImage"), portraits.by.get(&id)) {
-            commands.entity(e).insert(ImageNode { image: image.clone(), color: Color::linear_rgb(super::portraits::EXPOSURE, super::portraits::EXPOSURE, super::portraits::EXPOSURE), ..default() });
+        if let Some(e) = b.get("SquadSizeText") {
+            commands.queue(SetCaption(e, format!("{} / {max}", people.len())));
+        }
+        o.squad_boxes.push((k, b.roots[0], b.get("SquadNameText"), b.get("SquadRemoveButton")));
+        let Some(area) = b.get("PortraitsPanel") else { continue };
+        let asize = b.sizes.get(&area).copied().unwrap_or([600.0, 100.0]);
+        let side = asize[1] * 0.9;
+        for (j, &id) in people.iter().enumerate() {
+            let mut defs = gui.0.layout("Kenshi_SquadsPanel_PortraitCharacter.layout");
+            if let Some(d) = defs.first_mut() {
+                d.pos = kenshi_gui::res::Pos::Px([4.0 + j as f32 * (side + 6.0), asize[1] * 0.05, side, side]);
+            }
+            let pb = kenshi_gui::ui::spawn(commands, &gui.0, assets, &defs, Some(area), asize);
+            if let Some(e) = pb.get("NameText") {
+                commands.queue(SetCaption(e, sim.display_name(id)));
+            }
+            if let (Some(e), Some((_, image))) = (pb.get("PortraitImage"), portraits.by.get(&id)) {
+                commands.entity(e).insert(ImageNode { image: image.clone(), color: Color::linear_rgb(super::portraits::EXPOSURE, super::portraits::EXPOSURE, super::portraits::EXPOSURE), ..default() });
+            }
+            o.squad_portraits.push((pb.roots[0], id));
         }
     }
+}
+
+/// A laid-out widget's rectangle (logical pixels: top left, size).
+fn rect_of(laid: &Query<(&ComputedNode, &UiGlobalTransform)>, e: Entity) -> Option<(Vec2, Vec2)> {
+    let (n, t) = laid.get(e).ok()?;
+    let k = n.inverse_scale_factor();
+    let size = n.size() * k;
+    Some((t.translation * k - size * 0.5, size))
+}
+
+fn inside(r: Option<(Vec2, Vec2)>, p: Vec2) -> bool {
+    r.is_some_and(|(at, size)| p.x >= at.x && p.y >= at.y && p.x <= at.x + size.x && p.y <= at.y + size.y)
+}
+
+/// The squads tab's doings (F035111 NEW SQUAD, F035112 DELETE, F035090 a name typed, F035150 a
+/// portrait dragged to a squad or to DRAG HERE TO DISMISS, the wheel); whether to draw it again.
+#[allow(clippy::too_many_arguments)]
+fn squads_tab(
+    commands: &mut Commands,
+    o: &mut Open,
+    game: &mut Game,
+    clicks: &[GuiClick],
+    edits: &[kenshi_gui::GuiEdit],
+    (press, release): (bool, bool),
+    cursor: Option<Vec2>,
+    wheel: f32,
+    laid: &Query<(&ComputedNode, &UiGlobalTransform)>,
+    portraits: &super::portraits::Portraits,
+) -> bool {
+    use super::message_box::{Ask, Question};
+    let mut again = false;
+    game.sim.squads_ready();
+    let note = |game: &mut Game, text: &str| game.ask = Some(Ask { title: String::new(), text: text.to_string(), question: Question::Note });
+    for c in clicks {
+        if c.name == "NewSquadButton" {
+            match game.sim.new_squad() {
+                Ok(k) => {
+                    // the new one in view
+                    o.squad_scroll = k.saturating_sub(2);
+                    again = true;
+                }
+                Err(m) => note(game, m),
+            }
+        } else if c.name == "SquadRemoveButton"
+            && let Some(&(k, ..)) = o.squad_boxes.iter().find(|b| b.3 == Some(c.widget))
+        {
+            match game.sim.remove_squad(k) {
+                Ok(()) => again = true,
+                Err(m) => note(game, m),
+            }
+        }
+    }
+    // a squad's name typed (kept as it is shown, not drawn again under the typing)
+    for e in edits {
+        if let Some(&(k, ..)) = o.squad_boxes.iter().find(|b| b.2 == Some(e.widget))
+            && let Some(s) = game.sim.player_squads.get_mut(k)
+            && !e.text.trim().is_empty()
+        {
+            s.name = e.text.clone();
+            if let Some(sh) = o.squads_shown.get_mut(k) {
+                sh.0 = e.text.clone();
+            }
+        }
+    }
+    if wheel != 0.0 {
+        let top = o.squads_shown.len().saturating_sub(3);
+        let to = if wheel > 0.0 { o.squad_scroll.saturating_sub(1) } else { (o.squad_scroll + 1).min(top) };
+        if to != o.squad_scroll {
+            o.squad_scroll = to;
+            again = true;
+        }
+    }
+    // a portrait taken up: it follows the cursor (its face, small) until let go
+    if let Some(p) = cursor {
+        if press
+            && o.squad_drag.is_none()
+            && let Some(&(_, id)) = o.squad_portraits.iter().find(|(e, _)| inside(rect_of(laid, *e), p))
+        {
+            let mut node = commands.spawn((
+                Node { position_type: PositionType::Absolute, left: Val::Px(p.x - 32.0), top: Val::Px(p.y - 32.0), width: Val::Px(64.0), height: Val::Px(64.0), ..default() },
+                GlobalZIndex(90),
+                bevy::ui::FocusPolicy::Pass,
+                Pickable::IGNORE,
+            ));
+            if let Some((_, image)) = portraits.by.get(&id) {
+                node.insert(ImageNode { image: image.clone(), color: Color::linear_rgba(1.0, 1.0, 1.0, 0.8), ..default() });
+            } else {
+                node.insert(BackgroundColor(Color::srgba(0.6, 0.55, 0.4, 0.6)));
+            }
+            o.squad_drag = Some((id, node.id()));
+        }
+        if let Some((_, ghost)) = o.squad_drag {
+            commands.entity(ghost).insert(Node { position_type: PositionType::Absolute, left: Val::Px(p.x - 32.0), top: Val::Px(p.y - 32.0), width: Val::Px(64.0), height: Val::Px(64.0), ..default() });
+        }
+    }
+    if release
+        && let Some((id, ghost)) = o.squad_drag.take()
+    {
+        commands.entity(ghost).despawn();
+        let Some(p) = cursor else { return again };
+        if inside(o.ui.get("DismissCharPanel").and_then(|e| rect_of(laid, e)), p) {
+            // F035150: asked first; F035103 when answered yes
+            match game.sim.may_dismiss(id) {
+                Err(m) => game.ask = Some(Ask { title: "Dismiss character".into(), text: m.to_string(), question: Question::Note }),
+                Ok(()) => {
+                    let text = format!("Dismiss character '{}'?", game.sim.display_name(id));
+                    game.ask = Some(Ask { title: "Dismiss character".into(), text, question: Question::Dismiss(id) });
+                }
+            }
+        } else if let Some(&(k, ..)) = o.squad_boxes.iter().find(|b| inside(rect_of(laid, b.1), p))
+            && game.sim.move_to_squad(id, k)
+        {
+            again = true;
+        }
+    }
+    // drawn again when the squads or their people changed (not their names: those are typed)
+    let now: Vec<Vec<usize>> = (0..game.sim.player_squads.len()).map(|k| game.sim.squad_members(k)).collect();
+    let had: Vec<Vec<usize>> = o.squads_shown.iter().map(|(_, m)| m.clone()).collect();
+    let faces = now.iter().flatten().filter(|id| portraits.by.contains_key(id)).count();
+    if now != had || faces != o.squads_shown_portraits {
+        again = true;
+    }
+    again && o.squad_drag.is_none()
 }
 
 /// @fn F035131
@@ -689,10 +984,13 @@ pub fn update(
     rows: Query<(&Interaction, &ListRow)>,
     (mut wheel, time, portraits, laid): (MessageReader<bevy::input::mouse::MouseWheel>, Res<Time>, Res<super::portraits::Portraits>, Query<(&ComputedNode, &UiGlobalTransform)>),
     ai_rows: Query<(&Interaction, &AiRow)>,
+    mut edits: MessageReader<kenshi_gui::GuiEdit>,
 ) {
+    let squad_edits: Vec<kenshi_gui::GuiEdit> = edits.read().cloned().collect();
+    let mut squad_clicks: Vec<GuiClick> = Vec::new();
     // the tab asked for (controls.cfg: T research, Y crafting, M map); the main panel's TCH, MAP and SQD
     let mut asked: Option<u8> = None;
-    for (a, t) in [("toggle_research", 0u8), ("toggle_crafting", 1), ("toggle_map", 2)] {
+    for (a, t) in [("toggle_research", 0u8), ("toggle_crafting", 1), ("toggle_map", 2), ("toggle_faction", 3)] {
         if act.just(a) {
             asked = Some(t);
         }
@@ -706,7 +1004,7 @@ pub fn update(
         if let Some(o) = win.open.as_mut() {
             o.tab = 1;
             o.station = game.sim.crafting_benches().iter().position(|&s| s == b).unwrap_or(0);
-            redraw(&mut commands, o, &game);
+            redraw(&mut commands, o, &game, &gui, &assets);
         } else {
             toggled = true;
             want_tab = 1;
@@ -718,7 +1016,14 @@ pub fn update(
     let mut map_zoom = 1.0f32;
     let mut map_centre = false;
     let mut ai_changed = false;
+    let mut removes: Vec<Entity> = Vec::new();
     for c in clicks.read() {
+        if c.name == "NewSquadButton" || c.name == "SquadRemoveButton" {
+            squad_clicks.push(c.clone());
+        }
+        if c.name == "RemoveButton" {
+            removes.push(c.widget);
+        }
         match c.name.as_str() {
             "ShortcutTechButton" | "ResearchButton" => asked = Some(0),
             "ShortcutMapButton" => asked = Some(2),
@@ -846,6 +1151,14 @@ pub fn update(
             faction_scroll: 0,
             log_len: usize::MAX,
             ai_tip: None,
+            squads_shown: Vec::new(),
+            squads_shown_portraits: 0,
+            squad_boxes: Vec::new(),
+            squad_portraits: Vec::new(),
+            squad_scroll: 0,
+            squad_drag: None,
+            squad_test_frames: 0,
+            queue_x: Vec::new(),
         };
         // the two tab buttons (Kenshi_TabControl's ButtonWidth 140), over the tab area
         if let Some(place) = o.ui.get("TabsMain") {
@@ -882,7 +1195,7 @@ pub fn update(
                 size,
             ));
         }
-        redraw(&mut commands, &mut o, &game);
+        redraw(&mut commands, &mut o, &game, &gui, &assets);
         win.open = Some(o);
         return;
     }
@@ -943,7 +1256,7 @@ pub fn update(
             moved = true;
         }
         if moved {
-            redraw(&mut commands, o, &game);
+            redraw(&mut commands, o, &game, &gui, &assets);
         }
     }
     // the dialogue tab: drawn again as the log grows, scrolled back by the wheel
@@ -954,7 +1267,7 @@ pub fn update(
             moved = true;
         }
         if moved || o.log_len != game.log.len() {
-            redraw(&mut commands, o, &game);
+            redraw(&mut commands, o, &game, &gui, &assets);
         }
     }
     // the AI tab: drawn on showing and on a change; the hovered option's tooltip below
@@ -970,14 +1283,61 @@ pub fn update(
         }
     }
     if o.tab == 4 {
-        let now = time.elapsed_secs();
-        if now - o.map_drawn > 1.0 {
-            o.map_drawn = now;
+        let mut cursor = windows.iter().next().and_then(|w| w.cursor_position());
+        let mut buttons = (mouse.just_pressed(MouseButton::Left), mouse.just_released(MouseButton::Left));
+        // (testing) KENSHI_SQUAD_DRAG="frame@portrait>squad" (or ">dismiss"): that many frames
+        // into the tab, the portrait shown at that place taken up at its middle and, 10 frames
+        // later, let go over that squad's box (or DRAG HERE TO DISMISS)
+        if let Ok(v) = std::env::var("KENSHI_SQUAD_DRAG")
+            && let Some((at, rest)) = v.split_once('@')
+            && let Some((from, to)) = rest.split_once('>')
+            && let (Ok(at), Ok(from)) = (at.parse::<u32>(), from.parse::<usize>())
+        {
+            o.squad_test_frames += 1;
+            let mid = |e: Entity| rect_of(&laid, e).map(|(p, sz)| p + sz * 0.5);
+            if o.squad_test_frames == at {
+                cursor = o.squad_portraits.get(from).and_then(|&(e, _)| mid(e));
+                buttons = (true, false);
+                eprintln!("squad drag: take portrait {from} at {cursor:?}");
+            } else if o.squad_test_frames == at + 10 {
+                cursor = if to == "dismiss" { o.ui.get("DismissCharPanel").and_then(mid) } else { to.parse::<usize>().ok().and_then(|k| o.squad_boxes.iter().find(|b| b.0 == k)).and_then(|b| mid(b.1)) };
+                buttons = (false, true);
+                eprintln!("squad drag: let go over {to} at {cursor:?}");
+            }
+        }
+        let notches: f32 = wheel.read().map(|w| w.y.signum()).sum();
+        let first = o.map_drawn < 0.0 || o.squads_shown.is_empty();
+        if squads_tab(&mut commands, o, &mut game, &squad_clicks, &squad_edits, buttons, cursor, notches, &laid, &portraits) || first {
+            o.map_drawn = time.elapsed_secs();
             redraw_squads(&mut commands, o, &game, &gui, &assets, &portraits);
+        }
+    } else if let Some((_, ghost)) = o.squad_drag.take() {
+        commands.entity(ghost).despawn();
+    }
+    // the faction's name typed (F035125)
+    for e in &squad_edits {
+        if o.ui.get("FactionNameText") == Some(e.widget) {
+            game.sim.faction_name = e.text.trim().to_string();
         }
     }
     // the lists: left click chooses, right click learns (a blueprint) or takes off (the queue)
     let mut changed = false;
+    // a queue row's X: that one taken off (F035994's RemoveButton)
+    for w in removes {
+        let Some(&(_, tag, k)) = o.queue_x.iter().find(|(x, ..)| *x == w) else { continue };
+        if tag == QUEUE {
+            game.sim.unqueue_research(k);
+        } else if let Some(&b) = o.stations.get(o.station) {
+            let pb = &mut game.sim.buildings[b];
+            if k < pb.craft_queue.len() {
+                pb.craft_queue.remove(k);
+                if k == 0 {
+                    pb.made.clear();
+                }
+            }
+        }
+        changed = true;
+    }
     for (i, row) in &rows {
         let left = *i == Interaction::Pressed && mouse.just_pressed(MouseButton::Left);
         let right = *i == Interaction::Hovered && mouse.just_pressed(MouseButton::Right);
@@ -1075,7 +1435,7 @@ pub fn update(
     if changed || state != o.shown || craft_state != o.craft_shown {
         o.shown = state;
         o.craft_shown = craft_state;
-        redraw(&mut commands, o, &game);
+        redraw(&mut commands, o, &game, &gui, &assets);
     }
 }
 

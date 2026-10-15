@@ -24,6 +24,21 @@ pub struct GroundItem {
     pub yaw: f32,
 }
 
+/// An item spot in a building (F037792, ITEM_PLACEMENT_GROUP): the group, where it lies, the
+/// faction that owns it (a town's: taking from it is stealing), the ground item now on it and,
+/// once taken, when it comes back (game hours: "min respawn time" .. "max respawn time").
+/// A loaded game's zones make them again: each takes the saved item lying on it, and one saved
+/// empty keeps waiting till it was due.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItemSpot {
+    pub group: String,
+    pub at: [f32; 3],
+    pub yaw: f32,
+    pub owner: Option<String>,
+    pub item: Option<u64>,
+    pub due: f64,
+}
+
 /// How far round a town its loot lies (units), and how near to pick an item up.
 const SPREAD: f32 = 400.0;
 const REACH: f32 = 25.0;
@@ -52,6 +67,7 @@ impl Sim {
                 }
             }
         }
+        self.spots_tick();
         let due: Vec<usize> = (0..self.towns.len())
             .filter(|&t| !self.looted.contains(&self.towns[t].record) && self.zones.contains(&zone_of(self.towns[t].position)))
             .collect();
@@ -120,6 +136,12 @@ impl Sim {
             let item = self.ground[k].item.clone();
             let name = item.name.clone();
             if self.folk[who].inventory.add(item, false) {
+                // an item off a town's spot is theirs: taking it is stealing (seen or not)
+                if let Some(owner) = self.spots.iter().find(|s| s.item == Some(id)).and_then(|s| s.owner.clone())
+                    && self.folk[who].faction.as_deref() != Some(owner.as_str())
+                {
+                    self.commit_crime(who, kenshi_ai::CrimeEnum::CrimeStealing, Some(&owner));
+                }
                 self.ground.remove(k);
                 if self.folk[who].player {
                     self.messages.push(format!("{} picked up {name}", self.display_name(who)));
@@ -146,11 +168,19 @@ impl Sim {
 
 /// Containers as inventory owners (`Sim::inv`): BOX_OWNER + their index.
 pub const BOX_OWNER: usize = 1 << 21;
+/// A person's worn backpack as an inventory owner (`Sim::inv`): BAG_OWNER + the person.
+pub const BAG_OWNER: usize = 1 << 22;
 
 impl Sim {
     /// A storage's place (world units), how far out its edge is, its name and grid size: a
     /// player building's (BUILDING_OWNER + index) or a container's (BOX_OWNER + index).
     pub fn storage_info(&self, owner: usize) -> Option<([f32; 3], f32, String, (u32, u32))> {
+        if let Some(p) = owner.checked_sub(BAG_OWNER) {
+            let wearer = self.folk.get(p)?;
+            let worn = wearer.inventory.sections.iter().find(|s| s.name == "backpack_attach")?.items.first()?;
+            let grid = worn.item.contents.as_ref()?.sections.first()?;
+            return Some((wearer.mover.position_units(), 10.0, worn.item.name.clone(), (grid.w, grid.h)));
+        }
         if let Some(k) = owner.checked_sub(BOX_OWNER) {
             let b = self.boxes.get(k)?;
             // a counter shows its trader's stock grid
@@ -229,6 +259,102 @@ pub struct WorldBox {
 
 impl Sim {
     /// The containers of placements `placed` (their indices from `off`), each empty.
+    /// A zone's buildings' item spots (`ItemSpot`), each with an item to start with; a town's
+    /// belong to its faction.
+    pub fn add_item_spots(&mut self, placed: &[kenshi_world::Placement]) {
+        if self.layouts.is_none() {
+            self.layouts = Some(kenshi_world::nodes::Layouts::load(&self.install));
+        }
+        let Some(layouts) = self.layouts.as_ref() else { return };
+        let found = kenshi_world::furniture::item_spots(&self.data, layouts, placed);
+        let first = self.spots.len();
+        for s in found {
+            let town = kenshi_world::town::current_town(&self.towns, s.position, None);
+            let owner = town.filter(|&t| self.towns[t].kind != 4).and_then(|t| self.towns[t].faction.clone());
+            let w = s.rotation[0].clamp(-1.0, 1.0);
+            let yaw = 2.0 * w.acos() * if s.rotation[2] < 0.0 { -1.0 } else { 1.0 };
+            self.spots.push(ItemSpot { group: s.group, at: s.position, yaw, owner, item: None, due: 0.0 });
+        }
+        self.apply_spot_dues(first);
+        if std::env::var("KENSHI_LOOT_DEBUG").is_ok() {
+            eprintln!("item spots: {} new, {} in all", self.spots.len() - first, self.spots.len());
+        }
+    }
+
+    /// The spots from `first` on that a loaded game had empty: they wait till they were due.
+    pub fn apply_spot_dues(&mut self, first: usize) {
+        if self.saved_spot_dues.is_empty() {
+            return;
+        }
+        for s in self.spots.iter_mut().skip(first) {
+            if let Some(&(_, due)) = self.saved_spot_dues.iter().find(|(at, _)| (at[0] - s.at[0]).abs() < 1.0 && (at[1] - s.at[1]).abs() < 1.0 && (at[2] - s.at[2]).abs() < 1.0) {
+                s.item = None;
+                s.due = due;
+            }
+        }
+    }
+
+    /// One item of an ITEM_PLACEMENT_GROUP: of its "items", "weapons", "clothing", "armour
+    /// blueprints", "blueprints" and "maps", one by their chances (the refs' first values).
+    /// (assumption) Picked among them all by chance; weapons of no particular maker, gear of
+    /// the record's own quality.
+    fn spot_item(&mut self, group: &str) -> Option<kenshi_char::inventory::Item> {
+        let g = self.data.get(group)?;
+        let all: Vec<(String, f32)> = ["items", "weapons", "clothing", "armour blueprints", "blueprints", "maps"]
+            .iter()
+            .flat_map(|k| g.refs(k).iter().map(|(s, v)| (s.clone(), v[0].max(0) as f32)))
+            .filter(|(s, w)| *w > 0.0 && self.data.get(s).is_some())
+            .collect();
+        let total: f32 = all.iter().map(|x| x.1).sum();
+        if total <= 0.0 {
+            return None;
+        }
+        let mut r = self.rng.uniform() * total;
+        let pick = all.iter().find(|(_, w)| {
+            r -= w;
+            r < 0.0
+        })?;
+        let rec = self.data.get(&pick.0)?;
+        Some(kenshi_char::inventory::Item::from_record(rec, 1))
+    }
+
+    /// Every second: item spots empty and due get an item; spots whose item has gone wait
+    /// "min respawn time" .. "max respawn time" hours (F037792).
+    fn spots_tick(&mut self) {
+        let now = self.hours_gone();
+        for k in 0..self.spots.len() {
+            if let Some(id) = self.spots[k].item {
+                if !self.ground.iter().any(|g| g.id == id) {
+                    let g = self.data.get(&self.spots[k].group);
+                    let lo = g.and_then(|g| g.ints.get("min respawn time").copied()).unwrap_or(24) as f64;
+                    let hi = g.and_then(|g| g.ints.get("max respawn time").copied()).unwrap_or(48).max(lo as i32) as f64;
+                    self.spots[k].item = None;
+                    self.spots[k].due = now + lo + (hi - lo) * self.rng.uniform() as f64;
+                }
+                continue;
+            }
+            if now < self.spots[k].due {
+                continue;
+            }
+            // an item already lying on it (a loaded game's) is its own
+            let at = self.spots[k].at;
+            let taken: Vec<u64> = self.spots.iter().filter_map(|s| s.item).collect();
+            if let Some(g) = self.ground.iter().find(|g| !taken.contains(&g.id) && (g.at[0] - at[0]).hypot(g.at[2] - at[2]) < 3.0 && (g.at[1] - at[1]).abs() < 10.0) {
+                self.spots[k].item = Some(g.id);
+                continue;
+            }
+            let group = self.spots[k].group.clone();
+            let Some(item) = self.spot_item(&group) else {
+                self.spots[k].due = f64::INFINITY;
+                continue;
+            };
+            self.next_ground += 1;
+            let (at, yaw) = (self.spots[k].at, self.spots[k].yaw);
+            self.ground.push(GroundItem { id: self.next_ground, item, at, yaw });
+            self.spots[k].item = Some(self.next_ground);
+        }
+    }
+
     pub fn add_containers(&mut self, placed: &[kenshi_world::Placement], off: usize) {
         if std::env::var("KENSHI_LOOT_DEBUG").is_ok() {
             eprintln!("containers: {} placements from {off}, layouts {}", placed.len(), self.layouts.is_some());
@@ -249,6 +375,7 @@ impl Sim {
             self.boxes.push(WorldBox { at: c, inventory });
         }
         self.refill_boxes(first);
+        self.add_item_spots(placed);
     }
 
     /// F048891 Town::distributeArtifacts: when a town's zone first loads, the artifacts the

@@ -14,8 +14,9 @@
 //!   characters too (F050277);
 //! - "Easy prospecting".
 //!
-//! (stand-in) The defaults (all 1, bandits looting, no easy prospecting) are not read from the
-//! game; easy prospecting is taken as prospecting at once, the game's use of it not traced.
+//! The defaults are F032956's (all 1, no easy prospecting, bandits looting; its flag at +0x21,
+//! on, read by the hunger cap F039188, not identified). (stand-in) Easy prospecting is taken as
+//! prospecting at once, the game's use of it not traced.
 
 use serde::{Deserialize, Serialize};
 

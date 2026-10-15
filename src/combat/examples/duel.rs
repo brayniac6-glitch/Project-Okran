@@ -77,6 +77,17 @@ fn main() {
             f.push(make(&name, team, skill, x, z));
         }
     }
+    // (testing) DUEL_LEG=<flesh>: the last fighter's legs start at that flesh (below the KO
+    // point they collapse: it fights prone)
+    if let Some(v) = std::env::var("DUEL_LEG").ok().and_then(|v| v.parse::<f32>().ok())
+        && let Some(x) = f.last_mut()
+    {
+        for p in x.medical.parts.iter_mut().filter(|p| p.kind == 1) {
+            p.flesh = v;
+            p.update_frac();
+        }
+        eprintln!("{} prone: {}", x.name, x.prone());
+    }
     for x in &f {
         eprintln!(
             "{}: skill {}, attack speed {:.2}, defence speed {:.2}, run {:.0}",

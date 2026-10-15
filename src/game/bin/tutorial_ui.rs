@@ -1,11 +1,15 @@
 //! Kenshi's tutorials (TutorialManager: F049922 the registry, F049781 the panel, F049790 the
 //! tutorials window).
 //!
-//! A tutorial is a title and its pages; the panel (Kenshi_TutorialPanel.layout's
-//! TutorialWindow) shows one page at a time, "1 / 5" under it, PREVIOUS, CONTINUE (FINISH on the
-//! last) and DISMISS. A tutorial is shown once (the seen ones kept, Kenshi in
-//! ./__tutorials.data, the rewrite in %APPDATA%\kenshi-rewrite\tutorials.txt) and only with
-//! the options' "Tutorials" on. The main panel's HLP opens the tutorials window
+//! A tutorial is a title and its pages. One that starts is not shown at once: it waits as a tip
+//! (F049784: a Kenshi_TutorialTooltipPanel row, its name on NameButton and an X), the tips
+//! stacked up from the bottom of the tips panel (TooltipsPanel's place, the screen's left;
+//! F049741), a new one flashing white and sounding "Thing_Complete". Its name shows it in the
+//! panel (Kenshi_TutorialPanel.layout's TutorialWindow, F049783 -> F049778): one page at a
+//! time, "1 / 5" under it, PREVIOUS, CONTINUE (FINISH on the last) and DISMISS. FINISH, DISMISS
+//! and the tip's X end it (F049758: its tip gone, done); the window's own close only hides it.
+//! A tutorial is done once (the seen ones kept, Kenshi in ./__tutorials.data, the rewrite in
+//! %APPDATA%\kenshi-rewrite\tutorials.txt) and starts only with the options' "Tutorials" on. The main panel's HLP opens the tutorials window
 //! (Kenshi_TutorialsWindow.layout, "TUTORIALS"): every tutorial, ACTIVATE showing the one
 //! chosen again.
 //!
@@ -15,8 +19,9 @@
 //! (stand-in) What starts each tutorial is not traced; the rewrite starts these when it sees:
 //! a new game (Basic Controls, then GUI overview, then What do I do?), a town found, a character
 //! hurt, fighting, knocked out, hungry, imprisoned, enslaved, in disguise, a recruit, build
-//! mode, a production building built, the prospecting window. The pages' pointers at the GUI
-//! (TooltipsPanel, Kenshi_TutorialTooltipPanel) are not shown.
+//! mode, a production building built, the prospecting window. (not ported) The pages' pointers
+//! at the GUI (F049757's yellow box over the widget a page names); (assumption) a new tip's
+//! white flash fades over a second.
 use super::Game;
 use super::build_ui::{ListRow, list_rows};
 use super::tutorial_table::TUTORIALS;
@@ -44,7 +49,18 @@ pub struct Tutorials {
     window: Option<(Built, Option<usize>, Option<Entity>, usize)>,
     /// What the triggers saw last (the player's count, towns found).
     seen_state: (usize, usize),
+    /// The tutorials window's list scrolled down this many rows (the mouse wheel over it).
+    scroll: usize,
     loaded: bool,
+    /// The tips waiting (F049784): the tutorial, its row's widgets, its flash and how bright.
+    tips: Vec<(usize, Built, Option<Entity>, f32)>,
+}
+
+impl Tutorials {
+    /// Whether the tutorials window (HLP) is open.
+    pub fn window_open(&self) -> bool {
+        self.window.is_some()
+    }
 }
 
 /// A NUL-ended string at virtual address `va` of a PE image.
@@ -104,6 +120,12 @@ impl Tutorials {
         }
     }
 
+    /// The options' Reset Tutorials: every tutorial shown again.
+    pub fn reset(&mut self) {
+        self.seen.clear();
+        self.save_seen();
+    }
+
     fn save_seen(&self) {
         let mut v: Vec<&String> = self.seen.iter().collect();
         v.sort();
@@ -149,14 +171,16 @@ pub fn update(
     windows: Query<&Window>,
     rows: Query<(&Interaction, &ListRow), Changed<Interaction>>,
     (build, prospect, time): (Option<Res<super::build_ui::BuildMode>>, Res<super::prospect_ui::ProspectWindow>, Res<Time>),
-    (mut last, mut hooked): (Local<f32>, Local<bool>),
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    (mut last, mut hooked, mut hooked_open): (Local<f32>, Local<bool>, Local<bool>),
+    (mut sound, mut nodes): (Option<ResMut<super::sound::Sound>>, Query<&mut Node>),
 ) {
     let size = window_size(&windows);
     if !tut.loaded {
         tut.loaded = true;
         tut.list = texts(&game.root);
         tut.seen = std::fs::read_to_string(seen_path()).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default();
-        tut.seen_state = (game.sim.folk.iter().filter(|p| p.player).count(), game.sim.world.discovered.len());
+        tut.seen_state = (game.sim.folk.iter().filter(|p| p.player && p.race.is_none()).count(), game.sim.world.discovered.len());
         // (testing) KENSHI_TUTORIAL=<id>: that one now, seen or not
         if let Ok(id) = std::env::var("KENSHI_TUTORIAL") {
             tut.seen.remove(&id);
@@ -165,6 +189,19 @@ pub fn update(
     }
     let on = kenshi_io::cfg::load(&game.root, "settings.cfg").get("tutorials").is_none_or(|v| v.trim() != "0");
     let mut clicked: Vec<GuiClick> = clicks.read().cloned().collect();
+    // (testing) KENSHI_TUTORIALS_OPEN=<seconds>[,<rows>]: the tutorials window opened then, its
+    // list scrolled that many rows
+    if let Ok(v) = std::env::var("KENSHI_TUTORIALS_OPEN")
+        && !*hooked_open
+    {
+        let mut it = v.split(',');
+        let at: f32 = it.next().and_then(|t| t.parse().ok()).unwrap_or(10.0);
+        if time.elapsed_secs() > at {
+            *hooked_open = true;
+            clicked.push(GuiClick { widget: Entity::PLACEHOLDER, name: "ShortcutHelpButton".into() });
+            tut.scroll = it.next().and_then(|r| r.parse().ok()).unwrap_or(0);
+        }
+    }
     // (testing) KENSHI_TUTORIALS_WINDOW: the tutorials window opened (as HLP), the second chosen
     if std::env::var("KENSHI_TUTORIALS_WINDOW").is_ok() && !*hooked && time.elapsed_secs() > 5.0 {
         *hooked = true;
@@ -183,10 +220,12 @@ pub fn update(
         if sim.world.discovered.len() > tut.seen_state.1 {
             want.push("Tutorial_WhatDoIDo_InTown");
         }
-        if mine.len() > tut.seen_state.0 {
+        // a recruit: one more person (an animal bought is not one)
+        let people = mine.iter().filter(|p| p.race.is_none()).count();
+        if people > tut.seen_state.0 {
             want.push("Tutorial_HiredRecruit");
         }
-        tut.seen_state = (mine.len(), sim.world.discovered.len());
+        tut.seen_state = (people, sim.world.discovered.len());
         for p in &mine {
             let m = &sim.arena.f[p.id].medical;
             if m.parts.iter().any(|q| q.flesh - q.stun < q.max_health() * 0.9) {
@@ -194,6 +233,9 @@ pub fn update(
             }
             if sim.arena.f[p.id].active {
                 want.push("Tutorial_UnderAttack");
+            }
+            if p.playing_dead {
+                want.push("Tutorial_PlayingDead");
             }
             if p.down {
                 want.push("Tutorial_KOd");
@@ -277,8 +319,25 @@ pub fn update(
             _ => {}
         }
     }
+    // the wheel scrolls the window's list (a row a notch), as Kenshi_ListBox does
+    let notches: f32 = wheel.read().map(|w| w.y.signum()).sum();
+    if tut.window.is_some() && notches != 0.0 {
+        // no further than leaves the list's last rows filling it (its client height over the
+        // rows' 18 px)
+        let visible = tut
+            .window
+            .as_ref()
+            .and_then(|(ui, ..)| ui.get("TutorialList").and_then(|l| ui.sizes.get(&l)))
+            .map_or(12, |s| (s[1] * 0.96 / (18.0 * kenshi_gui::res::ui_scale())).floor().max(1.0) as usize);
+        let most = tut.list.len().saturating_sub(visible);
+        let to = (tut.scroll as f32 - notches).clamp(0.0, most as f32) as usize;
+        if to != tut.scroll {
+            tut.scroll = to;
+            redraw_list(&mut commands, &mut tut, &gui, &assets);
+        }
+    }
     if tut.window.is_some()
-        && let Some(k) = rows.iter().find(|(i, r)| **i == Interaction::Pressed && r.0 == LIST).map(|(_, r)| r.1)
+        && let Some(k) = rows.iter().find(|(i, r)| **i == Interaction::Pressed && r.0 == LIST).map(|(_, r)| r.1 + tut.scroll)
     {
         if let Some(w) = tut.window.as_mut() {
             w.1 = Some(k);
@@ -286,21 +345,24 @@ pub fn update(
         }
         redraw_list(&mut commands, &mut tut, &gui, &assets);
     }
+    // ACTIVATE: the chosen one a tip again
     if let Some(k) = activate {
-        if let Some((_, _, ui)) = tut.showing.take() {
-            for r in ui.roots {
-                commands.entity(r).try_despawn();
-            }
-        }
         tut.queue.retain(|q| *q != k);
         tut.queue.push_front(k);
     }
     // the panel's buttons
     if let Some((k, page, ui)) = tut.showing.as_ref().map(|(k, p, u)| (*k, *p, u.clone())) {
         let hit = |n: &str| clicked.iter().any(|c| ui.get(n) == Some(c.widget));
-        // (the window's own close button dismisses too)
+        // the window's own close only hides it (F049742); its tip stays
         let closed = clicked.iter().any(|c| c.name == "Button" && ui.named.iter().any(|(_, e)| *e == c.widget));
-        let (next, prev, dismiss) = (hit("NextTutorialButton"), hit("PrevTutorialButton"), hit("DismissButton") || closed);
+        if closed {
+            tut.showing = None;
+            for r in ui.roots {
+                commands.entity(r).try_despawn();
+            }
+            return;
+        }
+        let (next, prev, dismiss) = (hit("NextTutorialButton"), hit("PrevTutorialButton"), hit("DismissButton"));
         let pages = tut.list[k].pages.len();
         let turn = if prev && page > 0 {
             Some(page - 1)
@@ -315,18 +377,96 @@ pub fn update(
                 s.1 = p;
             }
         } else if next || dismiss {
-            tut.showing = None;
-            for r in ui.roots {
-                commands.entity(r).try_despawn();
-            }
-            let id = tut.list[k].id.to_string();
-            tut.seen.insert(id);
-            tut.save_seen();
+            // FINISH or DISMISS: done (F049758)
+            finish(&mut commands, &mut tut, k);
         }
-        return;
     }
-    // the next one waiting
-    let Some(k) = tut.queue.pop_front() else { return };
+    // the tips' rows: a name shows its tutorial, an X ends it
+    let mut show: Option<usize> = None;
+    let mut end: Option<usize> = None;
+    for c in &clicked {
+        for (k, ui, ..) in &tut.tips {
+            if ui.get("NameButton") == Some(c.widget) {
+                show = Some(*k);
+            }
+            if ui.get("CloseButton") == Some(c.widget) {
+                end = Some(*k);
+            }
+        }
+    }
+    if let Some(k) = end {
+        finish(&mut commands, &mut tut, k);
+    }
+    // the ones started become tips (F049784), a new one flashing, "Thing_Complete"
+    let mut added = false;
+    while let Some(k) = tut.queue.pop_front() {
+        if tut.tips.iter().any(|t| t.0 == k) {
+            continue;
+        }
+        let mut defs = gui.0.layout("Kenshi_TutorialTooltipPanel.layout");
+        let scale = kenshi_gui::res::ui_scale();
+        // F049774: the panel's width, the layout's height at the UI scale
+        let (w, h) = ((size[0] * 0.130208).floor(), (25.0 * scale).floor());
+        if let Some(d) = defs.first_mut() {
+            d.pos = kenshi_gui::res::Pos::Px([0.0, 0.0, 250.0, 25.0]);
+            d.align = kenshi_gui::res::Align::parse("Stretch");
+        }
+        // the row's place, its parts fitted to it by their align
+        let holder = commands
+            .spawn((Node { position_type: PositionType::Absolute, width: Val::Px(w), height: Val::Px(h), ..default() }, GlobalZIndex(84)))
+            .id();
+        let mut ui = kenshi_gui::ui::spawn_design(&mut commands, &gui.0, &assets, &defs, Some(holder), [250.0, 25.0], [w, h]);
+        ui.roots = vec![holder];
+        if let Some(b) = ui.get("NameButton") {
+            commands.queue(SetCaption(b, tut.list[k].title.clone()));
+        }
+        // its flash: a WhiteSkin over it, white
+        let flash = ui.roots.first().map(|&r| {
+            let f = commands
+                .spawn((
+                    Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+                    BackgroundColor(Color::WHITE),
+                    Pickable::IGNORE,
+                ))
+                .id();
+            commands.entity(r).add_child(f);
+            f
+        });
+        tut.tips.push((k, ui, flash, 1.0));
+        added = true;
+    }
+    if added && let Some(s) = sound.as_mut() {
+        s.post("Thing_Complete", super::sound::Channel::Ui);
+    }
+    // laid up from the tips panel's bottom (TooltipsPanel: 0.462963 of the screen), the last at
+    // the bottom (F049741)
+    let scale = kenshi_gui::res::ui_scale();
+    let h = (25.0 * scale).floor();
+    let bottom = size[1] * 0.462963;
+    let dt = time.delta_secs();
+    let n = tut.tips.len();
+    for (i, (_, ui, flash, a)) in tut.tips.iter_mut().enumerate() {
+        if let Some(&r) = ui.roots.first()
+            && let Ok(mut node) = nodes.get_mut(r)
+        {
+            node.left = Val::Px(0.0);
+            node.top = Val::Px(bottom - (n - i) as f32 * h);
+        }
+        if let Some(f) = *flash {
+            *a = (*a - dt).max(0.0);
+            commands.entity(f).insert(BackgroundColor(Color::srgba(1.0, 1.0, 1.0, *a)));
+            if *a <= 0.0 {
+                commands.entity(f).try_despawn();
+                *flash = None;
+            }
+        }
+    }
+    let Some(k) = show else { return };
+    if let Some((_, _, ui)) = tut.showing.take() {
+        for r in ui.roots {
+            commands.entity(r).try_despawn();
+        }
+    }
     let mut defs = gui.0.layout("Kenshi_TutorialPanel.layout");
     // the tutorial window by the screen's left, under the information panel's top (assumption)
     for d in &mut defs {
@@ -351,9 +491,32 @@ pub fn update(
     tut.showing = Some((k, 0, ui));
 }
 
+/// @fn F049758
+///
+/// Tutorial `k` done: hidden if shown, its tip gone, kept as seen.
+fn finish(commands: &mut Commands, tut: &mut Tutorials, k: usize) {
+    if tut.showing.as_ref().is_some_and(|s| s.0 == k)
+        && let Some((_, _, ui)) = tut.showing.take()
+    {
+        for r in ui.roots {
+            commands.entity(r).try_despawn();
+        }
+    }
+    if let Some(at) = tut.tips.iter().position(|t| t.0 == k) {
+        let (_, ui, ..) = tut.tips.remove(at);
+        for r in ui.roots {
+            commands.entity(r).try_despawn();
+        }
+    }
+    let id = tut.list[k].id.to_string();
+    tut.seen.insert(id);
+    tut.save_seen();
+}
+
 /// The tutorials window's list: every tutorial's title, the chosen one marked; its page beside
 /// the list with "n / m".
 fn redraw_list(commands: &mut Commands, tut: &mut Tutorials, gui: &GuiRes, assets: &AssetServer) {
+    let scroll = tut.scroll;
     let Some((ui, chosen, rows, page)) = tut.window.as_mut() else { return };
     if let Some(t) = chosen.and_then(|k| tut.list.get(k)) {
         if let Some(e) = ui.get("TutorialDescription") {
@@ -373,7 +536,7 @@ fn redraw_list(commands: &mut Commands, tut: &mut Tutorials, gui: &GuiRes, asset
     }
     let Some(list) = ui.get("TutorialList") else { return };
     let font = gui.0.fonts.get("Kenshi_StandardFont_Medium").map_or((Handle::default(), 14.0), |f| (assets.load(f.file.clone()), f.screen_px()));
-    let names: Vec<(String, bool)> = tut.list.iter().map(|t| (t.title.clone(), true)).collect();
-    // (Kenshi_ListBox's client area)
-    *rows = Some(list_rows(commands, list, LIST, &names, *chosen, &font, (4.0, 2.0, 92.0, 96.0)));
+    let names: Vec<(String, bool)> = tut.list.iter().skip(scroll).map(|t| (t.title.clone(), true)).collect();
+    // (Kenshi_ListBox's client area; the rows from the scroll on)
+    *rows = Some(list_rows(commands, list, LIST, &names, chosen.and_then(|c| c.checked_sub(scroll)), &font, (4.0, 2.0, 92.0, 96.0)));
 }

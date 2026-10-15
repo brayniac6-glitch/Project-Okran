@@ -10,10 +10,13 @@
 //! (color x intensity / 4 pi, so the intensity is 4 pi); a spot's cone from its "inner" and
 //! "outer" (full angles, as Ogre's setSpotlightRange takes them). No shadows (F045912).
 //!
-//! (assumption) The "effect" (LightEffect PULSE, FLICKER, SHIMMER) is set on the Ogre light as a
-//! custom parameter the game's shaders as shipped do not read back; here PULSE swells and fades
-//! over two seconds, FLICKER wavers like a flame, SHIMMER trembles slightly. A light's variance
-//! is drawn from -variance to +variance.
+//! The "effect" (LightEffect) is set on the Ogre light as its custom parameter's z (F045912),
+//! which the deferred light pass reads each frame (F030155) and scales the light's power by:
+//! PULSE sin(4 T) x 0.5 + 0.5 (not drawn at 0), SHIMMER sin(30 T) x sin(17 T) x 0.05 + 0.95,
+//! anything else (FLICKER too) 1; T is the sky's game hours (day x 24 + hour, Sky +0xa0) x 60,
+//! the same for every light. A light's variance is drawn from -variance to +variance.
+//! Not ported: the parameter's x (F045912's third argument, from the building's town handle,
+//! F037795) keeps a light dark by day (daylight over 0.1, F040781).
 use bevy::prelude::*;
 use kenshi_data::{GameData, GameDataContainer};
 
@@ -28,7 +31,13 @@ pub struct LocalLight {
     pub colour: Vec3,
     pub power: f32,
     pub effect: i32,
-    pub phase: f32,
+}
+
+/// The sky's game hours (Sky +0xa0: day x 24 + hour) the light effects run on; the game sets it
+/// each frame.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct LightClock {
+    pub hours: f64,
 }
 
 /// A small hash for a light's own variance and phase (from where it stands).
@@ -60,7 +69,7 @@ pub fn spawn_light(commands: &mut Commands, data: &GameDataContainer, light: &st
     let power = (f("brightness", 1.0) + (hash(at, 1) * 2.0 - 1.0) * variance).max(0.0);
     let colour = colour(r);
     let effect = r.ints.get("effect").copied().unwrap_or(0);
-    let local = LocalLight { colour, power, effect, phase: hash(at, 2) * std::f32::consts::TAU };
+    let local = LocalLight { colour, power, effect };
     let c = colour * power;
     let tint = Color::linear_rgb(c.x, c.y, c.z);
     let place = Transform::from_translation(at).with_rotation(rot);
@@ -79,29 +88,31 @@ pub fn spawn_light(commands: &mut Commands, data: &GameDataContainer, light: &st
     Some(e.id())
 }
 
-/// The lights' effects over time (see the module notes).
-pub fn animate(time: Res<Time>, mut points: Query<(&LocalLight, &mut PointLight), Without<SpotLight>>, mut spots: Query<(&LocalLight, &mut SpotLight)>) {
-    let t = time.elapsed_secs();
+/// @fn F030155
+///
+/// The lights' effects over time (the deferred light pass's power scale, see the module notes).
+pub fn animate(
+    clock: Option<Res<LightClock>>,
+    mut points: Query<(&LocalLight, &mut PointLight), Without<SpotLight>>,
+    mut spots: Query<(&LocalLight, &mut SpotLight)>,
+) {
+    let t = (clock.map_or(0.0, |c| c.hours) * 60.0) as f32;
     let scale = |l: &LocalLight| -> Option<f32> {
         match l.effect {
-            EFFECT_PULSE => Some(0.75 + 0.25 * (t * std::f32::consts::PI + l.phase).sin()),
-            EFFECT_FLICKER => {
-                let w = (t * 11.0 + l.phase).sin() * 0.5 + (t * 23.7 + l.phase * 1.7).sin() * 0.3 + (t * 5.3 + l.phase * 0.3).sin() * 0.2;
-                Some(0.85 + 0.15 * w)
-            }
-            EFFECT_SHIMMER => Some(0.95 + 0.05 * (t * 31.0 + l.phase).sin()),
+            EFFECT_PULSE => Some(((t * 4.0).sin() as f64 * 0.5 + 0.5) as f32),
+            EFFECT_SHIMMER => Some((((t * 30.0).sin() * (t * 17.0).sin()) as f64 * 0.05 + 0.95) as f32),
             _ => None,
         }
     };
     for (l, mut p) in &mut points {
         if let Some(s) = scale(l) {
-            let c = l.colour * l.power * s;
+            let c = l.colour * l.power * s.max(0.0);
             p.color = Color::linear_rgb(c.x, c.y, c.z);
         }
     }
     for (l, mut p) in &mut spots {
         if let Some(s) = scale(l) {
-            let c = l.colour * l.power * s;
+            let c = l.colour * l.power * s.max(0.0);
             p.color = Color::linear_rgb(c.x, c.y, c.z);
         }
     }

@@ -97,6 +97,9 @@ pub struct KenshiTerrainMaterial {
     #[texture(60)]
     #[sampler(61)]
     pub blood: Handle<Image>,
+    /// The interior mask (CLIP_INTERIOR, kenshi_render::interior_mask).
+    #[texture(62)]
+    pub interior_mask: Handle<Image>,
     #[texture(6, dimension = "cube")]
     #[sampler(8)]
     pub irradiance: Handle<Image>,
@@ -211,6 +214,14 @@ impl Material for KenshiTerrainMaterial {
     fn prepass_vertex_shader() -> ShaderRef {
         "embedded://kenshi_render/render/kenshi_terrain_prepass.wgsl".into()
     }
+    // CLIP_INTERIOR discards: the prepass must too (its fragment stage runs for a material
+    // that may discard), or the ground inside a building would leave its depth over the floor
+    fn prepass_fragment_shader() -> ShaderRef {
+        "embedded://kenshi_render/render/kenshi_terrain_prepass.wgsl".into()
+    }
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Mask(0.5)
+    }
 }
 
 /// Registers the terrain material and its embedded shader.
@@ -219,6 +230,7 @@ pub struct KenshiTerrainPlugin;
 impl Plugin for KenshiTerrainPlugin {
     fn build(&self, app: &mut App) {
         bevy::shader::load_shader_library!(app, "kenshi_lighting.wgsl");
+        bevy::shader::load_shader_library!(app, "kenshi_interior.wgsl");
         bevy::asset::embedded_asset!(app, "kenshi_terrain.wgsl");
         bevy::asset::embedded_asset!(app, "kenshi_terrain_vertex.wgsl");
         bevy::asset::embedded_asset!(app, "kenshi_terrain_prepass.wgsl");
@@ -227,7 +239,7 @@ impl Plugin for KenshiTerrainPlugin {
         bevy::asset::embedded_asset!(app, "kenshi_character.wgsl");
         bevy::asset::embedded_asset!(app, "kenshi_cutout_prepass.wgsl");
         bevy::asset::embedded_asset!(app, "kenshi_moon.wgsl");
-        app.add_plugins(crate::mipmaps::MipmapPlugin);
+        app.add_plugins((crate::mipmaps::MipmapPlugin, crate::texture_quality::TextureQualityPlugin));
         app.add_plugins(crate::hdr::KenshiHdrPlugin);
         app.add_plugins(crate::particles::render::KenshiParticlesPlugin);
         app.add_plugins(MaterialPlugin::<crate::moons::KenshiMoonMaterial>::default());
@@ -236,6 +248,8 @@ impl Plugin for KenshiTerrainPlugin {
         app.add_plugins(MaterialPlugin::<crate::character_material::KenshiCharacterMaterial>::default());
         app.add_plugins(MaterialPlugin::<crate::water_material::KenshiWaterMaterial>::default());
         app.add_plugins(crate::fog_volume::KenshiFogVolumePlugin);
+        app.add_plugins(crate::interior_mask::InteriorMaskPlugin);
+        app.add_systems(PostUpdate, crate::reflection::reflect_main_queue);
     }
 }
 
@@ -356,6 +370,9 @@ pub struct TerrainLook {
     pub reflection: Option<Handle<Image>>,
     /// The blood on the ground and its area (`TerrainParams::blood`), when there is any.
     pub blood: Option<(Handle<Image>, Vec4)>,
+    /// The interior mask's target (kenshi_render::interior_mask), once it is made.
+    pub interior_mask: Option<Handle<Image>>,
+
 }
 
 impl TerrainLook {
@@ -373,6 +390,7 @@ impl TerrainLook {
             blend_map: kenshi_world::terrain_biome::BlendMap::load(install),
             reflection: None,
             blood: None,
+            interior_mask: None,
         })
     }
 
@@ -507,6 +525,7 @@ impl TerrainLook {
                 Some(h) => h,
                 None => self.image(assets, "data/materials/black.dds"),
             },
+            interior_mask: self.interior_mask_image(assets),
             d00: t(0),
             d01: t(1),
             d02: t(2),
@@ -593,7 +612,8 @@ impl TerrainLook {
             ),
             dust_colour: Vec3::from(dust_colour).extend(1.0),
             origin_exposure: origin.extend(0.0),
-            world: Vec4::new(kenshi_world::WORLD_SIZE, 0.0, 0.0, 0.0),
+            // y: CLIP_INTERIOR (foliage.material's grass and foliage)
+            world: Vec4::new(kenshi_world::WORLD_SIZE, if o.grass || o.foliage { 1.0 } else { 0.0 }, 0.0, 0.0),
             ..default()
         };
         params.set_light(&self.light);
@@ -617,6 +637,7 @@ impl TerrainLook {
             dust_noise: self.image(assets, "data/materials/Turbulent.dds"),
             shadow_jitter: self.image(assets, "data/materials/white-noise.png"),
             grid: self.image(assets, "data/buildings/materials/construction.dds"),
+            interior_mask: self.interior_mask_image(assets),
             ambient: self.image_with(
                 assets,
                 "data/newland/land/overlaymaps/ambientmap.png",
@@ -624,6 +645,14 @@ impl TerrainLook {
             ),
             irradiance: self.image(assets, "data/materials/mp_irradiance.dds"),
             specularity: self.image(assets, "data/materials/mp_specularity.dds"),
+        }
+    }
+
+    /// The interior mask's target, or (none made) black: nothing clipped.
+    fn interior_mask_image(&mut self, assets: &AssetServer) -> Handle<Image> {
+        match self.interior_mask.clone() {
+            Some(h) => h,
+            None => self.image(assets, "data/materials/black.dds"),
         }
     }
 

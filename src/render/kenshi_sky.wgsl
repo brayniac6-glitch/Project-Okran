@@ -78,8 +78,11 @@ const SKY_G: f32 = -0.991;
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let dir = normalize(in.world_position.xyz - view.world_position);
     var n = dir;
-    // (assumption) below the horizon the dome's lower rings keep the horizon's colour
-    n.y = max(n.y, 0.0);
+    // the dome's normalised position (MeshManager::updateGeometry, SkyX_x64: 95 circles, 12
+    // of them under the horizon, a step of PI / 2 / 83): under the horizon its rings keep
+    // their own (negative) height, down to the last ring at -12 PI / 166; (assumption) past it,
+    // where SkyX's dome has no faces, the last ring's
+    n.y = max(n.y, sin(-12.0 * PI / 166.0));
     let light_dir = normalize(p.light.xyz);
 
     // main_vp

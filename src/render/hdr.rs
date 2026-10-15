@@ -277,6 +277,7 @@ fn kenshi_hdr(
     view: ViewQuery<(
         &ViewTarget,
         Option<&bevy::core_pipeline::prepass::ViewPrepassTextures>,
+        Option<&crate::interior_mask::MaskCamera>,
     )>,
     images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
     pipeline_cache: Res<PipelineCache>,
@@ -288,7 +289,11 @@ fn kenshi_hdr(
     let (Some(pipes), Some(mut targets), Some(settings)) = (pipes, targets, settings) else {
         return;
     };
-    let (target, prepass) = view.into_inner();
+    let (target, prepass, mask) = view.into_inner();
+    // not the interior mask's (kenshi_render::interior_mask)
+    if mask.is_some() {
+        return;
+    }
     // the main camera's (the water reflection's target is not exposed)
     if target.main_texture_format() != bevy::render::render_resource::TextureFormat::Rgba16Float {
         return;

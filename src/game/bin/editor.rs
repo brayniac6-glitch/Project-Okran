@@ -5,8 +5,9 @@
 //!
 //! (stand-in) races are grouped by their body mesh's folder (human: Greenlander, Scorchlander;
 //! stick_person: the Hive; robot: Skeleton; bone: Shek), Kenshi's own grouping not being found.
-//! The Face ranges and most Body ranges are kept but not yet shown on the body (Kenshi's morphs
-//! and bone scales are not ported); Height scales the whole body.
+//! The Body sliders size the bones (`body_shapes`, F037414), the Face sliders move the head's
+//! poses (`appearance`, F021065); RANDOMISE rolls the tab's sliders as Kenshi does (F021064).
+//! EXPORT and IMPORT save and read looks (`SavedLook`).
 use super::{Game, WorldReady};
 use bevy::prelude::*;
 use kenshi_data::ItemType;
@@ -42,6 +43,30 @@ struct Look {
     hair: usize,
     beard: usize,
     values: HashMap<String, f32>,
+}
+
+/// A look saved by EXPORT, read back by IMPORT: names, not indices, so it survives other races'
+/// lists. (stand-in) Kenshi's own character files are not ported: these are the rewrite's,
+/// in %APPDATA%\kenshi-rewrite\characters, one RON file each named after the character.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+struct SavedLook {
+    name: String,
+    race: String,
+    female: bool,
+    hair: Option<String>,
+    beard: Option<String>,
+    values: HashMap<String, f32>,
+}
+
+fn looks_dir() -> std::path::PathBuf {
+    kenshi_io::cfg::user_dir().join("characters")
+}
+
+/// The saved looks, by file name.
+fn saved_looks() -> Vec<std::path::PathBuf> {
+    let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(looks_dir()).map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "ron")).collect()).unwrap_or_default();
+    v.sort();
+    v
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -82,6 +107,11 @@ pub struct Editor {
     stage_at: Option<Vec3>,
     /// The camera's haze before the stage's (put back on leaving).
     saved_fog: Option<DistanceFog>,
+    /// Editing a character already in the world (DA_CHARACTER_EDITOR, the plastic surgeon):
+    /// (assumption) its race, subrace and gender kept.
+    locked: bool,
+    /// IMPORT: the saved look it reads next (each press the next one).
+    import_next: usize,
 }
 
 const NAMES: [&str; 24] = [
@@ -210,11 +240,6 @@ pub fn open(
 ) {
     commands.remove_resource::<Pending>();
     let size = windows.iter().next().map_or([1600.0, 900.0], |w| [w.width(), w.height()]);
-    let defs = gui.0.layout("Kenshi_CharacterEditor.layout");
-    let ui = kenshi_gui::ui::spawn(&mut commands, &gui.0, &assets, &defs, None, size);
-    for r in &ui.roots {
-        commands.entity(*r).insert(GlobalZIndex(80));
-    }
     let mut races = races(&game.sim.data);
     // the game start's "force race": only those subraces (and their races) offered
     // (assumption: a forced race the list lacks leaves the list whole)
@@ -232,6 +257,67 @@ pub fn open(
         .enumerate()
         .map(|(k, _)| Look { name: NAMES[k % NAMES.len()].to_string(), ..Default::default() })
         .collect();
+    start(&mut commands, &gui, &assets, &mut game, size, races, chars, looks, false);
+}
+
+/// DA_CHARACTER_EDITOR (F040912 0xb: the conversation ends, the editor opens on the one spoken
+/// for): the editor on that character as it looks now, its race, subrace and gender kept.
+/// (testing) KENSHI_SURGERY=<frame>: at that frame the editor opens on the first selected
+/// character as the surgeon's does.
+pub fn open_surgery(mut commands: Commands, gui: Res<GuiRes>, assets: Res<AssetServer>, mut game: ResMut<Game>, windows: Query<&Window>, mut frames: Local<u32>) {
+    *frames += 1;
+    if std::env::var("KENSHI_SURGERY").ok().and_then(|v| v.parse::<u32>().ok()) == Some(*frames) {
+        game.surgery = game.selected.first().copied();
+    }
+    let Some(id) = game.surgery.take() else { return };
+    let size = windows.iter().next().map_or([1600.0, 900.0], |w| [w.width(), w.height()]);
+    let races = races(&game.sim.data);
+    let race_name = game.sim.race_of(id).and_then(|r| game.sim.data.get(&r)).map(|r| r.name.clone()).unwrap_or_default();
+    let (race, sub) = races.iter().enumerate().find_map(|(k, g)| g.subs.iter().position(|s| *s == race_name).map(|j| (k, j))).unwrap_or((0, 0));
+    // its sliders as they are (the face ones from its poses where a body file keeps only those)
+    let mut values = game.body_values.get(&id).cloned().unwrap_or_default();
+    if let Some(r) = game.sim.race_of(id)
+        && let Some(l) = super::appearance::limits(&game, &r, game.sim.is_female(id))
+    {
+        super::appearance::fill_sliders(&l, &mut values);
+    }
+    let look = Look {
+        name: game.sim.folk[id].name.clone(),
+        race,
+        sub,
+        female: game.sim.is_female(id),
+        values,
+        ..Default::default()
+    };
+    let worn: Vec<String> = game.looks.get(&id).map(|s| s.hairs.clone()).unwrap_or_default();
+    start(&mut commands, &gui, &assets, &mut game, size, races, vec![id], vec![look], true);
+    // its hair and beard as they are
+    commands.queue(move |w: &mut World| {
+        w.resource_scope(|w, mut ed: Mut<Editor>| {
+            let game = w.resource::<Game>();
+            let (hair, beards) = ed.hairs(game);
+            if let Some(k) = worn.iter().find_map(|h| hair.iter().position(|x| x == h)) {
+                ed.looks[0].hair = k;
+            }
+            if let Some(k) = worn.iter().find_map(|h| beards.iter().position(|x| x == h)) {
+                ed.looks[0].beard = k + 1;
+            }
+            if std::env::var("KENSHI_EDITOR_DEBUG").is_ok() {
+                eprintln!("editor: surgery on hairs {worn:?}: hair {} of {hair:?}, beard {} of {beards:?}", ed.looks[0].hair, ed.looks[0].beard);
+            }
+            ed.rebuild = true;
+            ed.refresh_rows = true;
+        });
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start(commands: &mut Commands, gui: &GuiRes, assets: &AssetServer, game: &mut Game, size: [f32; 2], races: Vec<RaceChoice>, chars: Vec<usize>, looks: Vec<Look>, locked: bool) {
+    let defs = gui.0.layout("Kenshi_CharacterEditor.layout");
+    let ui = kenshi_gui::ui::spawn(commands, &gui.0, assets, &defs, None, size);
+    for r in &ui.roots {
+        commands.entity(*r).insert(GlobalZIndex(80));
+    }
     for (name, text) in [
         ("lbRace", "Race"),
         ("lbSubRace", "Subrace"),
@@ -250,12 +336,14 @@ pub fn open(
         ("ExportButton", "EXPORT"),
         ("ClothesButton", "CLOTHES"),
     ] {
-        caption(&mut commands, &ui, name, text);
+        caption(commands, &ui, name, text);
     }
-    // import and export need saved characters, not ported yet
-    for b in ["ImportButton", "ExportButton"] {
-        if let Some(e) = ui.get(b) {
-            commands.entity(e).insert(kenshi_gui::ui::Disabled);
+    // a character in the world keeps its race and gender
+    if locked {
+        for b in ["RaceLeftButton", "RaceRightButton", "SubRaceLeftButton", "SubRaceRightButton", "GenderLeftButton", "GenderRightButton"] {
+            if let Some(e) = ui.get(b) {
+                commands.entity(e).insert(kenshi_gui::ui::Disabled);
+            }
         }
     }
     game.paused = true;
@@ -280,6 +368,8 @@ pub fn open(
         stage: None,
         stage_at: None,
         saved_fog: None,
+        locked,
+        import_next: 0,
     });
 }
 
@@ -288,7 +378,16 @@ pub fn open(
 fn sync_body(ed: &Editor, game: &mut Game) {
     let Some(&id) = ed.chars.get(ed.idx) else { return };
     let mids: Vec<(String, f32)> = [Tab::Body, Tab::Face].iter().flat_map(|&t| ed.ranges(game, t)).map(|r| (r.name, r.mid)).collect();
-    let values = kenshi_render::body_shape::with_defaults(&ed.looks[ed.idx].values, &mids);
+    let mut values = kenshi_render::body_shape::with_defaults(&ed.looks[ed.idx].values, &mids);
+    // the face sliders as the head's poses (F021065)
+    if let Some(r) = ed.race_record(game)
+        && let Some(l) = super::appearance::limits(game, &r.string_id, ed.looks[ed.idx].female)
+    {
+        for s in &l.face {
+            let v = values.get(&s.name).copied().unwrap_or(s.mid);
+            super::appearance::put_poses(s, v, &mut values);
+        }
+    }
     if std::env::var("KENSHI_EDITOR_DEBUG").is_ok() {
         let mut l: Vec<_> = ed.looks[ed.idx].values.iter().collect();
         l.sort_by(|a, b| a.0.cmp(b.0));
@@ -521,14 +620,6 @@ fn rows(commands: &mut Commands, ed: &mut Editor, game: &Game, gui: &kenshi_gui:
     }
 }
 
-fn random_value(r: &Range, rng: &mut u64) -> f32 {
-    *rng ^= *rng << 13;
-    *rng ^= *rng >> 7;
-    *rng ^= *rng << 17;
-    let t = (*rng % 10_000) as f32 / 10_000.0;
-    r.min + (r.max - r.min) * t
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn update(
     mut commands: Commands,
@@ -620,6 +711,7 @@ pub fn update(
         let n_subs = ed.races.get(ed.looks[i].race).map_or(1, |r| r.subs.len().max(1));
         let step = |v: usize, n: usize, d: i32| ((v as i32 + d).rem_euclid(n as i32)) as usize;
         match c.name.as_str() {
+            "RaceLeftButton" | "RaceRightButton" | "SubRaceLeftButton" | "SubRaceRightButton" | "GenderLeftButton" | "GenderRightButton" if ed.locked => continue,
             "RaceLeftButton" | "RaceRightButton" => {
                 let d = if c.name == "RaceLeftButton" { -1 } else { 1 };
                 ed.looks[i].race = step(ed.looks[i].race, n_races, d);
@@ -671,11 +763,22 @@ pub fn update(
             "RandomiseButton" | "RandomiseAllButton" => {
                 let tabs: &[Tab] = if c.name == "RandomiseAllButton" { &[Tab::Body, Tab::Face] } else { std::slice::from_ref(&ed.tab) };
                 let tabs = tabs.to_vec();
+                // F039463 / F039464: the tab's sliders rolled as Kenshi rolls them (F021064)
+                let deviation = super::appearance::deviation(&game);
+                let limits = ed.race_record(&game).and_then(|r| super::appearance::limits(&game, &r.string_id, ed.looks[i].female));
+                let mut r = || {
+                    rng ^= rng << 13;
+                    rng ^= rng >> 7;
+                    rng ^= rng << 17;
+                    (rng >> 40) as f32 / (1u64 << 24) as f32
+                };
                 for tab in tabs {
-                    for r in ed.ranges(&game, tab) {
-                        let v = random_value(&r, &mut rng);
-                        ed.looks[i].values.insert(r.name.clone(), v);
-                    }
+                    let sliders = match (&limits, tab) {
+                        (Some(l), Tab::Body) => l.body.clone(),
+                        (Some(l), Tab::Face) => l.face.clone(),
+                        _ => Vec::new(),
+                    };
+                    super::appearance::roll(&sliders, deviation, &mut r, &mut ed.looks[i].values);
                 }
                 if c.name == "RandomiseAllButton" || ed.tab == Tab::Hair {
                     let (hair, beards) = ed.hairs(&game);
@@ -683,6 +786,49 @@ pub fn update(
                     ed.looks[i].beard = ((rng >> 8) as usize) % (beards.len() + 1);
                     ed.rebuild = true;
                 }
+                ed.refresh_rows = true;
+            }
+            // EXPORT: the look saved under the character's name
+            "ExportButton" => {
+                let l = ed.looks[i].clone();
+                let (hair, beards) = ed.hairs(&game);
+                let saved = SavedLook {
+                    name: l.name.clone(),
+                    race: ed.races.get(l.race).and_then(|g| g.subs.get(l.sub)).cloned().unwrap_or_default(),
+                    female: l.female,
+                    hair: hair.get(l.hair).cloned(),
+                    beard: l.beard.checked_sub(1).and_then(|b| beards.get(b)).cloned(),
+                    values: l.values.clone(),
+                };
+                let file: String = l.name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
+                let path = looks_dir().join(format!("{}.ron", if file.trim().is_empty() { "character" } else { file.trim() }));
+                let ok = std::fs::create_dir_all(looks_dir()).is_ok() && ron::ser::to_string_pretty(&saved, Default::default()).ok().is_some_and(|t| std::fs::write(&path, t).is_ok());
+                eprintln!("editor: exported {} to {} ({ok})", l.name, path.display());
+                continue;
+            }
+            // IMPORT: the next saved look (its race and gender only where they may change)
+            "ImportButton" => {
+                let files = saved_looks();
+                if files.is_empty() {
+                    continue;
+                }
+                let path = &files[ed.import_next % files.len()];
+                ed.import_next += 1;
+                let Some(saved) = std::fs::read_to_string(path).ok().and_then(|t| ron::from_str::<SavedLook>(&t).ok()) else { continue };
+                if !ed.locked
+                    && let Some((r, sub)) = ed.races.iter().enumerate().find_map(|(k, g)| g.subs.iter().position(|x| *x == saved.race).map(|j| (k, j)))
+                {
+                    ed.looks[i].race = r;
+                    ed.looks[i].sub = sub;
+                    ed.looks[i].female = saved.female;
+                }
+                ed.looks[i].name = saved.name.clone();
+                ed.looks[i].values = saved.values.clone();
+                let (hair, beards) = ed.hairs(&game);
+                ed.looks[i].hair = saved.hair.as_ref().and_then(|h| hair.iter().position(|x| x == h)).unwrap_or(0);
+                ed.looks[i].beard = saved.beard.as_ref().and_then(|b| beards.iter().position(|x| x == b)).map_or(0, |b| b + 1);
+                eprintln!("editor: imported {}", path.display());
+                ed.rebuild = true;
                 ed.refresh_rows = true;
             }
             "ResetButton" => {
@@ -780,7 +926,7 @@ pub fn update(
             // floor, the world's underside and shadow not over it
             let floor = game.ground(at.x, at.z) + STAGE_HEIGHT;
             if std::env::var("KENSHI_EDITOR_DEBUG").is_ok() {
-                eprintln!("editor: stage at {floor:.0} (origin {:.0}, ground {:.0})", game.zone.origin, game.ground(at.x, at.z));
+                eprintln!("editor: stage at {:.0} {floor:.0} {:.0} (origin {:.0}, ground {:.0})", at.x, at.z, game.zone.origin, game.ground(at.x, at.z));
             }
             ed.stage_at = Some(Vec3::new(at.x, floor, at.z));
             if let Some(stage) = ed.stage_at {
@@ -801,6 +947,11 @@ pub fn update(
         }
         let stage = ed.stage_at.unwrap_or_default();
         game.stage = Some((id, stage));
+        if std::env::var("KENSHI_EDITOR_DEBUG").is_ok()
+            && let Some(t) = game.bodies.get(id).and_then(|&b| bodies.get(b).ok())
+        {
+            eprintln!("editor: body of {id} at {:.1} scale {:.2} (stage {stage:.1})", t.translation, t.scale);
+        }
         if ed.framed != Some(id) {
             let first = ed.framed.is_none();
             ed.framed = Some(id);
@@ -905,7 +1056,8 @@ const BODY_PANEL_X: f32 = 0.7;
 
 
 /// (testing) KENSHI_EDITOR_TYPE="frame@text": that many frames after the editor opens, its name
-/// box is clicked into and `text` typed (key presses, as the keyboard sends them).
+/// box is clicked into (as a click does: its text kept) and `text` typed (key presses, as the
+/// keyboard sends them; each '<' a Backspace).
 pub fn type_script(
     mut frames: Local<u32>,
     ed: Option<Res<Editor>>,
@@ -925,15 +1077,15 @@ pub fn type_script(
     let (Some(name), Ok(window)) = (ed.ui.get("NameText"), windows.single()) else { return };
     if let Ok(mut t) = boxes.get_mut(name) {
         t.focused = true;
-        t.text.clear();
     }
     for c in text.chars() {
         let s: bevy::platform::prelude::String = c.to_string();
+        let back = c == '<';
         keys.write(KeyboardInput {
-            key_code: KeyCode::KeyA,
-            logical_key: Key::Character(s.clone().into()),
+            key_code: if back { KeyCode::Backspace } else { KeyCode::KeyA },
+            logical_key: if back { Key::Backspace } else { Key::Character(s.clone().into()) },
             state: ButtonState::Pressed,
-            text: Some(s.into()),
+            text: (!back).then(|| s.into()),
             repeat: false,
             window,
         });

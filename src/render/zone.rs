@@ -133,8 +133,30 @@ pub fn part_meshes<'a>(
     part_meshes_of(data, b, false)
 }
 
-/// `part_meshes` of a building in ruins or not: a destroyed building's part draws its
-/// "destroyed mesh" when it has one, else its own (F037846, F037849).
+/// @fn F037849
+///
+/// The mesh a BUILDING_PART draws: its "phs or mesh"; in a destroyed building its "destroyed
+/// mesh" when it has one, else on the ground floor ("building floor" 0) its own, and above it
+/// nothing (the part made without its entity: the ruin's roof and upper walls); stairs ("is
+/// stairs") with no destroyed mesh are not made at all. (assumption: such a part's collision,
+/// which the game keeps, is left out with it)
+pub fn part_mesh(part: &GameData, destroyed: bool) -> Option<&String> {
+    let mesh = |k: &str| part.files.get(k).filter(|s| s.to_lowercase().ends_with(".mesh"));
+    if !destroyed {
+        return mesh("phs or mesh");
+    }
+    if let Some(m) = mesh("destroyed mesh") {
+        return Some(m);
+    }
+    let floor = part.ints.get("building floor").copied().unwrap_or(0);
+    let stairs = part.bools.get("is stairs").copied().unwrap_or(false);
+    if floor != 0 || stairs {
+        return None;
+    }
+    mesh("phs or mesh")
+}
+
+/// `part_meshes` of a building in ruins or not ([`part_mesh`]: F037846, F037849).
 pub fn part_meshes_of<'a>(
     data: &'a GameDataContainer,
     b: &'a GameData,
@@ -162,15 +184,7 @@ pub fn part_meshes_of<'a>(
             .filter_map(|(sid, _)| data.get(sid))
         {
             let mat = material(data, part).or(inherited);
-            let ruin = destroyed
-                .then(|| part.files.get("destroyed mesh"))
-                .flatten()
-                .filter(|s| s.to_lowercase().ends_with(".mesh"));
-            if let Some(m) = ruin.or_else(|| {
-                part.files
-                    .get("phs or mesh")
-                    .filter(|s| s.to_lowercase().ends_with(".mesh"))
-            }) {
+            if let Some(m) = part_mesh(part, destroyed) {
                 out.push((m.as_str(), mat));
             }
             walk(data, part, mat, depth + 1, destroyed, out);
@@ -188,30 +202,104 @@ pub fn part_meshes_of<'a>(
 #[derive(Debug, Clone)]
 pub struct PlacedPart<'a> {
     pub mesh: &'a str,
+    /// Its BUILDING_PART record.
+    pub record: &'a GameData,
     pub material: Option<&'a GameData>,
     pub local: Transform,
     pub chain: Vec<(Vec3, Option<i32>)>,
+    /// The nodes of its chain that spin or turn by themselves (`SpinDef`).
+    pub spins: Vec<SpinDef>,
+}
+
+/// @fn F037803
+///
+/// A building part that moves by itself ("rotation function" 1 to 4; 5 is a turret's swivel),
+/// as F037803 reads it: its node in the chain, its "rotation axis" (0 x, 1 y, 2 z), "rotation
+/// speed min / max" (degrees a second, kept in radians) and "wind speed rotation min / max".
+/// Function 1 spins at its top speed, made 0.95 to 1.05 of itself (a random factor, here by
+/// the part's place), as do 2 and 4; for 3 the top speed is at least the bottom one and the top
+/// wind at least the bottom.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpinDef {
+    pub node: usize,
+    pub function: i32,
+    pub axis: Vec3,
+    pub min: f32,
+    pub max: f32,
+    pub wind_min: f32,
+    pub wind_max: f32,
+}
+
+impl SpinDef {
+    fn of(part: &GameData, node: usize) -> Option<SpinDef> {
+        let function = part.ints.get("rotation function").copied().unwrap_or(0);
+        if !(1..=4).contains(&function) {
+            return None;
+        }
+        let f = |k: &str| part.floats.get(k).copied().or_else(|| part.ints.get(k).map(|&v| v as f32)).unwrap_or(0.0);
+        let axis = match part.ints.get("rotation axis").copied().unwrap_or(1) {
+            0 => Vec3::X,
+            1 => Vec3::Y,
+            2 => Vec3::Z,
+            _ => Vec3::ZERO,
+        };
+        let (mut min, mut max) = (f("rotation speed min").to_radians(), f("rotation speed max").to_radians());
+        let (wind_min, mut wind_max) = (f("wind speed rotation min"), f("wind speed rotation max"));
+        if function == 3 {
+            max = max.max(min);
+            wind_max = wind_max.max(wind_min);
+        }
+        min = min.min(max.max(min));
+        Some(SpinDef { node, function, axis, min, max, wind_min, wind_max })
+    }
+
+    /// F037682 / F029... (the wind listener, 0x140549c60): the part's spin speed (radians a
+    /// second) for wind speed `wind` and machine work rate `rate` (0 .. 1): function 1 its top
+    /// speed (times `jitter`, 0.95 .. 1.05); 2 its speed range times the work rate; 3 none under
+    /// its bottom wind, its top speed from its top wind, in between in proportion; 4 (a vane)
+    /// its turning speed.
+    pub fn speed(&self, wind: f32, rate: f32, jitter: f32) -> f32 {
+        match self.function {
+            1 => self.max * jitter,
+            2 => (self.max - self.min) * jitter * rate,
+            3 => {
+                if wind < self.wind_min {
+                    0.0
+                } else if wind >= self.wind_max {
+                    self.max
+                } else {
+                    self.min + (self.max - self.min) * (wind - self.wind_min) / (self.wind_max - self.wind_min).max(1e-3)
+                }
+            }
+            _ => self.max * jitter,
+        }
+    }
 }
 
 impl PlacedPart<'_> {
-    /// Whether a node above it (or it) turns.
+    /// Whether a node above it (or it) turns: a turret's swivel, or a part that spins.
     pub fn swivels(&self) -> bool {
-        self.chain.iter().any(|(_, a)| a.is_some())
+        self.chain.iter().any(|(_, a)| a.is_some()) || !self.spins.is_empty()
     }
 
     /// Its place with the swivelling nodes turned: `yaw` about y, `pitch` about x (radians).
     pub fn posed(&self, yaw: f32, pitch: f32) -> Transform {
-        let mut t = Transform::IDENTITY;
-        for (offset, axis) in &self.chain {
-            t = t * Transform::from_translation(*offset);
-            match axis {
-                Some(1) => t = t * Transform::from_rotation(Quat::from_rotation_y(yaw)),
-                Some(0) => t = t * Transform::from_rotation(Quat::from_rotation_x(pitch)),
-                _ => {}
-            }
-        }
-        t
+        posed_chain(&self.chain, yaw, pitch)
     }
+}
+
+/// A part's node chain's place with its swivelling nodes turned (`PlacedPart::posed`).
+pub fn posed_chain(chain: &[(Vec3, Option<i32>)], yaw: f32, pitch: f32) -> Transform {
+    let mut t = Transform::IDENTITY;
+    for (offset, axis) in chain {
+        t = t * Transform::from_translation(*offset);
+        match axis {
+            Some(1) => t = t * Transform::from_rotation(Quat::from_rotation_y(yaw)),
+            Some(0) => t = t * Transform::from_rotation(Quat::from_rotation_x(pitch)),
+            _ => {}
+        }
+    }
+    t
 }
 
 /// `part_meshes_of` with each part placed ([`PlacedPart`]).
@@ -221,6 +309,7 @@ pub fn part_meshes_placed<'a>(data: &'a GameDataContainer, b: &'a GameData, dest
         node: &'a GameData,
         inherited: Option<&'a GameData>,
         chain: &[(Vec3, Option<i32>)],
+        spins: &[SpinDef],
         depth: u32,
         destroyed: bool,
         out: &mut Vec<PlacedPart<'a>>,
@@ -234,20 +323,18 @@ pub fn part_meshes_placed<'a>(data: &'a GameDataContainer, b: &'a GameData, dest
             let swivel = (part.ints.get("rotation function") == Some(&5)).then(|| part.ints.get("rotation axis").copied().unwrap_or(1));
             let mut here = chain.to_vec();
             here.push((Vec3::new(f("offset X"), f("offset Y"), f("offset Z")), swivel));
-            let ruin = destroyed
-                .then(|| part.files.get("destroyed mesh"))
-                .flatten()
-                .filter(|s| s.to_lowercase().ends_with(".mesh"));
-            if let Some(m) = ruin.or_else(|| part.files.get("phs or mesh").filter(|s| s.to_lowercase().ends_with(".mesh"))) {
+            let mut spinning = spins.to_vec();
+            spinning.extend(SpinDef::of(part, here.len() - 1));
+            if let Some(m) = part_mesh(part, destroyed) {
                 let local = here.iter().fold(Transform::IDENTITY, |t, (o, _)| t * Transform::from_translation(*o));
-                out.push(PlacedPart { mesh: m.as_str(), material: mat, local, chain: here.clone() });
+                out.push(PlacedPart { mesh: m.as_str(), record: part, material: mat, local, chain: here.clone(), spins: spinning.clone() });
             }
-            walk(data, part, mat, &here, depth + 1, destroyed, out);
+            walk(data, part, mat, &here, &spinning, depth + 1, destroyed, out);
         }
     }
     let mut out = Vec::new();
     let mat = b.refs("material").first().and_then(|(sid, _)| data.get(sid));
-    walk(data, b, mat, &[], 0, destroyed, &mut out);
+    walk(data, b, mat, &[], &[], 0, destroyed, &mut out);
     out
 }
 
@@ -261,14 +348,42 @@ pub struct DoorPiece {
     pub rest: Transform,
 }
 
-/// A swivelling building part (a turret's head): its building's place (world units) and its
-/// node chain, posed each frame by [`TurretAims`].
+/// A building part that moves: a turret's head (swivelling nodes, posed by [`TurretAims`]) or
+/// a part that spins by itself (`spins`: fans, machines, wind generators); its building's place
+/// (world units) and its node chain, posed each frame (`pose_swivels`).
 #[derive(Component, Clone, Debug)]
 pub struct Swivel {
     pub building: Transform,
-    /// The building's world position (units), the key into [`TurretAims`].
+    /// The building's world position (units), the key into [`TurretAims`] and [`PartMotion`].
     pub at: Vec3,
     pub chain: Vec<(Vec3, Option<i32>)>,
+    pub spins: Vec<SpinDef>,
+    /// Each spinning node's angle (radians; F037803 starts it at random: by the place here).
+    pub angles: Vec<f32>,
+}
+
+impl Swivel {
+    pub fn new(building: Transform, at: Vec3, chain: Vec<(Vec3, Option<i32>)>, spins: Vec<SpinDef>) -> Swivel {
+        let angles = spins.iter().enumerate().map(|(k, _)| jitter_of(at, k) * std::f32::consts::TAU).collect();
+        Swivel { building, at, chain, spins, angles }
+    }
+}
+
+/// A stable 0 .. 1 for a part at `at` (its spin's random start and speed factor).
+fn jitter_of(at: Vec3, k: usize) -> f32 {
+    let h = (at.x * 12.9898 + at.z * 78.233 + k as f32 * 37.719).sin() * 43758.547;
+    h - h.floor()
+}
+
+/// What moves the spinning parts: the wind where the camera is (the weather's speed and the
+/// way it blows on the ground plane), each machine's work rate by its building's place
+/// ([`TurretAims::key`]), and the game's frame time.
+#[derive(Resource, Default)]
+pub struct PartMotion {
+    pub wind_speed: f32,
+    pub wind_dir: Vec2,
+    pub rates: HashMap<(i32, i32, i32), f32>,
+    pub dt: f32,
 }
 
 /// Turret heads' aim by their building's world position (rounded units): yaw and pitch
@@ -285,7 +400,7 @@ impl TurretAims {
 }
 
 /// Swivelling parts posed by their turret's aim.
-pub fn pose_swivels(aims: Res<TurretAims>, mut q: Query<(&Swivel, &mut Transform)>, mut once: Local<u32>) {
+pub fn pose_swivels(aims: Res<TurretAims>, motion: Option<Res<PartMotion>>, mut q: Query<(&mut Swivel, &mut Transform)>, mut once: Local<u32>) {
     *once += 1;
     if *once == 900 && std::env::var("KENSHI_RANGED_DEBUG").is_ok() {
         let mut keys: Vec<_> = q.iter().map(|(s, _)| TurretAims::key(s.at)).collect();
@@ -294,24 +409,71 @@ pub fn pose_swivels(aims: Res<TurretAims>, mut q: Query<(&Swivel, &mut Transform
         let hit = keys.iter().filter(|k| aims.0.contains_key(k)).count();
         eprintln!("swivels at {keys:?}; {hit} of {} aimed ({} aims)", keys.len(), aims.0.len());
     }
-    for (s, mut t) in &mut q {
+    let still = PartMotion::default();
+    let m = motion.as_deref().unwrap_or(&still);
+    // (testing) KENSHI_SPIN_DEBUG: the wind and the first spinning parts every 60 frames
+    if *once % 60 == 0 && std::env::var("KENSHI_SPIN_DEBUG").is_ok() {
+        let spinning: Vec<String> = q.iter().filter(|(s, _)| !s.spins.is_empty()).take(4).map(|(s, _)| format!("{:?} f{:?} {:?}", s.at.round(), s.spins.iter().map(|d| d.function).collect::<Vec<_>>(), s.angles)).collect();
+        eprintln!("spin: wind {:.1} {:?}, {} rates; {spinning:?}", m.wind_speed, m.wind_dir, m.rates.len());
+    }
+    for (mut s, mut t) in &mut q {
         let (yaw, pitch) = aims.0.get(&TurretAims::key(s.at)).copied().unwrap_or((0.0, 0.0));
-        let part = PlacedPart { mesh: "", material: None, local: Transform::IDENTITY, chain: s.chain.clone() };
-        *t = s.building * part.posed(yaw, pitch);
+        if s.spins.is_empty() {
+            *t = s.building * posed_chain(&s.chain, yaw, pitch);
+            continue;
+        }
+        // the spinning nodes (F037682): each turned by its speed, a vane toward the wind
+        let rate = m.rates.get(&TurretAims::key(s.at)).copied().unwrap_or(0.0);
+        let at = s.at;
+        let building_rot = s.building.rotation;
+        for k in 0..s.spins.len() {
+            let d = s.spins[k].clone();
+            let jitter = 0.95 + 0.1 * jitter_of(at, k + 7);
+            if d.function == 4 {
+                // the head turns its local x across the wind ((-z, 0, x) of the way it blows in
+                // its frame) at its turning speed; no wind, it stays
+                if m.wind_speed > 0.0 && m.wind_dir != Vec2::ZERO {
+                    let w = building_rot.inverse() * Vec3::new(m.wind_dir.x, 0.0, m.wind_dir.y);
+                    let target = (-w.x).atan2(-w.z);
+                    let mut diff = (target - s.angles[k]).rem_euclid(std::f32::consts::TAU);
+                    if diff > std::f32::consts::PI {
+                        diff -= std::f32::consts::TAU;
+                    }
+                    let step = d.speed(m.wind_speed, rate, jitter) * m.dt;
+                    s.angles[k] += diff.clamp(-step, step);
+                }
+            } else {
+                s.angles[k] = (s.angles[k] + d.speed(m.wind_speed, rate, jitter) * m.dt).rem_euclid(std::f32::consts::TAU);
+            }
+        }
+        let mut pose = Transform::IDENTITY;
+        for (n, (offset, axis)) in s.chain.iter().enumerate() {
+            pose = pose * Transform::from_translation(*offset);
+            match axis {
+                Some(1) => pose = pose * Transform::from_rotation(Quat::from_rotation_y(yaw)),
+                Some(0) => pose = pose * Transform::from_rotation(Quat::from_rotation_x(pitch)),
+                _ => {}
+            }
+            for (k, d) in s.spins.iter().enumerate() {
+                if d.node == n && d.axis != Vec3::ZERO {
+                    pose = pose * Transform::from_rotation(Quat::from_axis_angle(d.axis, s.angles[k]));
+                }
+            }
+        }
+        *t = s.building * pose;
     }
 }
 
 /// A record's own mesh (a BUILDING_PART's "phs or mesh") and its parts' meshes.
 pub fn record_meshes<'a>(data: &'a GameDataContainer, r: &'a GameData) -> Vec<(&'a str, Option<&'a GameData>)> {
+    record_meshes_of(data, r, false)
+}
+
+/// `record_meshes` in a building in ruins or not ([`part_mesh`]).
+pub fn record_meshes_of<'a>(data: &'a GameDataContainer, r: &'a GameData, destroyed: bool) -> Vec<(&'a str, Option<&'a GameData>)> {
     let mat = r.refs("material").first().and_then(|(sid, _)| data.get(sid));
-    let mut out: Vec<(&str, Option<&GameData>)> = r
-        .files
-        .get("phs or mesh")
-        .filter(|s| s.to_lowercase().ends_with(".mesh"))
-        .map(|m| (m.as_str(), mat))
-        .into_iter()
-        .collect();
-    for (m, pm) in part_meshes(data, r) {
+    let mut out: Vec<(&str, Option<&GameData>)> = part_mesh(r, destroyed).map(|m| (m.as_str(), mat)).into_iter().collect();
+    for (m, pm) in part_meshes_of(data, r, destroyed) {
         out.push((m, pm.or(mat)));
     }
     out
@@ -346,7 +508,7 @@ pub fn mesh_floors<'a>(data: &'a GameDataContainer, b: &'a GameData) -> HashMap<
 /// A mesh of a building's interior parts, doors and furniture: mesh, material, place in the
 /// building, whether an interior part, and for a turret's swivelling part its instance's place
 /// and node chain.
-pub type InteriorMesh<'a> = (&'a str, Option<&'a GameData>, Transform, bool, Option<(Transform, Vec<(Vec3, Option<i32>)>)>, Option<usize>);
+pub type InteriorMesh<'a> = (&'a str, Option<&'a GameData>, Transform, bool, Option<(Transform, Vec<(Vec3, Option<i32>)>, Vec<SpinDef>)>, Option<usize>);
 
 pub fn interior_meshes<'a>(
     data: &'a GameDataContainer,
@@ -355,14 +517,15 @@ pub fn interior_meshes<'a>(
     p: &kenshi_world::Placement,
 ) -> Vec<InteriorMesh<'a>> {
     let mut out = Vec::new();
+    // (a ruin's interior parts by F037849's rule, `part_mesh`; it has no doors, F037851)
     for (sid, _) in b.refs("interior") {
         if let Some(r) = data.get(sid) {
-            for (m, mat) in record_meshes(data, r) {
+            for (m, mat) in record_meshes_of(data, r, p.destroyed) {
                 out.push((m, mat, Transform::IDENTITY, true, None, None));
             }
         }
     }
-    for (n, (sid, _)) in b.refs("doors").iter().enumerate() {
+    for (n, (sid, _)) in b.refs("doors").iter().enumerate().filter(|_| !p.destroyed) {
         if let Some(r) = data.get(sid) {
             for (m, mat) in record_meshes(data, r) {
                 out.push((m, mat, Transform::IDENTITY, false, None, Some(n)));
@@ -378,8 +541,8 @@ pub fn interior_meshes<'a>(
         let local = Transform::from_translation(Vec3::from(i.position))
             .with_rotation(Quat::from_xyzw(x, y, z, w).normalize());
         for part in part_meshes_placed(data, t, false) {
-            let chain = part.swivels().then(|| part.chain.clone());
-            out.push((part.mesh, part.material, local * part.local, false, chain.map(|c| (local, c)), None));
+            let chain = part.swivels().then(|| (part.chain.clone(), part.spins.clone()));
+            out.push((part.mesh, part.material, local * part.local, false, chain.map(|(c, sp)| (local, c, sp)), None));
         }
         for (sid, _) in t.refs("interior") {
             if let Some(r) = data.get(sid) {
@@ -439,7 +602,17 @@ pub fn placed_lights(
     b: &GameData,
     layouts: Option<(&kenshi_world::nodes::Layouts, &kenshi_world::Placement)>,
 ) -> Vec<(String, Vec3, Quat)> {
-    fn walk(data: &GameDataContainer, node: &GameData, at: Transform, depth: u32, out: &mut Vec<(String, Vec3, Quat)>) {
+    lights_of(data, b, layouts, true)
+}
+
+/// `placed_lights`, with or without the furniture's.
+fn lights_of(
+    data: &GameDataContainer,
+    b: &GameData,
+    layouts: Option<(&kenshi_world::nodes::Layouts, &kenshi_world::Placement)>,
+    furniture: bool,
+) -> Vec<(String, Vec3, Quat)> {
+    fn walk(data: &GameDataContainer, node: &GameData, at: Transform, depth: u32, furniture: bool, out: &mut Vec<(String, Vec3, Quat)>) {
         if depth > 8 {
             return;
         }
@@ -450,31 +623,43 @@ pub fn placed_lights(
             match t.item_type() {
                 Some(kenshi_data::ItemType::Light) => out.push((i.target.clone(), local.translation, local.rotation)),
                 // furniture it places, with its own lights
-                Some(kenshi_data::ItemType::Building) if depth == 0 => walk(data, t, local, depth + 1, out),
+                Some(kenshi_data::ItemType::Building) if depth == 0 && furniture => walk(data, t, local, depth + 1, furniture, out),
                 _ => {}
             }
         }
         for part in node.refs("parts").iter().filter_map(|(sid, _)| data.get(sid)) {
             let f = |k: &str| part.floats.get(k).copied().unwrap_or(0.0);
-            walk(data, part, at * Transform::from_translation(Vec3::new(f("offset X"), f("offset Y"), f("offset Z"))), depth + 1, out);
+            walk(data, part, at * Transform::from_translation(Vec3::new(f("offset X"), f("offset Y"), f("offset Z"))), depth + 1, furniture, out);
         }
     }
     let mut out = Vec::new();
-    walk(data, b, Transform::IDENTITY, 0, &mut out);
+    walk(data, b, Transform::IDENTITY, 0, furniture, &mut out);
     if let Some((layouts, p)) = layouts {
         for name in p.interior.iter().chain(&p.exterior) {
             for i in layouts.for_building(data, &p.building, name) {
                 let Some(t) = data.get(&i.target) else { continue };
                 let [w, x, y, z] = i.rotation;
                 let local = Transform::from_translation(Vec3::from(i.position)).with_rotation(Quat::from_xyzw(x, y, z, w).normalize());
-                walk(data, t, local, 1, &mut out);
+                walk(data, t, local, 1, furniture, &mut out);
             }
         }
     }
     out
 }
 
+/// The LIGHT instances of a building itself and its parts (not of the furniture it places), as
+/// `placed_lights` gives them: what its setLightsOn switches (F029364).
+pub fn own_lights(data: &GameDataContainer, b: &GameData) -> Vec<(String, Vec3, Quat)> {
+    lights_of(data, b, None, false)
+}
+
 /// Load zone (X, Y) with `margin` units of terrain around it.
+/// The map's features by zone (read once).
+pub fn map_features(root: &Path) -> &'static HashMap<(i32, i32), Vec<kenshi_world::map_features::MapFeature>> {
+    static FEATURES: std::sync::OnceLock<HashMap<(i32, i32), Vec<kenshi_world::map_features::MapFeature>>> = std::sync::OnceLock::new();
+    FEATURES.get_or_init(|| kenshi_world::map_features::load(root))
+}
+
 pub fn load_zone(
     root: &Path,
     data: &GameDataContainer,
@@ -583,20 +768,27 @@ fn load_zone_at(
                 .collect();
             eprintln!("building {bi}: {} ({}) parts {parts:?}", b.name, b.string_id);
         }
-        for (effect, at, rot) in placed_effects(data, b) {
-            effects.push((effect, transform.transform_point(at), transform.rotation * rot));
+        // F029401 -> UseableStuff::setOn (F029284): one switched off has its lights and effects
+        // off (slots 140 / 141; the effects otherwise run while it is complete and in view,
+        // F037702 / F037859); its furniture's lights are their own
+        let off = p.power_on == Some(false);
+        if !off {
+            for (effect, at, rot) in placed_effects(data, b) {
+                effects.push((effect, transform.transform_point(at), transform.rotation * rot));
+            }
         }
+        let mut own = if off { own_lights(data, b) } else { Vec::new() };
         for (light, at, rot) in placed_lights(data, b, Some((layouts(root), &p))) {
+            if let Some(k) = own.iter().position(|o| o.0 == light && o.1 == at) {
+                own.swap_remove(k);
+                continue;
+            }
             lights.push((light, transform.transform_point(at), transform.rotation * rot));
         }
         // each part where its offsets put it; a turret's swivelling parts also keep their chain
         for part in part_meshes_placed(data, b, p.destroyed) {
             if let Some(mesh) = res.find(part.mesh) {
-                let swivel = part.swivels().then(|| Swivel {
-                    building: transform,
-                    at: Vec3::new(x, p.world_y.unwrap_or(y), z),
-                    chain: part.chain.clone(),
-                });
+                let swivel = part.swivels().then(|| Swivel::new(transform, Vec3::new(x, p.world_y.unwrap_or(y), z), part.chain.clone(), part.spins.clone()));
                 pieces.push(Piece {
                     mesh,
                     look: ObjectLook::from_record(part.material, |f| res.find(f)).for_building(),
@@ -613,9 +805,9 @@ fn load_zone_at(
         }
         for (m, mat, local, interior, swivel, door) in interior_meshes(data, b, layouts(root), &p) {
             if let Some(mesh) = res.find(m) {
-                let swivel = swivel.map(|(inst, chain)| {
+                let swivel = swivel.map(|(inst, chain, spins)| {
                     let base = transform * inst;
-                    Swivel { building: base, at: base.translation + origin, chain }
+                    Swivel::new(base, base.translation + origin, chain, spins)
                 });
                 // interior parts and doors have their floor; furniture goes by its height
                 let floor = (local == Transform::IDENTITY).then(|| floors.get(m).copied().unwrap_or(0));
@@ -632,6 +824,41 @@ fn load_zone_at(
                     door,
                 });
             }
+        }
+    }
+    // the zone's map features (kenshi_world::map_features; F032048 builds each: its mesh, the
+    // object material getObjectMaterial gives its "texture mode", F046403, so mode 2 is drawn
+    // with the terrain's material; its "collision"); a "hidden" one is not drawn
+    // (assumption: "local coordinates" and the "distance" it is drawn to are not read)
+    let mut feature_collision: HashMap<String, String> = HashMap::new();
+    if std::env::var("KENSHI_NO_MAP_FEATURES").is_err() {
+        for f in map_features(root).get(&zone).into_iter().flatten() {
+            let Some(r) = data.get(&f.record) else { continue };
+            if r.bools.get("hidden").copied().unwrap_or(false) {
+                continue;
+            }
+            let Some(mesh) = r.files.get("mesh").filter(|m| !m.is_empty()).and_then(|m| res.find(m)) else { continue };
+            if let Some(c) = r.files.get("collision").filter(|c| !c.is_empty()).and_then(|c| res.find(c)) {
+                feature_collision.insert(mesh.clone(), c);
+            }
+            let mut look = ObjectLook::from_record(Some(r), |f| res.find(f));
+            look.kind = r.ints.get("texture mode").copied().unwrap_or(0);
+            let [w, qx, qy, qz] = f.rotation;
+            let transform = Transform::from_translation(Vec3::from(f.position) - origin)
+                .with_rotation(Quat::from_xyzw(qx, qy, qz, w).normalize())
+                .with_scale(Vec3::from(f.scale));
+            pieces.push(Piece {
+                mesh,
+                look,
+                transform,
+                foliage_range: None,
+                building: None,
+                floor: None,
+                local_y: 0.0,
+                interior: false,
+                swivel: None,
+                door: None,
+            });
         }
     }
     // a mesh reached twice for the same place (a part both among a building's parts and its
@@ -669,7 +896,7 @@ fn load_zone_at(
         eprintln!("zone {:?}: {} pieces, {} drawn more than once: {:?}", zone, pieces.len(), dups.len(), dups.iter().take(30).collect::<Vec<_>>());
     }
     // each part mesh's collision: its BUILDING_PART's "xml collision"
-    let collision_of: HashMap<String, String> = data
+    let mut collision_of: HashMap<String, String> = data
         .of_type(kenshi_data::ItemType::BuildingPart)
         .filter_map(|r| {
             let m = r.files.get("phs or mesh").and_then(|m| res.find(m))?;
@@ -677,6 +904,7 @@ fn load_zone_at(
             Some((m, x))
         })
         .collect();
+    collision_of.extend(feature_collision);
     // the doors' meshes (their collision is placed shut; people open doors, so they do not cut
     // the navmesh)
     let door_meshes: std::collections::HashSet<String> = data
@@ -780,6 +1008,40 @@ fn load_zone_at(
     })
 }
 
+/// What a BUILDING (a piece of furniture) stands on the ground with, in its own frame: each
+/// placed part's collision ("xml collision") as point sets (`Solids::footprints`), else (a part
+/// without one) the corners of its mesh's bounds.
+pub fn building_footprints(data: &GameDataContainer, res: &Resources, root: &Path, b: &GameData) -> Vec<Vec<Vec3>> {
+    let mut out = Vec::new();
+    for part in part_meshes_placed(data, b, false) {
+        let coll = part.record.files.get("xml collision").filter(|x| !x.is_empty()).and_then(|x| res.find(x)).and_then(|x| solids(root, &x));
+        match coll {
+            Some(sol) => {
+                for (pts, _) in sol.footprints() {
+                    out.push(pts.iter().map(|p| part.local.transform_point(*p)).collect());
+                }
+            }
+            None => {
+                let Some(path) = res.path(part.mesh) else { continue };
+                let Ok(mesh) = ogre_mesh::read(&path) else { continue };
+                let Some((mn, mx, _)) = mesh.bounds else { continue };
+                out.push(
+                    (0..8)
+                        .map(|c| {
+                            part.local.transform_point(Vec3::new(
+                                if c & 1 == 0 { mn[0] } else { mx[0] },
+                                if c & 2 == 0 { mn[1] } else { mx[1] },
+                                if c & 4 == 0 { mn[2] } else { mx[2] },
+                            ))
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+    out
+}
+
 /// A collision file's solids, read once.
 fn solids(root: &Path, path: &str) -> Option<Arc<kenshi_physics::world::Solids>> {
     use std::sync::{Mutex, OnceLock};
@@ -834,7 +1096,7 @@ pub struct FoliageCentre(pub Option<Vec3>);
 
 /// Shows the foliage whose page is in range of the focus, hides the rest.
 pub fn foliage_ranges(
-    cams: Query<&GlobalTransform, (With<Camera3d>, Without<crate::reflection::ReflectionCamera>)>,
+    cams: Query<&GlobalTransform, (With<Camera3d>, Without<crate::reflection::ReflectionCamera>, Without<crate::interior_mask::MaskCamera>)>,
     centre: Option<Res<FoliageCentre>>,
     mut objects: Query<(&GlobalTransform, &FoliageRange, &mut Visibility)>,
 ) {
@@ -1066,18 +1328,8 @@ impl ZoneScene {
     pub fn add_foliage(&mut self, root: &Path, world: &FoliageWorld, zone: (i32, i32)) {
         let x0 = zone.0 as f32 * ZONE_SIZE - WORLD_SIZE / 2.0;
         let z0 = zone.1 as f32 * ZONE_SIZE - WORLD_SIZE / 2.0;
-        // Kenshi cuts terrain, grass and foliage inside buildings' interiors with the interior
-        // mask pass (main.compositor InteriorMask, CLIP_INTERIOR in objects / foliage /
-        // terrainfp4.hlsl: a fragment between a mask's near and far faces is clipped). Stand-in:
-        // the grass and foliage standing inside an interior volume are not placed. (The zone's
-        // own buildings only.)
-        let interiors: Vec<kenshi_world::interior::Interior> =
-            self.buildings.iter().map(|b| b.interior.clone()).collect();
-        let patch = &self.patch;
-        let indoors = |x: f32, z: f32| {
-            let y = ground_on(patch, Vec3::ZERO, x, z);
-            interiors.iter().any(|i| i.contains([x, y + 5.0, z]))
-        };
+        // the grass and foliage inside buildings' interiors are cut where they are drawn
+        // (CLIP_INTERIOR, kenshi_render::interior_mask)
         let rect = [x0, z0, x0 + ZONE_SIZE, z0 + ZONE_SIZE];
         let tile = (zone.0.div_euclid(8), zone.1.div_euclid(8));
         let (side, overlay) = image::open(root.join(format!(
@@ -1171,7 +1423,6 @@ impl ZoneScene {
                         if several {
                             blades.retain(|b| world.biome_index(b.x, b.z) == index);
                         }
-                        blades.retain(|b| !indoors(b.x, b.z));
                         if blades.is_empty() {
                             continue;
                         }
@@ -1188,7 +1439,6 @@ impl ZoneScene {
                 }
             }
         }
-        placed.retain(|p: &kenshi_world::foliage::Placed| !indoors(p.position[0], p.position[2]));
         for p in placed {
             // the leaves, on the same transform as the trunk
             if let Some((lmesh, llook)) = world.leaves[p.mesh].clone() {

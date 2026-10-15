@@ -252,17 +252,40 @@ pub struct GearMods {
 
 impl Default for GearMods {
     fn default() -> Self {
-        gear_mods(&[])
+        gear_mods(&[], None)
+    }
+}
+
+/// A worn backpack's modifiers (CONTAINER, F043920: "athletics mult" +0x238, "combat speed mult"
+/// +0x240, "combat skill bonus" +0x244, "stealth mult" +0x248).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BagMods {
+    pub athletics: f32,
+    pub combat_speed: f32,
+    pub skill_bonus: i32,
+    pub stealth: f32,
+}
+
+impl BagMods {
+    pub fn from_record(r: &GameData) -> BagMods {
+        let float = |k: &str| r.floats.get(k).copied().or_else(|| r.ints.get(k).map(|&v| v as f32)).unwrap_or(1.0);
+        BagMods {
+            athletics: float("athletics mult"),
+            combat_speed: float("combat speed mult"),
+            skill_bonus: r.ints.get("combat skill bonus").copied().or_else(|| r.floats.get("combat skill bonus").map(|&v| v as i32)).unwrap_or(0),
+            stealth: float("stealth mult"),
+        }
     }
 }
 
 /// @fn F047071
 ///
-/// The pieces' modifiers summed and multiplied. Wearing nothing at all (and no backpack) one is
-/// nimbler: dodge and dexterity x1.1, stealth x1.2.
-/// (stand-in) The backpack's own values (its +0x238..+0x248, which start the products) are not
-/// read: a backpack counts as none.
-pub fn gear_mods(pieces: &[PieceMods]) -> GearMods {
+/// The pieces' modifiers summed and multiplied, starting from the worn backpack's (`bag`): its
+/// combat skill bonus starts the attack and defence sums, its combat speed the combat speed
+/// product, its stealth the stealth and (as the original has it) the dodge products, its
+/// athletics the lowest athletics. Wearing nothing at all (and no backpack) one is nimbler:
+/// dodge and dexterity x1.1, stealth x1.2.
+pub fn gear_mods(pieces: &[PieceMods], bag: Option<BagMods>) -> GearMods {
     let mut g = GearMods {
         attack: 0,
         defence: 0,
@@ -278,13 +301,25 @@ pub fn gear_mods(pieces: &[PieceMods]) -> GearMods {
         assassination: 1.0,
         damage_output: 1.0,
     };
+    if let Some(b) = bag {
+        g.attack = b.skill_bonus;
+        g.defence = b.skill_bonus;
+        g.combat_speed = b.combat_speed;
+        g.stealth = b.stealth;
+        g.dodge = b.stealth;
+    }
     if pieces.is_empty() {
-        g.dodge = 1.1;
-        g.stealth = 1.2;
-        g.dexterity = 1.1;
+        match bag {
+            None => {
+                g.dodge = 1.1;
+                g.stealth = 1.2;
+                g.dexterity = 1.1;
+            }
+            Some(b) => g.athletics = b.athletics,
+        }
         return g;
     }
-    let (mut lo, mut hi) = (1.0f32, 1.0f32);
+    let (mut lo, mut hi) = (bag.map_or(1.0f32, |b| b.athletics), 1.0f32);
     for p in pieces {
         g.attack += p.attack;
         g.defence += p.defence;
@@ -353,10 +388,10 @@ mod tests {
         let p = piece_mods(&r, 0.0).unwrap();
         assert!((p.combat_speed - 0.9 * 0.94).abs() < 1e-6);
         assert!((p.athletics - 0.8).abs() < 1e-6);
-        let g = gear_mods(&[p]);
+        let g = gear_mods(&[p], None);
         assert_eq!(g.attack, -8);
         assert!((g.athletics - 0.8).abs() < 1e-6);
-        let none = gear_mods(&[]);
+        let none = gear_mods(&[], None);
         assert_eq!((none.dodge, none.stealth, none.dexterity), (1.1, 1.2, 1.1));
     }
 }

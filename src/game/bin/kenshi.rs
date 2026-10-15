@@ -24,8 +24,12 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
 use kenshi_anim::select::{idle as idle_anim, movement};
+#[path = "birds.rs"]
+mod birds;
 #[path = "build_ui.rs"]
 mod build_ui;
+#[path = "tooltip_ui.rs"]
+mod tooltip_ui;
 #[path = "context_ui.rs"]
 mod context_ui;
 #[path = "dialogue_ui.rs"]
@@ -78,6 +82,8 @@ mod tutorial_table;
 mod tutorial_ui;
 #[path = "item_tip.rs"]
 mod item_tip;
+#[path = "order_test.rs"]
+mod order_test;
 #[path = "stats_ui.rs"]
 mod stats_ui;
 #[path = "saves_ui.rs"]
@@ -86,6 +92,8 @@ mod saves_ui;
 mod popup_ui;
 #[path = "message_box.rs"]
 mod message_box;
+#[path = "appearance.rs"]
+mod appearance;
 
 use bevy::math::Affine3A;
 use kenshi_physics::ragdoll::Ragdoll;
@@ -99,7 +107,8 @@ use kenshi_io::{ogre_mesh, resources::Resources};
 /// height) and "Full Screen" (borderless full screen here). Without the file 1600 x 900 windowed.
 /// (testing) Screenshots (`--shot`) and KENSHI_WINDOWED keep a window, at the video mode's size.
 fn video_window(root: &std::path::Path, testing: bool) -> Window {
-    let cfg = std::fs::read_to_string(root.join("kenshi.cfg")).unwrap_or_default();
+    // Ogre's kenshi.cfg, the rewrite's copy (the options' resolution and screen mode) over it
+    let cfg = kenshi_io::cfg::text(root, "kenshi.cfg");
     let get = |k: &str| {
         cfg.lines()
             .find_map(|l| l.split_once('=').filter(|(n, _)| n.trim() == k).map(|(_, v)| v.trim().to_string()))
@@ -110,7 +119,8 @@ fn video_window(root: &std::path::Path, testing: bool) -> Window {
             Some((it.next()?.parse::<u32>().ok()?, it.next()?.parse::<u32>().ok()?))
         })
         .unwrap_or((1600, 900));
-    let full = get("Full Screen").is_some_and(|v| v.eq_ignore_ascii_case("yes"))
+    // full screen or borderless: (stand-in) both a borderless window over the screen
+    let full = (get("Full Screen").is_some_and(|v| v.eq_ignore_ascii_case("yes")) || get("Border").is_some_and(|v| v.eq_ignore_ascii_case("none")))
         && !testing
         && std::env::var("KENSHI_WINDOWED").is_err();
     Window {
@@ -132,7 +142,7 @@ fn video_window(root: &std::path::Path, testing: bool) -> Window {
 }
 
 /// The main camera (not the water reflection's).
-type MainCam = (With<Camera3d>, Without<kenshi_render::reflection::ReflectionCamera>, Without<kenshi_render::reflection::PortraitCamera>);
+type MainCam = (With<Camera3d>, Without<kenshi_render::reflection::ReflectionCamera>, Without<kenshi_render::reflection::PortraitCamera>, Without<kenshi_render::interior_mask::MaskCamera>);
 use kenshi_render::character::{
     Animated, Blend, CharacterAsset, CharacterHandles, CharacterSpec, animate_characters,
     load_character, spawn_character_with_joints, strip_tracks, upload_character_with,
@@ -203,7 +213,7 @@ struct Game {
     /// The zones streamed in round the camera (the first zone is `zone`), and the ones asked
     /// for; zone loads come back over `loaded`.
     zones: HashMap<(i32, i32), ZoneScene>,
-    asked: std::collections::HashSet<(i32, i32)>,
+    pub(crate) asked: std::collections::HashSet<(i32, i32)>,
     /// Zones' remaining activation time (s, Kenshi's zone timers: see `stream_zones`).
     alive: HashMap<(i32, i32), f32>,
     /// ZoneManager's current zone (under the camera's focus, F051615).
@@ -216,7 +226,7 @@ struct Game {
     res: Arc<Resources>,
     outfits: Vec<CharacterAsset>,
     /// The loaded zones' building collision, for ragdolls.
-    statics: kenshi_physics::world::StaticWorld,
+    statics: std::sync::Arc<kenshi_physics::world::StaticWorld>,
     /// Per outfit: its race's ragdoll bound to its skeleton, and its carry ragdoll.
     ragdoll_rigs: Vec<Option<Arc<RagdollRig>>>,
     carry_rigs: Vec<Option<Arc<RagdollRig>>>,
@@ -237,8 +247,11 @@ struct Game {
     worn: HashMap<usize, Vec<String>>,
     /// The looks given (race, hair, clothes), by person.
     looks: HashMap<usize, CharacterSpec>,
-    /// The character editor's Body and Face values (raw, every range) by person.
+    /// The character editor's Body and Face values (raw, every range) by person, with its face
+    /// poses' weights by pose name (`appearance`): the editor's, a body file's, else rolled.
     body_values: HashMap<usize, HashMap<String, f32>>,
+    /// DA_CHARACTER_EDITOR: the character the editor is to open on (`editor::open_surgery`).
+    pub surgery: Option<usize>,
     /// (testing) the person KENSHI_KO knocked out.
     ko_test: Option<usize>,
     /// The outfits' uploaded handles and the sword's, for bodies spawned later.
@@ -260,8 +273,10 @@ struct Game {
     /// Building effects of zones just spawned (record, world position, orientation), for the
     /// effects to start.
     new_effects: Vec<(String, Vec3, Quat)>,
-    /// The camera: the point looked at (scene units), yaw, pitch and distance.
+    /// The camera: the point looked at (scene units), yaw, pitch and distance; turned with the
+    /// mouse now (the rotation marker, move_marker::rotation).
     focus: Vec3,
+    mouse_turning: bool,
     yaw: f32,
     pitch: f32,
     dist: f32,
@@ -355,7 +370,7 @@ fn main() -> AppExit {
     let mut extras = vec![format!("player:{players}")];
     extras.extend(
         args.iter()
-            .filter(|a| a.starts_with("squad:") || a.starts_with("demo:"))
+            .filter(|a| a.starts_with("squad:") || a.starts_with("demo:") || a.starts_with("spawn:") || a.starts_with("kit:"))
             .cloned(),
     );
     let mut app = App::new();
@@ -381,21 +396,31 @@ fn main() -> AppExit {
                 })
                 .set(WindowPlugin {
                     primary_window: Some(video_window(&root, args.iter().any(|a| a == "--shot"))),
+                    // (the close is ours: `close_now`)
+                    close_when_requested: false,
                     ..default()
                 }),
         )
         .insert_resource(ClearColor(Color::srgb(0.72, 0.68, 0.6)))
+        // the texture quality option (kenshi_render::texture_quality; 1 when missing)
+        .insert_resource(kenshi_render::texture_quality::TextureGimping(
+            kenshi_io::cfg::load(&root, "settings.cfg").get("texture resolution gimping").and_then(|v| v.trim().parse().ok()).unwrap_or(1),
+        ))
         .add_plugins(KenshiTerrainPlugin)
         .add_plugins(KenshiSkyPlugin)
         .init_resource::<OpenBuildings>()
         .init_resource::<move_marker::MoveMarker>()
+        .init_resource::<move_marker::RotationMarker>()
         .init_resource::<ranged_view::RangedMeshes>()
         .init_resource::<options_ui::Menus>()
         .init_resource::<blood::Blood>()
         .init_resource::<slave_ui::SlaveTrade>()
         .init_resource::<pickbar::PickBars>()
         .insert_resource(bindings::Bindings::load(&root))
+        .init_resource::<bindings::UiPresses>()
+        .add_systems(PreUpdate, bindings::turn_presses)
         .init_resource::<kenshi_render::zone::TurretAims>()
+        .init_resource::<kenshi_render::zone::PartMotion>()
         .insert_resource(sound::Sound::new(&root))
         .init_resource::<kenshi_render::zone::FoliageCentre>()
         .add_plugins(kenshi_gui::GuiPlugin)
@@ -408,6 +433,7 @@ fn main() -> AppExit {
         .init_resource::<prospect_ui::ProspectWindow>()
         .add_systems(Update, prospect_ui::update.run_if(resource_exists::<WorldReady>))
         .init_resource::<tutorial_ui::Tutorials>()
+        .add_systems(Update, order_test::script.run_if(resource_exists::<WorldReady>))
         .add_systems(Update, tutorial_ui::update.run_if(resource_exists::<WorldReady>.and_then(resource_exists::<hud_ui::Hud>)))
         .add_systems(Update, (research_ui::script, research_ui::update).chain().run_if(resource_exists::<WorldReady>))
         .add_systems(
@@ -426,12 +452,14 @@ fn main() -> AppExit {
             (dialogue_ui::script, dialogue_ui::update).chain().before(inventory_ui::toggle).distributive_run_if(resource_exists::<WorldReady>),
         )
         .add_systems(Update, (key_script, save_keys).chain().run_if(resource_exists::<WorldReady>))
-        .add_systems(Update, (move_doors, move_player_doors, sound::doors, sound::dismantled, cut_player_buildings).run_if(resource_exists::<WorldReady>))
+        .add_systems(Update, (move_doors, move_player_doors, sound::doors, sound::dismantled, cut_player_buildings, player_masks).run_if(resource_exists::<WorldReady>))
+        .init_resource::<kenshi_render::local_lights::LightClock>()
         .add_systems(Update, kenshi_render::local_lights::animate.run_if(resource_exists::<WorldReady>))
         .init_resource::<saves_ui::SavesPanel>()
         .init_resource::<popup_ui::Popup>()
         .init_resource::<message_box::MessageBoxes>()
         .add_systems(Update, message_box::update)
+        .add_systems(Update, tooltip_ui::update.after(inventory_ui::draw))
         .init_resource::<Autosave>()
         .add_message::<saves_ui::SavesDone>()
         .add_systems(Update, saves_ui::update.after(options_ui::update))
@@ -447,19 +475,22 @@ fn main() -> AppExit {
         .init_resource::<speech_ui::Speech>()
         .init_resource::<ground_items::GroundItems>()
         .add_systems(Update, (ground_items::update, ground_items::highlight).chain().run_if(resource_exists::<WorldReady>))
+        .init_resource::<birds::Birds>()
+        .add_systems(Update, birds::update.run_if(resource_exists::<WorldReady>))
         .add_systems(Update, move_marker::update.after(command).run_if(resource_exists::<WorldReady>))
+        .add_systems(Update, menu::ui_script.before(saves_ui::update).run_if(resource_exists::<WorldReady>))
+        .add_systems(Update, move_marker::rotation.after(camera).run_if(resource_exists::<WorldReady>))
         .add_systems(Update, context_ui::rclick_script.before(command).run_if(resource_exists::<WorldReady>.and_then(resource_exists::<Game>)))
         .add_systems(Update, options_ui::update.run_if(resource_exists::<WorldReady>))
         .add_systems(Update, (slave_ui::test_hook, slave_ui::update).chain().run_if(resource_exists::<WorldReady>))
         .add_systems(Update, pickbar::update.run_if(resource_exists::<WorldReady>))
-        .add_systems(Update, (ranged_view::bolts, ranged_view::bows, ranged_view::test_hook, ranged_view::turret_test, ranged_view::nest_test, ranged_view::weapon_row, ranged_view::wound_test, ranged_view::ko_me_test, ranged_view::arm_test, ranged_view::turret_aims, kenshi_render::zone::pose_swivels.after(ranged_view::turret_aims)).run_if(resource_exists::<WorldReady>))
+        .add_systems(Update, (ranged_view::bolts, ranged_view::bows, ranged_view::test_hook, ranged_view::turret_test, ranged_view::nest_test, ranged_view::weapon_row, ranged_view::wound_test, ranged_view::ko_me_test, ranged_view::arm_test, ranged_view::turret_aims, part_motion, kenshi_render::zone::pose_swivels.after(ranged_view::turret_aims).after(part_motion)).run_if(resource_exists::<WorldReady>))
         .add_systems(Update, (sound::listener, sound::menu_music, sound::interface, sound::play).chain())
         .add_systems(
             Update,
             (
                 sound::regions,
                 sound::weather,
-                sound::footsteps,
                 blood::paint.before(sound::fights),
                 sound::fights,
                 sound::items,
@@ -487,9 +518,13 @@ fn main() -> AppExit {
                         .and_then(not(resource_exists::<editor::Pending>)),
                 ),
                 hud_ui::update.run_if(resource_exists::<hud_ui::Hud>.and_then(resource_exists::<WorldReady>)),
+                hud_ui::cycle_squads.run_if(resource_exists::<hud_ui::Hud>.and_then(resource_exists::<WorldReady>)),
                 hud_ui::banner.run_if(resource_exists::<hud_ui::Hud>.and_then(resource_exists::<WorldReady>)),
+                hud_ui::extending_panel.run_if(resource_exists::<hud_ui::Hud>.and_then(resource_exists::<WorldReady>)),
                 popup_ui::update.run_if(resource_exists::<WorldReady>),
                 hud_ui::squad_panel.run_if(resource_exists::<hud_ui::Hud>.and_then(resource_exists::<WorldReady>)),
+                hud_ui::jobs_panel.run_if(resource_exists::<hud_ui::Hud>.and_then(resource_exists::<WorldReady>)),
+                hud_ui::hotkeys.run_if(resource_exists::<hud_ui::Hud>.and_then(resource_exists::<WorldReady>)),
                 debug_text.run_if(resource_exists::<WorldReady>),
             ),
         )
@@ -502,10 +537,11 @@ fn main() -> AppExit {
                 inventory_ui::trade_buy_script.after(inventory_ui::toggle).before(inventory_ui::draw),
                 inventory_ui::toggle,
                 inventory_ui::limbs_window.after(inventory_ui::toggle),
+                inventory_ui::bag_window.after(inventory_ui::toggle),
+                inventory_ui::arrange_button.after(inventory_ui::toggle).before(inventory_ui::draw),
                 inventory_ui::machine_window.after(inventory_ui::toggle),
                 inventory_ui::drag.after(inventory_ui::toggle),
                 inventory_ui::draw.after(inventory_ui::drag),
-                inventory_ui::tooltip.after(inventory_ui::draw),
             )
                 .distributive_run_if(resource_exists::<WorldReady>),
         )
@@ -518,16 +554,17 @@ fn main() -> AppExit {
         .add_systems(
             Update,
             (
-                (controls, camera, select, command, run_sim, place_people).chain(),
+                (controls, camera, select, command, run_jobs, run_sim, place_people).chain(),
                 ragdolls.after(place_people),
                 body_scales.after(place_people).before(animate_characters),
                 postures.after(place_people).before(animate_characters),
                 rebody,
                 dress,
                 animate_characters.after(ragdolls),
+                roll_looks.before(body_shapes),
+                face_morphs.after(roll_looks),
                 body_shapes.after(animate_characters),
                 (
-                    draw_rings,
                     hud,
                     testing,
                     hide_roofs,
@@ -538,33 +575,44 @@ fn main() -> AppExit {
                     kenshi_render::zone::foliage_ranges,
                     water_clock,
                     weather_tick.before(relight),
+                    stars,
                     planets,
                     new_bodies,
                     relight,
                     sun_follow,
                     tick_particles.after(weather_tick),
                     fog_volumes.after(tick_particles),
+                    fog_features,
                     footsteps.after(animate_characters).before(tick_particles),
                 ),
             )
                 .distributive_run_if(resource_exists::<WorldReady>),
         );
+    // the character editor: at a new game's start (the menu's) and the plastic surgeon's
+    app.add_systems(
+        Update,
+        (
+            editor::open_surgery.run_if(not(resource_exists::<editor::Editor>).and_then(resource_exists::<WorldReady>)),
+            editor::update.run_if(resource_exists::<editor::Editor>),
+            editor::type_script,
+            hud_ui::hide_under_editor,
+        ),
+    );
+    // the menu: the main menu's, or over a game its new game panel and the loading screen of a
+    // game loaded from the game (`unload_world` first)
+    app.add_systems(First, unload_world.run_if(resource_exists::<Unload>))
+        .add_systems(
+            Update,
+            editor::open.run_if(resource_exists::<editor::Pending>.and_then(resource_exists::<WorldReady>)),
+        )
+        .add_systems(
+            Update,
+            (menu::buttons, menu::advanced.after(options_ui::update), menu::arrive).distributive_run_if(resource_exists::<menu::Menu>),
+        );
     if menu {
         app.insert_resource(menu::Menu::new(root.clone()))
             .add_systems(Startup, menu::open)
-            .add_systems(Update, menu::script.before(menu::buttons))
-            .add_systems(
-                Update,
-                (
-                    editor::open.run_if(resource_exists::<editor::Pending>.and_then(resource_exists::<WorldReady>)),
-                    editor::update.run_if(resource_exists::<editor::Editor>),
-                    editor::type_script,
-                ),
-            )
-            .add_systems(
-                Update,
-                (menu::buttons, menu::advanced, menu::arrive).distributive_run_if(resource_exists::<menu::Menu>),
-            );
+            .add_systems(Update, menu::script.before(menu::buttons));
     } else {
         let load = build_world(root.clone(), args.clone(), zone_xy, extras, Loading::New);
         load.install(app.world_mut());
@@ -577,6 +625,8 @@ fn main() -> AppExit {
             bevy::diagnostic::LogDiagnosticsPlugin::default(),
         ));
     }
+    app.add_systems(First, close_now);
+    app.add_systems(Last, (quit_now, vram_debug));
     let exit = app.run();
     // loads still running when the app closes finish first: the process ending under them
     // crashed it
@@ -599,34 +649,100 @@ fn key_script(mut frames: Local<u32>, mut keys: ResMut<ButtonInput<KeyCode>>) {
     }
 }
 
-/// The environment a restarted program reads to load a save (and clears for a new game).
-pub const LOAD_VARS: [&str; 4] = ["KENSHI_LOAD", "KENSHI_LOAD_RESET", "KENSHI_IMPORT", "KENSHI_MENU_SCRIPT"];
+/// A game to unload (next frame, `unload_world`), and what to load after it.
+#[derive(Resource)]
+pub struct Unload(pub menu::After);
 
-/// Load a save from inside a game: (stand-in, as "New Game" does) the program started again,
-/// its menu pressing Continue with KENSHI_LOAD the save's folder (KENSHI_IMPORT the import's
-/// ticks for one of Kenshi's), so the world is built afresh from it.
-pub fn restart_into(root: &std::path::Path, path: &std::path::Path, reset: bool, import: Option<kenshi_game::kenshi_save::ImportOptions>, exit: &mut MessageWriter<AppExit>) {
-    if let Ok(exe) = std::env::current_exe() {
-        let mut c = std::process::Command::new(exe);
-        c.arg(root).current_dir(root);
-        for v in LOAD_VARS {
-            c.env_remove(v);
-        }
-        c.env("KENSHI_LOAD", path).env("KENSHI_LOAD_RESET", if reset { "1" } else { "0" }).env("KENSHI_MENU_SCRIPT", "ContinueButton@30");
-        if let Some(o) = import {
-            c.env("KENSHI_IMPORT", import_flags(&o));
-        }
-        let _ = c.spawn();
+/// Unload the game in play, in the program (as Kenshi does before a load or a new game): every
+/// drawn thing (each entity with a place or a UI node) despawned, the world's resources
+/// dropped, the windows' states and the sounds made afresh; then the menu (`menu::Menu`)
+/// loads what follows behind its loading screen.
+fn unload_world(world: &mut World) {
+    let Some(Unload(after)) = world.remove_resource::<Unload>() else { return };
+    let Some(root) = world.get_resource::<Game>().map(|g| g.root.clone()) else { return };
+    eprintln!("unloading the game");
+    // the sounds playing in the world
+    let voices = world.resource_mut::<sound::Sound>().leave_world();
+    for e in voices {
+        world.try_despawn(e).ok();
     }
-    exit.write(AppExit::Success);
+    // everything drawn: the world's meshes, lights and cameras, and the windows
+    let mut q = world.query_filtered::<Entity, (Or<(With<Transform>, With<Node>)>, Without<Window>)>();
+    let drawn: Vec<Entity> = q.iter(world).collect();
+    for e in drawn {
+        world.try_despawn(e).ok();
+    }
+    // the world and what was made for it
+    world.remove_resource::<WorldReady>();
+    world.remove_resource::<Game>();
+    world.remove_resource::<TerrainLook>();
+    world.remove_resource::<Sky>();
+    world.remove_resource::<WeatherState>();
+    world.remove_resource::<kenshi_render::particles::render::Particles>();
+    world.remove_resource::<kenshi_render::particles::effects::Effects>();
+    world.remove_resource::<kenshi_render::terrain_lod::LodTerrain>();
+    world.remove_resource::<Distant>();
+    world.remove_resource::<kenshi_render::interior_mask::InteriorMask>();
+    world.remove_resource::<kenshi_render::reflection::WaterReflection>();
+    world.remove_resource::<ranged_view::AttachPoints>();
+    world.remove_resource::<hud_ui::Hud>();
+    world.remove_resource::<editor::Editor>();
+    world.remove_resource::<editor::Pending>();
+    // the windows and the world's caches as at the start
+    fn fresh<R: Resource + Default>(world: &mut World) {
+        world.insert_resource(R::default());
+    }
+    fresh::<OpenBuildings>(world);
+    fresh::<move_marker::MoveMarker>(world);
+    fresh::<move_marker::RotationMarker>(world);
+    fresh::<ranged_view::RangedMeshes>(world);
+    fresh::<options_ui::Menus>(world);
+    fresh::<blood::Blood>(world);
+    fresh::<slave_ui::SlaveTrade>(world);
+    fresh::<pickbar::PickBars>(world);
+    fresh::<kenshi_render::zone::TurretAims>(world);
+    fresh::<kenshi_render::zone::PartMotion>(world);
+    fresh::<kenshi_render::zone::FoliageCentre>(world);
+    fresh::<inventory_ui::InventoryWindow>(world);
+    fresh::<stats_ui::StatsWindow>(world);
+    fresh::<dialogue_ui::DialogueWindow>(world);
+    fresh::<context_ui::ContextMenu>(world);
+    fresh::<build_ui::BuildMode>(world);
+    fresh::<research_ui::ResearchWindow>(world);
+    fresh::<prospect_ui::ProspectWindow>(world);
+    fresh::<tutorial_ui::Tutorials>(world);
+    fresh::<portraits::Portraits>(world);
+    fresh::<icons::ItemIcons>(world);
+    fresh::<popup_ui::Popup>(world);
+    fresh::<message_box::MessageBoxes>(world);
+    fresh::<Autosave>(world);
+    fresh::<nametags::NameTags>(world);
+    fresh::<speech_ui::Speech>(world);
+    fresh::<ground_items::GroundItems>(world);
+    fresh::<birds::Birds>(world);
+    // the save panels (the save the next game comes from is kept)
+    let current = world.resource::<saves_ui::SavesPanel>().current.clone();
+    world.insert_resource(saves_ui::SavesPanel::with_current(current));
+    // the menu: the new game panel's (its start and options kept), else a loading screen's
+    match world.get_resource_mut::<menu::Menu>() {
+        Some(mut m) => m.unloaded(after),
+        None => {
+            world.insert_resource(menu::Menu::loading(root, after));
+        }
+    }
 }
 
-/// Import options as KENSHI_IMPORT's flags (reset, buildings, research, dead NPCs, relations as
-/// 0 / 1), and back.
-pub fn import_flags(o: &kenshi_game::kenshi_save::ImportOptions) -> String {
-    [o.reset_positions, o.buildings, o.research, o.dead_npcs, o.relations].iter().map(|b| if *b { '1' } else { '0' }).collect()
+/// Load a save from inside a game: the game unloaded first (`unload_world`), the save loaded
+/// behind the loading screen (as the main menu's Continue does).
+fn load_from_game(commands: &mut Commands, saves: &mut saves_ui::SavesPanel, path: &std::path::Path, reset: bool, import: Option<kenshi_game::kenshi_save::ImportOptions>) {
+    if import.is_none() {
+        saves.current = Some(kenshi_game::save::slot_name(path));
+    }
+    commands.insert_resource(Unload(menu::After::Load(path.to_path_buf(), reset, import)));
 }
 
+/// KENSHI_IMPORT's flags (reset, buildings, research, dead NPCs, relations as 0 / 1) as import
+/// options (testing: the menu's Continue imports KENSHI_LOAD with them).
 pub fn import_of_flags(s: &str) -> kenshi_game::kenshi_save::ImportOptions {
     let b: Vec<bool> = s.chars().map(|c| c == '1').collect();
     let at = |k: usize, d: bool| b.get(k).copied().unwrap_or(d);
@@ -670,25 +786,25 @@ fn save_and_tell(game: &mut Game, name: &str) {
 }
 
 /// F5 quicksaves, F9 quickloads (controls.cfg "quicksave" / "quickload").
-fn save_keys(act: bindings::Actions, mut game: ResMut<Game>, mut exit: MessageWriter<AppExit>) {
+fn save_keys(mut commands: Commands, act: bindings::Actions, mut game: ResMut<Game>, mut saves: ResMut<saves_ui::SavesPanel>) {
     if act.just("quicksave") {
         save_and_tell(&mut game, kenshi_game::save::QUICKSAVE);
     }
     if act.just("quickload") {
         match kenshi_game::save::slots().into_iter().find(|s| s.name == kenshi_game::save::QUICKSAVE) {
-            Some(s) => restart_into(&game.root, &s.path, false, None, &mut exit),
+            Some(s) => load_from_game(&mut commands, &mut saves, &s.path, false, None),
             None => eprintln!("no quicksave to load"),
         }
     }
 }
 
-/// The save panels' requests in a game: save, or load (the program started again on the save).
-fn saves_done(mut done: MessageReader<saves_ui::SavesDone>, mut game: ResMut<Game>, mut exit: MessageWriter<AppExit>) {
+/// The save panels' requests in a game: save, or load (the game unloaded, then the save loaded).
+fn saves_done(mut commands: Commands, mut done: MessageReader<saves_ui::SavesDone>, mut game: ResMut<Game>, mut saves: ResMut<saves_ui::SavesPanel>) {
     for d in done.read() {
         match d {
             saves_ui::SavesDone::Save(name) => save_and_tell(&mut game, name),
-            saves_ui::SavesDone::Load(path, reset) => restart_into(&game.root, path, *reset, None, &mut exit),
-            saves_ui::SavesDone::Import(path, opt) => restart_into(&game.root, path, false, Some(*opt), &mut exit),
+            saves_ui::SavesDone::Load(path, reset) => load_from_game(&mut commands, &mut saves, path, *reset, None),
+            saves_ui::SavesDone::Import(path, opt) => load_from_game(&mut commands, &mut saves, path, false, Some(*opt)),
         }
     }
 }
@@ -744,6 +860,90 @@ pub(crate) fn spawn_worker(f: impl FnOnce() + Send + 'static) {
     if let Ok(mut w) = WORKERS.lock() {
         w.retain(|h| !h.is_finished());
         w.push(h);
+    }
+}
+
+/// (testing) KENSHI_VRAM_DEBUG=<frame>: at that frame, the images and meshes held (what the GPU
+/// is asked to keep): images by format and size, meshes by vertex bytes.
+fn vram_debug(mut frames: Local<u32>, images: Res<Assets<Image>>, meshes: Res<Assets<Mesh>>, assets: Res<AssetServer>) {
+    *frames += 1;
+    if std::env::var("KENSHI_VRAM_DEBUG").ok().and_then(|v| v.parse::<u32>().ok()) != Some(*frames) {
+        return;
+    }
+    let mut by: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+    let mut total = 0usize;
+    let mut named: Vec<(usize, String)> = Vec::new();
+    for (id, img) in images.iter() {
+        let d = &img.texture_descriptor;
+        let bytes = img.data.as_ref().map_or(0, |v| v.len());
+        let est = if bytes > 0 { bytes } else { (d.size.width * d.size.height * 4) as usize };
+        total += est;
+        let e = by.entry(format!("{:?} {}x{} mips {}", d.format, d.size.width, d.size.height, d.mip_level_count)).or_default();
+        e.0 += 1;
+        e.1 += est;
+        let path = assets.get_path(id).map(|p| p.to_string()).unwrap_or_else(|| "(made)".into());
+        if d.format == bevy::render::render_resource::TextureFormat::Rgba8Unorm && d.size.width >= 1024 {
+            eprintln!("vram:     uncompressed {}x{} {path}", d.size.width, d.size.height);
+        }
+        named.push((est, path));
+    }
+    let mut v: Vec<_> = by.into_iter().collect();
+    v.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+    eprintln!("vram: {} images, ~{} MB", images.len(), total / (1 << 20));
+    for (k, (n, b)) in v.iter().take(15) {
+        eprintln!("vram:   {n:5} x {k}: {} MB", b / (1 << 20));
+    }
+    named.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut per_file: std::collections::HashMap<String, (usize, usize)> = Default::default();
+    for (b, p) in named.iter().filter(|(_, p)| p != "(made)") {
+        let base = p.split('#').next().unwrap_or(p).to_lowercase();
+        let e = per_file.entry(base).or_default();
+        e.0 += 1;
+        e.1 += b;
+    }
+    let dup: usize = per_file.values().filter(|(n, _)| *n > 1).map(|(n, b)| b - b / n).sum();
+    eprintln!("vram: {} files, loaded more than once: {} ({} MB extra)", per_file.len(), per_file.values().filter(|(n, _)| *n > 1).count(), dup / (1 << 20));
+    let made: usize = named.iter().filter(|(_, p)| p == "(made)").map(|x| x.0).sum();
+    eprintln!("vram: made (not from files) {} MB in {}", made / (1 << 20), named.iter().filter(|(_, p)| p == "(made)").count());
+    let mut mesh_bytes = 0usize;
+    let mut sizes: std::collections::BTreeMap<usize, usize> = Default::default();
+    let mut gpu_only = 0;
+    for (_, m) in meshes.iter() {
+        // (one kept only on the GPU cannot be counted here)
+        if !m.asset_usage.contains(bevy::asset::RenderAssetUsages::MAIN_WORLD) {
+            gpu_only += 1;
+            continue;
+        }
+        let b = m.count_vertices() * m.get_vertex_size() as usize + m.indices().map_or(0, |i| i.len() * 4);
+        mesh_bytes += b;
+        *sizes.entry(m.count_vertices()).or_default() += 1;
+    }
+    let mut common: Vec<_> = sizes.into_iter().collect();
+    common.sort_by(|a, b| b.1.cmp(&a.1));
+    eprintln!("vram: meshes by vertex count (count x vertices): {:?}", common.iter().take(10).map(|(v, n)| format!("{n}x{v}")).collect::<Vec<_>>());
+    eprintln!("vram: {} meshes, ~{} MB ({gpu_only} more kept only on the GPU)", meshes.len(), mesh_bytes / (1 << 20));
+}
+
+/// The app asked to close (the window closed, Quit, a test's end): the process ends here, once
+/// the loads still running are done. Bevy's own teardown after its loop crashed (a segmentation
+/// fault in the renderer's or the window's shutdown) and nothing of the game's runs after an
+/// exit.
+fn quit_now(mut exits: MessageReader<AppExit>) {
+    let Some(e) = exits.read().last().cloned() else { return };
+    join_workers();
+    std::process::exit(match e {
+        AppExit::Success => 0,
+        AppExit::Error(n) => n.get() as i32,
+    });
+}
+
+/// The window's close button: the process ends at once (the loads still running done first),
+/// as `quit_now` does. Left to Bevy, the window went first and the renderer crashed on it (a
+/// segmentation fault) before the exit was seen.
+fn close_now(mut closes: MessageReader<bevy::window::WindowCloseRequested>) {
+    if closes.read().next().is_some() {
+        join_workers();
+        std::process::exit(0);
     }
 }
 
@@ -900,9 +1100,15 @@ fn build_world(root: PathBuf, args: Vec<String>, zone_xy: (i32, i32), extras: Ve
     let library = Arc::new(kenshi_render::particles::library::ParticleLibrary::load(&root));
     let effects = kenshi_render::particles::effects::Effects::new(&sim.data, &library.templates, &root);
 
-    let lod = kenshi_render::terrain_lod::LodTerrain::new(
+    let mut lod = kenshi_render::terrain_lod::LodTerrain::new(
             Terrain::open(&root).expect("terrain heightmap"),
         );
+    // the terrain options (F045916): "terrain detail" (1), "terrain distant" (0), "terrain
+    // threshold" (750)
+    {
+        let cfg = kenshi_io::cfg::load(&root, "settings.cfg");
+        lod.detail = kenshi_render::terrain_lod::Detail::from_options(cfg.f32("terrain detail", 1.0), cfg.f32("terrain distant", 0.0), cfg.f32("terrain threshold", 750.0));
+    }
     let distant = Distant {
             terrain: Terrain::open(&root).expect("heightmap"),
             cells: HashMap::new(),
@@ -945,6 +1151,7 @@ fn build_world(root: PathBuf, args: Vec<String>, zone_xy: (i32, i32), extras: Ve
             worn: HashMap::new(),
             looks: HashMap::new(),
             body_values: HashMap::new(),
+            surgery: None,
             ko_test: None,
             uploads: vec![],
             sword: None,
@@ -957,6 +1164,7 @@ fn build_world(root: PathBuf, args: Vec<String>, zone_xy: (i32, i32), extras: Ve
             speed: std::env::var("KENSHI_SPEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
             carry: 0.0,
             focus,
+            mouse_turning: false,
             yaw: cam[2],
             pitch: cam[1],
             dist: cam[0],
@@ -1036,9 +1244,17 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     (mut terrain_materials, mut object_materials, mut look, mut sky_materials, sky, mut waters, mut characters, mut moons): Looks,
+    (windows, mut mask_materials): (Query<&Window>, ResMut<Assets<kenshi_render::interior_mask::InteriorMaskMaterial>>),
 ) {
     commands.insert_resource(WorldReady);
     let game = &mut *game;
+    // the interior mask (kenshi_render::interior_mask), before the materials that read it
+    if std::env::var("KENSHI_NO_INTERIOR_MASK").is_err() {
+        let size = windows.iter().next().map_or(UVec2::new(1280, 720), |w| UVec2::new(w.physical_width(), w.physical_height()));
+        let mask = kenshi_render::interior_mask::spawn_interior_mask(&mut commands, &mut images, &mut mask_materials, size, game.zone.origin);
+        look.interior_mask = Some(mask.image.clone());
+        commands.insert_resource(mask);
+    }
     if !old_terrain() {
         game.zone.terrain.clear();
     }
@@ -1285,12 +1501,15 @@ fn camera(
     editor: Option<Res<editor::Editor>>,
     windows: Query<&Window>,
     build: Option<Res<build_ui::BuildMode>>,
+    trade: Res<slave_ui::SlaveTrade>,
+    tutorials: Option<Res<tutorial_ui::Tutorials>>,
 ) {
     let dt = time.delta_secs();
-    // the overview window (map, factions) has the wheel while it is open; the character
-    // editor's rows have it over its right panel
+    // the overview window (map, factions), the character trade windows and the tutorials
+    // window have the wheel while open; the character editor's rows have it over its right
+    // panel
     let over_editor = editor.is_some() && windows.iter().next().and_then(|w| Some(w.cursor_position()?.x > w.width() * 0.7)).unwrap_or(false);
-    if overview.open.is_some() || over_editor {
+    if overview.open.is_some() || over_editor || trade.is_open() || tutorials.is_some_and(|t| t.window_open()) {
         wheel.clear();
     }
     let mut pan = Vec2::ZERO;
@@ -1318,6 +1537,8 @@ fn camera(
     }
     // tilting (F041482): the view's direction stays between 0.92 down and 0.2 up
     let turning = act.held("mouse_rotate");
+    // (testing) KENSHI_MOUSE_TURN: the mouse-rotate key held (the rotation marker shown)
+    game.mouse_turning = turning || std::env::var("KENSHI_MOUSE_TURN").is_ok();
     for m in motion.read() {
         if turning {
             game.yaw -= m.delta.x * 0.005;
@@ -1566,7 +1787,7 @@ fn command(
     mut held: Local<Option<f32>>,
     mut press: Local<Option<(usize, f32)>>,
     build: Res<build_ui::BuildMode>,
-    (views, open, mut marker): (Query<&BuildingView>, Res<OpenBuildings>, ResMut<move_marker::MoveMarker>),
+    (views, open, mut marker, keys): (Query<&BuildingView>, Res<OpenBuildings>, ResMut<move_marker::MoveMarker>, Res<ButtonInput<KeyCode>>),
 ) {
     // a click goes to the floor shown: the storeys of an opened building above it are hidden
     let shown = |p: Vec3| {
@@ -1644,12 +1865,17 @@ fn command(
     if menu.test_cursor.is_some() {
         eprintln!("rclick: cursor {cursor}: person {someone:?}, training {:?}", pick_training(cam, at, &game, cursor));
     }
+    // shift held: the order a job instead, when it can be one (kenshi_game::orders::Job)
+    let shift = menu.test_cursor.is_none() && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
     if let Some(e) = someone {
-        *press = Some((e, 0.0));
+        if !(shift && add_job(&mut game, e)) {
+            *press = Some((e, 0.0));
+        }
         return;
     }
     // on an item lying on the ground or a floor (picked on screen): the selection goes and
     // picks it up
+    // (Collecting item, task 3, is no job: with shift too it is just the order, F036821)
     if let Some(item) = ground_items::under_cursor(cam, at, &game, cursor) {
         let selected = game.selected.clone();
         game.sim.order_pick_item(&selected, item);
@@ -1658,7 +1884,9 @@ fn command(
     // on town training equipment (picked on screen: it may stand on a floor over the ground):
     // train on it on release, its menu held
     if let Some(f) = pick_training(cam, at, &game, cursor) {
-        *press = Some((kenshi_game::production::FURN_TARGET + f, 0.0));
+        if !(shift && add_job(&mut game, kenshi_game::production::FURN_TARGET + f)) {
+            *press = Some((kenshi_game::production::FURN_TARGET + f, 0.0));
+        }
         return;
     }
     let Some(q) = ground_at_shown(cam, at, &game, cursor, &shown) else {
@@ -1687,7 +1915,9 @@ fn command(
     }
     // on a building of the player's: its default order on release, its menu held
     if let Some(b) = game.sim.building_at([w.x, w.y, w.z]) {
-        *press = Some((kenshi_game::base::BUILDING_OWNER + b, 0.0));
+        if !(shift && add_job(&mut game, kenshi_game::base::BUILDING_OWNER + b)) {
+            *press = Some((kenshi_game::base::BUILDING_OWNER + b, 0.0));
+        }
         return;
     }
     game.sim.order_move_squad(&selected, [w.x, w.y, w.z]);
@@ -1695,12 +1925,12 @@ fn command(
     *held = Some(0.0);
 }
 
-/// The town training equipment under the cursor: its middle (8 units up) within 30 pixels of it
-/// on screen, the nearest to the camera of those.
+/// The town furniture with orders under the cursor (training equipment, beds, cages): its middle
+/// (8 units up) within 30 pixels of it on screen, the nearest to the camera of those.
 fn pick_training(cam: &Camera, at: &GlobalTransform, game: &Game, cursor: Vec2) -> Option<usize> {
     let eye = at.translation();
     (0..game.sim.furn.len())
-        .filter(|&k| game.sim.furn[k].function == kenshi_game::production::FUNCTION_TRAINING)
+        .filter(|&k| matches!(game.sim.furn[k].function, kenshi_game::production::FUNCTION_TRAINING | kenshi_game::sim::BF_BED | kenshi_world::furniture::BF_CAGE))
         .filter_map(|k| {
             let p = Vec3::from(game.sim.furn[k].position) - game.zone.origin + Vec3::Y * 8.0;
             let d = p.distance(eye);
@@ -1714,13 +1944,74 @@ fn pick_training(cam: &Camera, at: &GlobalTransform, game: &Game, cursor: Vec2) 
         .map(|(k, _)| k)
 }
 
+/// Shift with an order on `target`: a job for the selection when the order can be one.
+fn add_job(game: &mut Game, target: usize) -> bool {
+    let sel = game.selected.clone();
+    game.sim.add_job(&sel, target)
+}
+
+/// The player's people's jobs (kenshi_game::orders::Job), twice a second: each one free for them
+/// (JOBS on, idle, no orders) takes its first job that can still be done, at most every 5 s.
+fn run_jobs(mut game: ResMut<Game>, time: Res<Time>, mut timer: Local<f32>, mut last: Local<HashMap<usize, f32>>, mut frames: Local<u32>) {
+    // (testing) KENSHI_JOB_AT=<frame>: the selection given a job on the nearest standing person
+    // not of the player's, and its JOBS turned off and on again
+    *frames += 1;
+    if std::env::var("KENSHI_JOB_AT").ok().and_then(|v| v.parse::<u32>().ok()) == Some(*frames)
+        && let Some(&me) = game.selected.first()
+    {
+        let at = game.sim.folk[me].mover.position_units();
+        let near = game.sim.folk.iter().filter(|p| !p.player && !p.down && !p.dead).min_by(|a, b| {
+            let d = |p: &kenshi_game::sim::Person| { let q = p.mover.position_units(); (q[0] - at[0]).hypot(q[2] - at[2]) };
+            d(a).total_cmp(&d(b))
+        }).map(|p| p.id);
+        if let Some(e) = near {
+            add_job(&mut game, e);
+            let sel = game.selected.clone();
+            game.sim.toggle_jobs(&sel);
+            game.sim.toggle_jobs(&sel);
+            eprintln!("job test: {:?} jobs {:?} on {}", sel, game.sim.folk[me].jobs, game.sim.folk[me].jobs_on);
+        }
+    }
+    *timer += time.delta_secs();
+    if *timer < 0.5 || game.paused {
+        return;
+    }
+    *timer = 0.0;
+    let now = time.elapsed_secs();
+    let ids: Vec<usize> = game.sim.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
+    for id in ids {
+        if !game.sim.free_for_jobs(id) || last.get(&id).is_some_and(|&t| now - t < 5.0) {
+            continue;
+        }
+        let jobs = game.sim.folk[id].jobs.clone();
+        for j in jobs {
+            if game.sim.do_job(id, &j) {
+                eprintln!("job: {id} does \"{}\"", j.label);
+                last.insert(id, now);
+                break;
+            }
+        }
+    }
+}
+
 /// A quick right click on someone: someone down is picked up; someone not fighting with
 /// something to say is walked to and talked to (a trader with nothing to say traded with);
 /// anyone else attacked.
 fn default_order(game: &mut Game, inv: &mut inventory_ui::InventoryWindow, talk: &mut dialogue_ui::DialogueWindow, e: usize) {
     use context_ui::Action;
-    if e >= kenshi_game::production::FURN_TARGET {
-        context_ui::act(game, inv, talk, e, Action::Train);
+    if let Some(f) = e.checked_sub(kenshi_game::production::FURN_TARGET) {
+        // a quick click: the furniture's own order (training; a bed: sleep, or put the one
+        // carried in it; a cage: put the one carried in it)
+        let carrying = game.selected.iter().any(|&i| game.sim.folk[i].carrying.is_some());
+        let a = match game.sim.furn.get(f).map(|k| k.function) {
+            Some(kenshi_game::production::FUNCTION_TRAINING) => Some(Action::Train),
+            Some(kenshi_game::sim::BF_BED) => Some(if carrying { Action::PutInBed } else { Action::Sleep }),
+            Some(kenshi_world::furniture::BF_CAGE) if carrying => Some(Action::PutInCage),
+            _ => None,
+        };
+        if let Some(a) = a {
+            context_ui::act(game, inv, talk, e, a);
+        }
         return;
     }
     if e >= kenshi_game::doors::DOOR_TARGET {
@@ -1775,6 +2066,27 @@ fn run_sim(time: Res<Time>, mut game: ResMut<Game>) {
     kenshi_render::prof::add("sim steps (count x 1s)", steps as f64);
 }
 
+/// What turns the buildings' moving parts (kenshi_render::zone::PartMotion): the wind where the
+/// camera is, each machine's work (the player's while they produce or burn fuel; a town's
+/// furniture while someone operates it) and the game's frame time.
+fn part_motion(game: Res<Game>, time: Res<Time>, weather: Res<WeatherState>, mut motion: ResMut<kenshi_render::zone::PartMotion>) {
+    let m = &mut *motion;
+    m.dt = if game.paused { 0.0 } else { time.delta_secs() * game.speed };
+    m.wind_speed = if weather.current.is_some() { weather.wind.length() } else { 0.0 };
+    m.wind_dir = weather.wind.normalize_or_zero();
+    m.rates.clear();
+    for b in game.sim.buildings.iter().filter(|b| b.done && b.running > 0.0) {
+        m.rates.insert(kenshi_render::zone::TurretAims::key(Vec3::from(b.at)), b.running);
+    }
+    for (f, op) in game.sim.operators.iter().enumerate() {
+        if op.is_some()
+            && let Some(fu) = game.sim.furn.get(f)
+        {
+            m.rates.insert(kenshi_render::zone::TurretAims::key(Vec3::from(fu.position)), 1.0);
+        }
+    }
+}
+
 /// The building collision of the zones loaded (scene frame).
 fn rebuild_statics(game: &mut Game) {
     let parts: Vec<_> = std::iter::once(&game.zone)
@@ -1782,8 +2094,11 @@ fn rebuild_statics(game: &mut Game) {
         .flat_map(|z| z.collision.iter())
         .map(|(t, s)| (t.compute_affine(), s.clone()))
         .collect();
-    game.statics = kenshi_physics::world::StaticWorld::new(parts.iter().map(|(a, s)| (*a, &**s)));
+    game.statics = std::sync::Arc::new(kenshi_physics::world::StaticWorld::new(parts.iter().map(|(a, s)| (*a, &**s))));
     eprintln!("ragdoll collision: {} solids", game.statics.len());
+    // the same solids stop bolts and block lines of fire in the fights (scene frame: from the
+    // zone's origin)
+    game.sim.arena.obstacles = Some((game.statics.clone(), game.zone.origin.to_array()));
     // the navmesh cut round what each zone stands on the ground (`navcut`), once a zone
     let origin = game.zone.origin;
     // (keyed by zone; the first zone loaded by a key no zone has)
@@ -1844,61 +2159,28 @@ fn rebuild_statics(game: &mut Game) {
                 }));
             }
         }
-        // the zone's cages (furniture, not zone pieces): each cut by its mesh's footprint, so
-        // nobody walks through them (Prisoner Cage "path mode" 1, NAVMESH_PROJECTED); their size
-        // kept for their doors (Sim::cage_exit)
-        if key.0 == i64::MIN {
-            let cages: Vec<(usize, kenshi_world::furniture::Furniture)> =
-                game.sim.furn.iter().cloned().enumerate().filter(|(_, f)| f.function == kenshi_world::furniture::BF_CAGE).collect();
-            for (k, f) in cages {
-                let Some(b) = game.sim.data.get(&f.record) else { continue };
-                let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-                for part in kenshi_render::zone::part_meshes_placed(&game.sim.data, b, false) {
-                    let Some(path) = game.res.path(part.mesh) else { continue };
-                    let Ok(mesh) = ogre_mesh::read(&path) else { continue };
-                    let Some((mn, mx, _)) = mesh.bounds else { continue };
-                    for c in 0..8 {
-                        let p = Vec3::new(
-                            if c & 1 == 0 { mn[0] } else { mx[0] },
-                            if c & 2 == 0 { mn[1] } else { mx[1] },
-                            if c & 4 == 0 { mn[2] } else { mx[2] },
-                        );
-                        let q = part.local.transform_point(p);
-                        lo = lo.min(q);
-                        hi = hi.max(q);
-                    }
-                }
-                if hi.x < lo.x {
-                    continue;
-                }
-                let rot = Quat::from_xyzw(f.rotation[1], f.rotation[2], f.rotation[3], f.rotation[0]);
-                let pos = Vec3::from(f.position);
-                let corners: Vec<[f32; 3]> = (0..8)
-                    .map(|c| {
-                        let p = Vec3::new(
-                            if c & 1 == 0 { lo.x } else { hi.x },
-                            if c & 2 == 0 { lo.y } else { hi.y },
-                            if c & 4 == 0 { lo.z } else { hi.z },
-                        );
-                        ((rot * p + pos) * kenshi_world::navmesh::METRES).to_array()
-                    })
-                    .collect();
-                game.sim.cage_reach.insert(k, (hi.x - lo.x).max(hi.z - lo.z) * 0.5);
-                cutters.extend(kenshi_world::navcut::Cutter::from_points(&corners, kenshi_world::navcut::PAD).map(|mut c| {
-                    next += 1;
-                    c.group = next;
-                    c
-                }));
-            }
-        }
         cuts.push((key, cutters));
     }
+    let first = cuts.iter().any(|(k, _)| k.0 == i64::MIN);
     for (key, cutters) in cuts {
         let n = cutters.len();
         let t = std::time::Instant::now();
         game.sim.nav.add_cutters(key, cutters);
         if std::env::var("KENSHI_NAV_DEBUG").is_ok() {
             eprintln!("navcut: zone at {key:?}: {n} cutters, {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+    // the zone's furniture (kenshi_game::furniture_cut): beds, tables, counters, storage and
+    // machines cut out of the ground's and the buildings' navmesh, each piece by itself.
+    // ((testing) KENSHI_NO_FURNITURE_CUT: the cages alone, as before)
+    if first {
+        let only_cages = std::env::var("KENSHI_NO_FURNITURE_CUT").is_ok();
+        let (res, root) = (game.res.clone(), game.root.clone());
+        let mut next = 1_000_000;
+        let t = std::time::Instant::now();
+        let (n, freed) = kenshi_game::furniture_cut::cut_furniture(&mut game.sim, &res, &root, &mut next, only_cages);
+        if std::env::var("KENSHI_NAV_DEBUG").is_ok() {
+            eprintln!("navcut: furniture {n}, {freed} left uncut, {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
         }
     }
 }
@@ -1911,6 +2193,10 @@ fn rebuild_statics(game: &mut Game) {
 /// box. A building with a navmesh of its own ("path mode" 3, a house) is not cut: its inside
 /// is not walkable without its interior navmesh, which the game makes and this does not.
 fn cut_player_buildings(mut game: ResMut<Game>, mut was: Local<(Vec<(String, [i32; 3], i32, bool)>, usize)>, mut bounds: Local<HashMap<String, Option<(Vec3, Vec3)>>>) {
+    // a game loaded in the program: its own buildings
+    if game.is_added() {
+        *was = Default::default();
+    }
     let now: Vec<(String, [i32; 3], i32, bool)> = game
         .sim
         .buildings
@@ -1980,6 +2266,64 @@ fn cut_player_buildings(mut game: ResMut<Game>, mut was: Local<(Vec<(String, [i3
     was.1 = n;
 }
 
+/// A player building's interior mask entity (kenshi_render::interior_mask).
+#[derive(Component, Clone)]
+struct PlayerMask;
+
+/// The player's finished buildings with an "interior mask" get theirs (F037793), made again
+/// whenever the buildings change.
+fn player_masks(
+    mut commands: Commands,
+    game: Res<Game>,
+    mask: Option<Res<kenshi_render::interior_mask::InteriorMask>>,
+    old: Query<Entity, With<PlayerMask>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut was: Local<Vec<(String, [i32; 3], i32)>>,
+) {
+    let Some(mask) = mask else { return };
+    if game.is_added() {
+        was.clear();
+    }
+    let now: Vec<(String, [i32; 3], i32)> = game
+        .sim
+        .buildings
+        .iter()
+        .filter(|b| b.done)
+        .map(|b| (b.record.clone(), b.at.map(|v| v as i32), (b.yaw * 1000.0) as i32))
+        .collect();
+    if now == *was {
+        return;
+    }
+    *was = now;
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    let places: Vec<kenshi_world::Placement> = game
+        .sim
+        .buildings
+        .iter()
+        .filter(|b| b.done)
+        .map(|pb| kenshi_world::Placement {
+            building: pb.record.clone(),
+            position: pb.at,
+            rotation: [(pb.yaw * 0.5).cos(), 0.0, (pb.yaw * 0.5).sin(), 0.0],
+            world_y: Some(pb.at[1]),
+            interior: None,
+            exterior: None,
+            town: None,
+            squad: None,
+            residents: None,
+            locks: Vec::new(),
+            door_saved: Vec::new(),
+            destroyed: false,
+            power_on: None,
+        })
+        .collect();
+    for i in kenshi_world::interior::interiors(&game.sim.data, &game.res, &places) {
+        kenshi_render::interior_mask::spawn_mask(&mut commands, &mut meshes, &mask, &i.triangles, PlayerMask);
+    }
+}
+
 /// A body gone limp: its ragdoll, and the pose it fell from (for the bones without a body).
 #[derive(Component)]
 struct Limp {
@@ -1998,7 +2342,8 @@ struct Limp {
 struct LimpLimbs {
     doll: Ragdoll,
     rig: Arc<RagdollRig>,
-    /// The flags (RagdollPart: right arm 2, left arm 4) and the bones they free.
+    /// The flags (RagdollPart: right arm 2, left arm 4, head 8, right leg 0x10, left leg 0x20)
+    /// and the bones they free.
     mask: u32,
     bones: Vec<usize>,
 }
@@ -2189,17 +2534,22 @@ fn ragdolls(
                     .insert(PoseOverride { locals, weight: 1.0 - up / GET_UP_BLEND, only: Vec::new() });
             }
             (false, None) => {
-                // F038923 / F038930: a disabled arm (its part at no health, still on) hangs from
-                // its shoulder: its upper arm and forearm (and the hand under them) from the
-                // ragdoll, the clavicle and the rest from the animation. (assumption) An arm at
-                // no health sets its RagdollPart flag (right 2, left 4); the legs' and head's
-                // flags are not set here
+                // F038923 / F038930: a disabled limb (its part at no health, still on) hangs: an
+                // arm's upper arm and forearm (and the hand under them) from the ragdoll, its
+                // clavicle from the animation; a leg's thigh and calf, its foot from the
+                // animation; the head's neck and head. (assumption, the callers not found) A part
+                // at no health sets its RagdollPart flag (right arm 2, left arm 4, head 8, right
+                // leg 0x10, left leg 0x20)
                 let f = &game.sim.arena.f[p.id];
-                let arm_out = |side: &str, slot: usize| {
-                    !game.sim.limb_lost(p.id, slot)
-                        && f.medical.parts.iter().any(|q| game.sim.data.get(&q.id).is_some_and(|r| r.name.to_lowercase() == format!("{side} arm")) && q.health() <= 0.0)
+                let out = |name: &str, slot: Option<usize>| {
+                    !slot.is_some_and(|k| game.sim.limb_lost(p.id, k))
+                        && f.medical.parts.iter().any(|q| game.sim.data.get(&q.id).is_some_and(|r| r.name.to_lowercase() == name) && q.health() <= 0.0)
                 };
-                let mask = if arm_out("left", 0) { 4 } else { 0 } | if arm_out("right", 1) { 2 } else { 0 };
+                let mask = if out("left arm", Some(0)) { 4 } else { 0 }
+                    | if out("right arm", Some(1)) { 2 } else { 0 }
+                    | if out("head", None) { 8 } else { 0 }
+                    | if out("right leg", Some(3)) { 0x10 } else { 0 }
+                    | if out("left leg", Some(2)) { 0x20 } else { 0 };
                 if mask == 0 || p.carried_by.is_some() {
                     if limbs.is_some() {
                         commands.entity(e).remove::<(LimpLimbs, PoseOverride)>();
@@ -2239,6 +2589,17 @@ fn ragdolls(
                         if mask & 2 != 0 {
                             freed.extend(["Bip01 R UpperArm", "Bip01 R Forearm"]);
                         }
+                        if mask & 8 != 0 {
+                            freed.extend(["Bip01 Neck", "Bip01 Head"]);
+                        }
+                        if mask & 0x10 != 0 {
+                            freed.extend(["Bip01 R Thigh", "Bip01 R Calf"]);
+                        }
+                        if mask & 0x20 != 0 {
+                            freed.extend(["Bip01 L Thigh", "Bip01 L Calf"]);
+                        }
+                        // (kept to the animation: a leg's foot and what is under it)
+                        let kept: Vec<usize> = anim.rig.names.iter().enumerate().filter(|(_, n)| n.as_str() == "Bip01 L Foot" || n.as_str() == "Bip01 R Foot").map(|(k, _)| k).collect();
                         // the freed bones and everything under them
                         let mut bones: Vec<usize> = anim.rig.names.iter().enumerate().filter(|(_, n)| freed.contains(&n.as_str())).map(|(k, _)| k).collect();
                         let mut grew = true;
@@ -2253,6 +2614,25 @@ fn ragdolls(
                                     grew = true;
                                 }
                             }
+                        }
+                        // the feet's subtrees out again
+                        let mut keep = kept;
+                        let mut grew = true;
+                        while grew {
+                            grew = false;
+                            for (k, par) in anim.rig.parents.iter().enumerate() {
+                                if let Some(pk) = par
+                                    && keep.contains(pk)
+                                    && !keep.contains(&k)
+                                {
+                                    keep.push(k);
+                                    grew = true;
+                                }
+                            }
+                        }
+                        bones.retain(|b| !keep.contains(b));
+                        if std::env::var("KENSHI_LIMP_DEBUG").is_ok() {
+                            eprintln!("limp limbs: {} mask {mask:#x}, {} bones: {:?}", p.id, bones.len(), bones.iter().map(|&k| anim.rig.names[k].as_str()).collect::<Vec<_>>());
                         }
                         let doll = rig.start(&world_bones, Vec3::ZERO);
                         commands.entity(e).insert(LimpLimbs { doll, rig, mask, bones });
@@ -2352,7 +2732,11 @@ fn place_people(
             continue;
         };
         let f = &sim.arena.f[p.id];
-        let pos = Vec3::from(p.mover.position_units()) - origin;
+        let mut pos = Vec3::from(p.mover.position_units()) - origin;
+        // a swimmer floats at the surface (kenshi_game::sim::SWIM_HEIGHT)
+        if let Some(y) = p.float_y {
+            pos.y = y - origin.y;
+        }
         let pos = game.stage.filter(|(id, _)| *id == p.id).map_or(pos, |(_, at)| at);
         if std::env::var("KENSHI_GROUND_DEBUG").is_ok() && p.player && p.id == 0 {
             let g = game.ground(pos.x, pos.z);
@@ -2424,7 +2808,18 @@ fn place_people(
             && let Some(act) = &f.act
             && let Some(i) = anim.find(&act.clip.name)
         {
-            *tr = Transform::from_translation(pos).with_rotation(rot);
+            // a lunge moves it by its root (the arena's root motion): the clip's own travel so
+            // far is taken back out, as the people's moves' is
+            let off = f
+                .roots
+                .as_ref()
+                .and_then(|r| r.get(&act.clip.name.to_lowercase()))
+                .map_or([0.0; 2], |tr| {
+                    let (r0, r1) = (root_at(tr, 0.0), root_at(tr, act.clip.time));
+                    [r1[0] - r0[0], r1[1] - r0[1]]
+                });
+            let o = rot * Vec3::new(off[0], 0.0, off[1]);
+            *tr = Transform::from_translation(pos - o).with_rotation(rot);
             pending.push((e, p.id, KIND_ANIMAL, vec![(i, act.clip.time, 1.0)]));
             game.playing[p.id].clear();
             continue;
@@ -2535,7 +2930,7 @@ fn place_people(
             sit.speed = p.speed;
             sit.combat_mode = 0;
             // the animation category (ANIMATION "category"): 4 swimming, 5 crawling, else 0
-            sit.category = movement_category(&sim.data, f, (Vec3::from(p.mover.position_units())).y);
+            sit.category = movement_category(&sim.data, f, p.water);
             sit.stealth_mode = i32::from(p.sneaking);
             sit.carrying_left = p.carrying.is_some();
             // the animation class's base layers (F037184): moving, the movement clips blended
@@ -2640,6 +3035,25 @@ fn place_people(
                 pending.push((e, p.id, KIND_WALK, blend));
                 game.playing[p.id].clear();
                 continue;
+            }
+            // (testing) KENSHI_TPOSE_DEBUG: who is left with no clip (once each)
+            if std::env::var("KENSHI_TPOSE_DEBUG").is_ok() {
+                static SEEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+                if let Ok(mut seen) = SEEN.lock()
+                    && !seen.contains(&p.id)
+                {
+                    seen.push(p.id);
+                    let race = p.race.as_ref().or(p.look_race.as_ref()).and_then(|r| sim.data.get(r)).map_or("-", |r| r.name.as_str());
+                    eprintln!(
+                        "tpose {} ({race}, {}): wanted {:?}; activity {:?}; speed {:.1}; relax clip {}",
+                        p.id,
+                        sim.display_name(p.id),
+                        wanted.iter().map(|(a, _, _)| a.anim_name.clone()).collect::<Vec<_>>(),
+                        activity_anim(&game, p),
+                        p.speed,
+                        anim.find("idle_stand_relax").is_some()
+                    );
+                }
             }
             String::from("idle_stand_relax")
         };
@@ -2761,13 +3175,11 @@ fn finish_bodies(
     }
 }
 
-/// The animation category a character moves and idles in (ANIMATION "category"): 4 swimming,
-/// 5 crawling, else 0. (assumption) In water deeper than SWIM_DEPTH units (the water's height
-/// above the feet) a character swims; with both legs at no health it crawls. Kenshi's own tests
-/// (the race's "swim offset", the legs' disabled state) are not decompiled.
-fn movement_category(data: &kenshi_data::GameDataContainer, f: &kenshi_combat::arena::Fighter, world_y: f32) -> i32 {
-    const SWIM_DEPTH: f32 = 12.0;
-    if WATER_HEIGHT - world_y > SWIM_DEPTH {
+/// The animation category a character moves and idles in (ANIMATION "category"): 4 swimming
+/// (its water state swimming, F039118), 5 crawling, else 0. (assumption) With both legs at no
+/// health it crawls: the legs' disabled state is not decompiled.
+fn movement_category(data: &kenshi_data::GameDataContainer, f: &kenshi_combat::arena::Fighter, water: i32) -> i32 {
+    if water == 3 {
         return 4;
     }
     let legs: Vec<f32> = f
@@ -2835,24 +3247,6 @@ fn activity_anim(game: &Game, p: &kenshi_game::sim::Person) -> Option<String> {
     None
 }
 
-/// Rings at the feet: green for the selection, red round those fighting, grey for the knocked out.
-fn draw_rings(game: Res<Game>, mut gizmos: Gizmos) {
-    let origin = game.zone.origin;
-    let flat = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
-    for p in &game.sim.folk {
-        let pos = Vec3::from(p.mover.position_units()) - origin + Vec3::Y * 1.5;
-        let at = Isometry3d::new(pos, flat);
-        if game.selected.contains(&p.id) {
-            gizmos.circle(at, 9.0, Color::srgb(0.2, 0.95, 0.3));
-        }
-        if p.down {
-            gizmos.circle(at, 7.0, Color::srgb(0.35, 0.33, 0.3));
-        } else if game.sim.arena.f[p.id].active {
-            gizmos.circle(at, 11.0, Color::srgb(0.95, 0.15, 0.1));
-        }
-    }
-}
-
 /// The overlay: clock, speed and the selection's state.
 /// Whether the cursor is on a UI button (clicks there are the UI's, not the world's).
 fn on_ui(ui: &Query<&Interaction>) -> bool {
@@ -2863,6 +3257,10 @@ fn on_ui(ui: &Query<&Interaction>) -> bool {
 /// controls.cfg's "speed_2".)
 fn debug_text(keys: Res<ButtonInput<KeyCode>>, game: Res<Game>, mut nodes: Query<&mut Node>, mut shown: Local<bool>, mut set: Local<bool>) {
     let Some(e) = game.hud else { return };
+    // a game loaded in the program: its own text hidden (or shown) again
+    if game.is_added() {
+        *set = false;
+    }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     if ctrl && keys.just_pressed(KeyCode::F3) {
         *shown = !*shown;
@@ -2959,7 +3357,7 @@ fn testing(
         }
     }
     // (testing) KENSHI_GIVE="[!]<item name>@<count>[,...]": at frame 30 the first selected
-    // character gets those items
+    // character gets those items; a name starting '+' is worn, '>' put in the worn backpack
     if *frames == 30
         && let Ok(v) = std::env::var("KENSHI_GIVE")
         && let Some(&me) = game.selected.first()
@@ -2977,12 +3375,21 @@ fn testing(
         };
         for entry in v.split(',') {
             let (name, n) = entry.rsplit_once('@').map_or((entry, 1), |(a, b)| (a, b.parse().unwrap_or(1)));
+            let (name, wear) = match name.strip_prefix('+') {
+                Some(n) => (n, true),
+                None => (name, false),
+            };
+            let (name, bagged) = match name.strip_prefix('>') {
+                Some(n) => (n, true),
+                None => (name, false),
+            };
             let rec = game.sim.data.records.values().find(|r| r.name == name && r.item_type().is_some()).cloned();
             match rec {
                 Some(r) => {
                     let item = kenshi_char::inventory::Item::from_record(&r, n);
                     let food = item.food;
-                    let ok = game.sim.folk[me].inventory.add(item, false);
+                    let inv = &mut game.sim.folk[me].inventory;
+                    let ok = if bagged { inv.bag_mut().is_some_and(|b| b.add(item, false)) } else { inv.add(item, wear) };
                     eprintln!("gave {n} {name} ({}, food {food:?}) to {me}: {}", r.string_id, if ok { "ok" } else { "no room" });
                     if !ok {
                         for sec in &game.sim.folk[me].inventory.sections {
@@ -3186,7 +3593,7 @@ fn testing(
             let sid = game.sim.data.of_type(ItemType::SquadTemplate).find(|t| t.name == parts[0]).map(|t| t.string_id.clone());
             if let Some(sid) = sid {
                 let m = game.sim.spawn_template(&sid, [at[0] + d, at[1], at[2]]);
-                eprintln!("spawned {} near the squad: {:?}", parts[0], m);
+                eprintln!("spawned {} ({sid}) near the squad: {:?}", parts[0], m.as_ref().map(|m| m.iter().map(|&i| (i, game.sim.folk[i].character.clone(), game.sim.folk[i].dialogue.clone())).collect::<Vec<_>>()));
             }
         }
     }
@@ -3362,7 +3769,8 @@ fn testing(
         }
     }
     // (testing) KENSHI_RUN_TO=dx,dz: the squad runs that far from where it stands
-    if *frames == 30
+    // (KENSHI_RUN_AT=<frame>: at that frame instead)
+    if *frames == std::env::var("KENSHI_RUN_AT").ok().and_then(|f| f.parse().ok()).unwrap_or(30)
         && let Ok(v) = std::env::var("KENSHI_RUN_TO")
     {
         let d: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
@@ -3443,7 +3851,7 @@ fn testing(
 /// the axis's positive way and "out" is across it (x <-> z), away from the building's middle.
 fn move_doors(game: Res<Game>, mut doors: Query<(&kenshi_render::zone::DoorPiece, &mut Transform)>, mut index: Local<(usize, HashMap<(usize, usize), usize>)>) {
     let sim = &game.sim;
-    if index.0 != sim.door_states.len() {
+    if index.0 != sim.door_states.len() || game.is_added() {
         index.1 = sim.door_states.iter().enumerate().map(|(k, d)| ((d.door.placement, d.door.index), k)).collect();
         index.0 = sim.door_states.len();
     }
@@ -3593,8 +4001,19 @@ fn hide_roofs(
     let floor = if open.is_empty() { floor.unwrap_or(4) } else { open_res.pick.or(floor).unwrap_or(0) };
     let cam = cams.iter().next().map(|c| c.translation());
     let range = sky.0.objects_view_range;
+    // (testing) KENSHI_HIDE_OVER=<k>,...: the k-th of the parts over the first selected hidden
+    let hide_over: Vec<usize> = std::env::var("KENSHI_HIDE_OVER").map(|v| v.split(',').filter_map(|k| k.parse().ok()).collect()).unwrap_or_default();
+    let sel_at = game.selected.first().map(|&i| Vec3::from(game.sim.folk[i].mover.position_units()) - game.zone.origin);
+    let mut over_k = 0;
     for (piece, b, mut vis) in &mut pieces {
-        let shut = b.is_some_and(|b| open.contains(&(b.zone, b.building)) && b.floor > floor);
+        let mut shut = b.is_some_and(|b| open.contains(&(b.zone, b.building)) && b.floor > floor);
+        if !hide_over.is_empty()
+            && let Some(at) = sel_at
+            && piece.lo.x <= at.x && at.x <= piece.hi.x && piece.lo.z <= at.z && at.z <= piece.hi.z && piece.hi.y > at.y + 15.0
+        {
+            shut |= hide_over.contains(&over_k);
+            over_k += 1;
+        }
         let radius = (piece.hi - piece.lo).length() * 0.5;
         let far = cam.is_some_and(|c| radius <= 100.0 && c.distance((piece.lo + piece.hi) * 0.5) - radius > range);
         let want = if shut || far { Visibility::Hidden } else { Visibility::Inherited };
@@ -3613,7 +4032,7 @@ fn hide_roofs(
                     eprintln!("   near view {:?}: world {:?} lo {:?} hi {:?} tris {} local {l:.0}", (v.zone, v.building), w, v.interior.lo, v.interior.hi, v.interior.triangles.len());
                 }
             }
-            let at = Vec3::from(game.sim.folk[i].mover.position_units()) - game.zone.origin;
+            let at = Vec3::from(game.sim.folk[i].mover.position_units()) - game.zone.origin; eprintln!("   selection local {at:.0}");
             for (piece, b, _) in pieces.iter() {
                 if piece.lo.x <= at.x && at.x <= piece.hi.x && piece.lo.z <= at.z && at.z <= piece.hi.z && piece.hi.y > at.y + 15.0 {
                     eprintln!("   over {i}: {:?} {:.0}..{:.0}", b.map(|b| (b.zone, b.building, b.floor, b.interior)), piece.lo, piece.hi);
@@ -3663,7 +4082,7 @@ impl Game {
     }
 
     /// The ground's height at scene (x, z): from the streamed zone holding it, else the first.
-    fn ground(&self, x: f32, z: f32) -> f32 {
+    pub(crate) fn ground(&self, x: f32, z: f32) -> f32 {
         match self.zones.get(&self.zone_of(x, z)) {
             Some(zs) => ground_on(&zs.patch, self.zone.origin, x, z),
             None => self.zone.ground(x, z),
@@ -4078,6 +4497,11 @@ fn sun_follow(game: Res<Game>, sky: Res<Sky>, mut suns: Query<&mut Transform, Wi
     }
 }
 
+/// The stars' drift (kenshi_render::sky_dome::drift_stars), each frame.
+fn stars(game: Res<Game>, time: Res<Time>, mut skies: ResMut<Assets<KenshiSkyMaterial>>, mut offset: Local<f32>) {
+    kenshi_render::sky_dome::drift_stars(&mut offset, time.delta_secs(), game.speed, game.paused, &mut skies);
+}
+
 /// The main light follows the game clock: recomputed each game minute.
 #[allow(clippy::too_many_arguments)]
 fn relight(
@@ -4167,6 +4591,12 @@ fn tick_particles(
         }
     }
     weather_effects(dt, &game, &weather, &sky, &cams, &mut weather_fx, &mut region_zones, &mut terrain);
+    // the effects that hurt, for the sim (kenshi_game::hazards)
+    game.sim.harms = weather_fx
+        .harmful()
+        .into_iter()
+        .map(|(affect, at, radius, strength)| kenshi_game::hazards::Harm { affect, at: at.to_array(), radius, strength })
+        .collect();
 }
 
 /// The running effects' fog volumes (kenshi_render::fog_volume): a pool of hulls, one per
@@ -4184,6 +4614,10 @@ fn fog_volumes(
     mut shapes: Local<Option<(Handle<Mesh>, Handle<Mesh>)>>,
 ) {
     use kenshi_render::fog_volume::{KenshiFogVolumeMaterial, VolumeShape};
+    // a game loaded in the program: the hulls went with the last
+    if game.is_added() {
+        pool.clear();
+    }
     let origin = game.zone.origin;
     let draws = weather_fx.fog_volumes(origin);
     // (testing) KENSHI_FOG_DEBUG: the volumes, now and then
@@ -4233,13 +4667,108 @@ fn fog_volumes(
     }
 }
 
+/// A fog feature's drawing: its material, and for a sphere or cylinder the volume it is drawn as
+/// (its colour lit anew with the light) and its edge.
+type FogFeatureDraw = (Handle<kenshi_render::fog_volume::KenshiFogVolumeMaterial>, Option<(kenshi_render::fog_volume::FogVolumeDraw, f32)>);
+
+/// The map's fog features (kenshi_world::fog_features: the swamps' mists and the other standing
+/// fogs), made once when the world is ready (F046692 -> F023589), lit again as the light changes.
+/// (testing) KENSHI_NO_FOG_FEATURES leaves them out.
+fn fog_features(
+    mut commands: Commands,
+    game: Res<Game>,
+    look: Res<TerrainLook>,
+    mut materials: ResMut<Assets<kenshi_render::fog_volume::KenshiFogVolumeMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut made: Local<Option<Vec<FogFeatureDraw>>>,
+    mut lit: Local<Vec4>,
+) {
+    use kenshi_render::fog_volume::{FogVolumeDef, FogVolumeDraw, KenshiFogVolumeMaterial, VolumeShape};
+    use kenshi_world::fog_features::FogShape;
+    // a game loaded in the program: made again (at its origin)
+    if game.is_added() {
+        *made = None;
+        *lit = Vec4::ZERO;
+    }
+    let origin = game.zone.origin;
+    let made = made.get_or_insert_with(|| {
+        let mut out = Vec::new();
+        if std::env::var("KENSHI_NO_FOG_FEATURES").is_ok() {
+            return out;
+        }
+        let sphere = meshes.add(Sphere::new(1.0).mesh().ico(3).unwrap());
+        let cylinder = meshes.add(Cylinder::new(1.0, 1.0).mesh().resolution(24));
+        for f in kenshi_world::fog_features::load(&game.root) {
+            let volume = |shape, start: Vec3, end: Vec3, radius: f32| FogVolumeDraw {
+                def: FogVolumeDef { shape, offset: Vec3::ZERO, offset2: end - start, radius, distance: f.distance, colour: Vec4::from(f.colour), additive: false },
+                at: start - origin,
+                fade: 1.0,
+            };
+            match &f.shape {
+                FogShape::Planes { edge, planes } => {
+                    if let Some((m, mesh)) = KenshiFogVolumeMaterial::for_planes(f.colour, f.distance, *edge, planes, &look.light, origin) {
+                        let h = materials.add(m);
+                        commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(h.clone()), Transform::IDENTITY, bevy::light::NotShadowCaster));
+                        out.push((h, None));
+                    }
+                }
+                FogShape::Sphere { centre, radius } => {
+                    let d = volume(VolumeShape::Sphere, Vec3::from(*centre), Vec3::from(*centre), *radius);
+                    let (m, t) = KenshiFogVolumeMaterial::for_volume(&d, &look.light, origin);
+                    let h = materials.add(m);
+                    commands.spawn((Mesh3d(sphere.clone()), MeshMaterial3d(h.clone()), t, bevy::light::NotShadowCaster));
+                    out.push((h, Some((d, 0.0))));
+                }
+                FogShape::Cylinder { start, end, radius, edge } => {
+                    let d = volume(VolumeShape::Cylinder, Vec3::from(*start), Vec3::from(*end), *radius);
+                    let (mut m, t) = KenshiFogVolumeMaterial::for_volume(&d, &look.light, origin);
+                    // F023566: edgeBlur 1 / the feature's edge
+                    m.params.consts.y = 1.0 / edge.max(1.0);
+                    let h = materials.add(m);
+                    commands.spawn((Mesh3d(cylinder.clone()), MeshMaterial3d(h.clone()), t, bevy::light::NotShadowCaster));
+                    out.push((h, Some((d, 1.0 / edge.max(1.0)))));
+                }
+            }
+        }
+        out
+    });
+    let l = &look.light;
+    let now = Vec4::new(l.sun_colour.w, l.sun_real.y, l.fog.w, l.horizon.w);
+    if now == *lit {
+        return;
+    }
+    *lit = now;
+    for (h, volume) in made.iter() {
+        let Some(mut m) = materials.get_mut(h) else { continue };
+        match volume {
+            None => m.params.set_light(l),
+            Some((d, edge)) => {
+                let (fresh, _) = KenshiFogVolumeMaterial::for_volume(d, l, origin);
+                m.params = fresh.params;
+                if *edge > 0.0 {
+                    m.params.consts.y = *edge;
+                }
+            }
+        }
+    }
+}
+
 /// An image's width and RGBA bytes.
 type Rgba = (u32, Vec<u8>);
 
-/// ANIMATION records' ground events by clip name: (fraction of the clip, bone).
+/// One ANIMATION_EVENT of a clip: the fraction of the clip it falls at, its bone, whether it
+/// makes a ground effect, and the sound event it posts (with its switch override).
+struct AnimEvent {
+    at: f32,
+    bone: String,
+    ground: bool,
+    sound: Option<(String, Option<(String, String)>)>,
+}
+
+/// ANIMATION records' events by clip name.
 #[derive(Default)]
 struct FootEvents {
-    by_clip: HashMap<String, Vec<(f32, String)>>,
+    by_clip: HashMap<String, Vec<AnimEvent>>,
     /// Per person and clip: the phase last frame.
     last: HashMap<(usize, usize), f32>,
     /// The overlay map tiles (new_overlay.X.Y.png), as Ogre has them in memory (BGRA).
@@ -4248,21 +4777,29 @@ struct FootEvents {
 }
 
 impl FootEvents {
-    /// "events" of each ANIMATION: ANIMATION_EVENT records with "ground effect", at their
-    /// value percent through the clip.
+    /// "events" of each ANIMATION: ANIMATION_EVENT records, at their value percent through
+    /// the clip: their bone, whether a "ground effect", and the sound "event" they post with
+    /// their "override state" / "override value" switch. (The combat cues post the attacks'
+    /// and reloads' own: "Attack" and "Reload" are left to them.)
     fn new(data: &kenshi_data::GameDataContainer) -> FootEvents {
-        let mut by_clip: HashMap<String, Vec<(f32, String)>> = HashMap::new();
+        let mut by_clip: HashMap<String, Vec<AnimEvent>> = HashMap::new();
         for r in data.of_type(kenshi_data::ItemType::Animation) {
             let Some(name) = r.strings.get("anim name") else { continue };
             for (id, v) in r.refs("events") {
                 let Some(ev) = data.get(id) else { continue };
-                if !ev.bools.get("ground effect").copied().unwrap_or(false) {
+                let ground = ev.bools.get("ground effect").copied().unwrap_or(false);
+                let sound = ev.strings.get("event").filter(|e| !e.is_empty() && *e != "Attack" && *e != "Reload").map(|e| {
+                    let over = ev.strings.get("override state").zip(ev.strings.get("override value")).filter(|(s, v)| !s.is_empty() && !v.is_empty()).map(|(s, v)| (s.clone(), v.clone()));
+                    (e.clone(), over)
+                });
+                if !ground && sound.is_none() {
                     continue;
                 }
                 let bone = ev.strings.get("bone").cloned().unwrap_or_default();
+                let at = v[0] as f32 * 0.01;
                 let list = by_clip.entry(name.to_lowercase()).or_default();
-                if !list.iter().any(|(f, b)| *f == v[0] as f32 * 0.01 && *b == bone) {
-                    list.push((v[0] as f32 * 0.01, bone));
+                if !list.iter().any(|e| e.at == at && e.bone == bone && e.sound.as_ref().map(|s| &s.0) == sound.as_ref().map(|s| &s.0)) {
+                    list.push(AnimEvent { at, bone, ground, sound });
                 }
             }
         }
@@ -4303,8 +4840,11 @@ impl FootEvents {
     }
 }
 
-/// Footsteps (AnimationGroundEvent, F020844): each person's walking clips fire their ground
-/// events as they pass them; the foot's bone says where, the biome which effect.
+/// Footsteps (AnimationGroundEvent, F020844): each person's clips fire their events as they
+/// pass them: a ground event's dust where the foot's bone is (the biome says which effect),
+/// and the event's sound there ("Footsteps" with the surface and armour switches,
+/// `sound::footstep_switches`; others with their override switch), within 700 units of the
+/// camera's focus.
 /// (stand-in) Events fire on the clips weighing at least half; the speed Kenshi compares is
 /// the movement speed x 10 (as the animation choice takes it); every foot is taken to be on
 /// terrain (Kenshi's ground effects need its +0x640 state 11).
@@ -4318,6 +4858,7 @@ fn footsteps(
     cams: Query<&bevy::camera::primitives::Frustum, MainCam>,
     mut fx: ResMut<kenshi_render::particles::effects::Effects>,
     mut events: Local<Option<FootEvents>>,
+    mut sound: Option<ResMut<sound::Sound>>,
 ) {
     let ev = events.get_or_insert_with(|| FootEvents::new(&game.sim.data));
     if ev.terrain.is_none() {
@@ -4354,8 +4895,8 @@ fn footsteps(
             let Some(last) = last else { continue };
             let Some(list) = ev.by_clip.get(&anim.name.to_lowercase()) else { continue };
             let passed = |f: f32| if phase >= last { last < f && f <= phase } else { last < f || f <= phase };
-            let fired: Vec<String> = list.iter().filter(|(f, _)| passed(*f)).map(|(_, b)| b.clone()).collect();
-            for bone in fired {
+            let fired: Vec<(String, bool, Option<(String, Option<(String, String)>)>)> = list.iter().filter(|e| passed(e.at)).map(|e| (e.bone.clone(), e.ground, e.sound.clone())).collect();
+            for (bone, ground, posts) in fired {
                 let foot = a
                     .rig
                     .names
@@ -4364,6 +4905,39 @@ fn footsteps(
                     .and_then(|i| joints.get(a.joints[i]).ok())
                     .map(|g| g.translation() + origin)
                     .unwrap_or(Vec3::from(p.mover.position_units()));
+                // its sound
+                if let (Some((event, over)), Some(s)) = (posts.as_ref(), sound.as_mut())
+                    && !game.paused
+                    && !p.down
+                    && (foot - origin).distance(game.focus) < 700.0
+                {
+                    let at = foot - origin;
+                    if std::env::var("KENSHI_FOOT_DEBUG").is_ok() {
+                        eprintln!("foot sound {event} {over:?} for {} ({})", p.id, anim.name);
+                    }
+                    if event == "Footsteps" {
+                        // the terrain's ground type under the foot (F051635: the biome's type
+                        // for the layer, F051634)
+                        let zone = kenshi_world::zone_of(foot.x, foot.z);
+                        let layer = if zone == game.home || game.zones.contains_key(&zone) {
+                            ev.layer(&game.root, foot.x, foot.z)
+                        } else {
+                            None
+                        };
+                        let terrain = sound::terrain_surface(&game.sim.data, look.biome_at(foot.x, foot.z), layer);
+                        let (surface, armour) = sound::footstep_switches(s, &game, p.id, at, terrain);
+                        if std::env::var("KENSHI_FOOT_DEBUG").is_ok() {
+                            eprintln!("footstep {} surface {surface} (terrain {terrain}, layer {layer:?}) armour {armour}", p.id);
+                        }
+                        s.post_with(event, Some(at), &[("Surface_Material", surface), ("Armor_Worn", armour)], sound::Channel::Footstep);
+                    } else {
+                        let sw: Vec<(&str, &str)> = over.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+                        s.post_with(event, Some(at), &sw, sound::Channel::Sfx);
+                    }
+                }
+                if !ground {
+                    continue;
+                }
                 let biome = look.biome_at(foot.x, foot.z).map(str::to_string);
                 let zone = kenshi_world::zone_of(foot.x, foot.z);
                 let layer = if zone == game.home || game.zones.contains_key(&zone) {
@@ -4447,6 +5021,7 @@ fn weather_effects(
     let hour = (game.sim.hours_gone() + game.sim.start_hour()) as f32;
     let (_, sun_colour, _, _) = sky.0.main_light(hour % 24.0);
     let zone_loaded = |z: (i32, i32)| game.zones.contains_key(&z);
+    let towns: Vec<Vec3> = game.sim.towns.iter().map(|t| Vec3::from(t.position)).collect();
     let mut ground = |x: f32, z: f32| -> (f32, Vec3) {
         let Some(t) = terrain.as_mut() else { return (0.0, Vec3::Y) };
         let h = t.height_at(x, z).unwrap_or(0.0);
@@ -4467,6 +5042,7 @@ fn weather_effects(
         wind: &wind,
         sun_colour,
         origin,
+        towns: &towns,
     };
     fx.update(dt, &mut view);
 }
@@ -4665,7 +5241,10 @@ fn water_clock(
     game: Res<Game>,
     mut waters: ResMut<Assets<KenshiWaterMaterial>>,
     mut hdr: ResMut<kenshi_render::hdr::KenshiHdr>,
+    mut lights: ResMut<kenshi_render::local_lights::LightClock>,
 ) {
+    // the sky's hours (day x 24 + hour) for the light effects (F030155)
+    lights.hours = game.sim.start_hour() + game.sim.hours_gone();
     let t = game.sim.hours_gone() as f32;
     // gameTime for the heat haze too, every frame (F040805 sets it each frame)
     hdr.game_time = t;
@@ -4876,6 +5455,23 @@ fn weather_tick(
     }
     w.last_pos = Some(focus);
     let current = w.current_zone.and_then(|z| region_of_zone(w, z));
+    // the weather and ground of the zones round the player's characters, for the sim
+    // (kenshi_game::hazards): the region's weather's affect type and strength, its biome
+    // group's acidic ground and water
+    let mut climate = kenshi_game::hazards::Climates::new();
+    for z in kenshi_game::hazards::zones_round(&game.sim) {
+        let Some(r) = region_of_zone(w, z) else { continue };
+        let region = &w.regions[r];
+        let group = game.sim.data.get(&region.biome_group);
+        let f = |k: &str| group.and_then(|g| g.floats.get(k).copied()).unwrap_or(0.0);
+        let (affect, strength) = region
+            .instance
+            .as_ref()
+            .and_then(|i| region.seasons.get(region.season).and_then(|s| s.weathers.get(i.weather)).map(|wt| (wt.affect_type, i.strength)))
+            .unwrap_or((0, 0.0));
+        climate.insert(z, kenshi_game::hazards::Climate { affect, strength, acid_ground: f("acidic ground"), acid_water: f("acidic water") });
+    }
+    game.sim.climate = climate;
     let switched = current != w.current;
     w.current = current;
     // KENSHI_WEATHER=<WEATHER name> (testing): that weather in the camera's region, once
@@ -4948,9 +5544,75 @@ fn hide_away(game: Res<Game>, mut vis: Query<&mut Visibility>) {
     }
 }
 
-/// Each body's bone sizes (`kenshi_render::body_shape`, F037414): from its editor values (the
-/// player's characters), its lost limbs' bones sized to nothing. (assumption) Muscle is the
-/// strength level over 100; fat is none.
+/// @fn F038266
+///
+/// A person's look rolled as Kenshi rolls a new NPC's (F021092 the Body sliders, F021095 the Face
+/// ones and their poses; `appearance`), unless it has its own (the editor's, a body file's): on a
+/// generator seeded by its number and CHARACTER, so it looks the same each time.
+fn roll_looks(mut game: ResMut<Game>) {
+    let ids: Vec<usize> = game.looks.keys().copied().filter(|id| !game.body_values.contains_key(id)).collect();
+    if ids.is_empty() {
+        return;
+    }
+    let deviation = appearance::deviation(&game);
+    for id in ids {
+        let Some(spec) = game.looks.get(&id).cloned() else { continue };
+        let Some(p) = game.sim.folk.get(id) else { continue };
+        if p.race.is_some() {
+            continue;
+        }
+        let salt = p.character.as_deref().map_or(0, |c| c.bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64)));
+        let mut values = HashMap::new();
+        if let Some(l) = appearance::limits(&game, &spec.race, spec.female) {
+            let mut r = appearance::seeded(id, salt);
+            appearance::roll(&l.body, deviation, &mut r, &mut values);
+            appearance::roll(&l.face, deviation, &mut r, &mut values);
+        }
+        game.body_values.insert(id, values);
+    }
+}
+
+/// F021065: each head's face poses at the person's weights (its values' pose names; the
+/// editor's, a body file's or rolled), baked into a head mesh of its own when they change (as
+/// Ogre blends poses in software), the shared plain head while they are all nothing.
+fn face_morphs(game: Res<Game>, children: Query<&Children>, mut heads: Query<(&mut kenshi_render::character::MorphBase, &mut Mesh3d)>, mut meshes: ResMut<Assets<Mesh>>) {
+    for p in &game.sim.folk {
+        if p.away {
+            continue;
+        }
+        let (Some(&root), Some(values)) = (game.bodies.get(p.id), game.body_values.get(&p.id)) else { continue };
+        let Ok(kids) = children.get(root) else { continue };
+        for &c in kids {
+            let Ok((mut m, mut mesh)) = heads.get_mut(c) else { continue };
+            let Some(names) = m.base.morph_target_names() else { continue };
+            let want: Vec<f32> = names.iter().map(|n| values.get(n).copied().unwrap_or(0.0)).collect();
+            if want == m.weights {
+                continue;
+            }
+            if std::env::var("KENSHI_MORPH_DEBUG").is_ok() {
+                eprintln!("face morphs {}: {:?}", p.id, &want[..want.len().min(6)]);
+            }
+            let handle = if want.iter().all(|&w| w == 0.0) {
+                Some(m.plain.clone())
+            } else {
+                kenshi_render::baked(&m.base, |n| values.get(n).copied().unwrap_or(0.0)).map(|b| meshes.add(b))
+            };
+            if let Some(h) = handle {
+                mesh.0 = h;
+            }
+            m.weights = want;
+        }
+    }
+}
+
+/// Each body's bone sizes (`kenshi_render::body_shape`, F037414): from its sliders (the
+/// editor's, a body file's, or rolled as Kenshi rolls a new NPC's, `roll_looks`), its muscle and
+/// thinness (F037377), its lost limbs' bones sized to nothing.
+/// - muscle (AppearanceHuman +0x1a0): invlerp(the highest of Strength, Weapon Smithing and Armour
+///   Smithing / 100, 0.2, 0.99) (F050480, not clamped: the weak are slighter);
+/// - thinness (+0x1a8): its hunger's (Character +0x4b8, the hunger level 0 .. 3: a malnourished
+///   squad's people start at 1.7, F038266): 1.5 x (1 - (level - 1) within 0 .. 1), at most 1, so
+///   the hungry (under 2) look thinner and the starving thinnest.
 fn body_shapes(mut commands: Commands, game: Res<Game>, bodies: Query<(&kenshi_render::character::Animated, Option<&kenshi_render::body_shape::BoneSizes>)>) {
     for p in &game.sim.folk {
         if p.away {
@@ -4968,8 +5630,13 @@ fn body_shapes(mut commands: Commands, game: Res<Game>, bodies: Query<(&kenshi_r
         }
         let empty = HashMap::new();
         let female = game.looks.get(&p.id).is_some_and(|l| l.female);
-        let muscle = (game.sim.arena.f[p.id].level(kenshi_char::StatsEnumerated::StatStrength) / 100.0).clamp(0.0, 1.0);
-        let Some(sizes) = kenshi_render::body_shape::bone_sizes(&anim.rig.names, values.unwrap_or(&empty), female, muscle, 0.0, lost) else {
+        use kenshi_char::StatsEnumerated::{StatSmithingArmour, StatSmithingWeapon, StatStrength};
+        let f = &game.sim.arena.f[p.id];
+        let strong = f.level(StatStrength).max(f.level(StatSmithingWeapon)).max(f.level(StatSmithingArmour));
+        let muscle = (strong * 0.01 - 0.2) / (0.99 - 0.2);
+        let level = f.medical.hunger.level;
+        let thin = ((1.0 - (level - 1.0).clamp(0.0, 1.0)) * 1.5).clamp(0.0, 1.0);
+        let Some(sizes) = kenshi_render::body_shape::bone_sizes(&anim.rig.names, values.unwrap_or(&empty), female, muscle, thin, lost) else {
             if std::env::var("KENSHI_EDITOR_DEBUG").is_ok() {
                 eprintln!("body shape: rig of {} bones: {:?}", anim.rig.names.len(), anim.rig.names);
             }
@@ -5109,6 +5776,9 @@ fn postures(
     mut mids: Local<HashMap<(String, bool), [f32; 3]>>,
 ) {
     const NAMES: [(&str, &str); 3] = [("Posture", "postures"), ("Shoulder set", "shoulder set"), ("Neck position", "neck set")];
+    if game.is_added() {
+        shown.clear();
+    }
     for p in &game.sim.folk {
         let (Some(&e), Some(look)) = (game.bodies.get(p.id), game.looks.get(&p.id)) else { continue };
         if p.race.is_some() {

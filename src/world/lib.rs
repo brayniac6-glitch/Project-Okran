@@ -4,6 +4,8 @@
 //! `data/newland/land/fullmap.tif` is a 16385 x 16385 grid of 16-bit heights spanning
 //! `WORLD_SIZE` units, values scaled to `HEIGHT_RANGE`.
 
+pub mod fog_features;
+pub mod map_features;
 pub mod foliage;
 pub mod biome;
 pub mod nest;
@@ -13,6 +15,7 @@ pub mod navmesh;
 pub mod navcut;
 pub mod nodes;
 pub mod longpath;
+pub mod roads;
 pub mod resources;
 pub mod terrain_biome;
 pub mod town;
@@ -39,6 +42,8 @@ const TILE: u32 = 64;
 
 pub struct Terrain {
     map: Tiff,
+    /// The install it was opened from.
+    install: std::path::PathBuf,
     /// Heightmap tiles read so far ([`Terrain::height_at`]).
     tiles: std::collections::HashMap<(u32, u32), Vec<u16>>,
 }
@@ -102,6 +107,21 @@ pub fn read_zone(install: &Path, x: i32, y: i32) -> Option<kenshi_io::fcs::File>
         if !p.is_file() {
             continue;
         }
+        let Ok(file) = kenshi_io::fcs::read(&p) else { continue };
+        match &mut out {
+            None => out = Some(file),
+            Some(base) => merge_zone(base, file),
+        }
+    }
+    out
+}
+
+/// The level data (`leveldata.level` in each `ZONE_FOLDERS` folder: the town list, the roads)
+/// merged in folder order as `read_zone` merges zones.
+pub fn read_level(install: &Path) -> Option<kenshi_io::fcs::File> {
+    let mut out: Option<kenshi_io::fcs::File> = None;
+    for f in ZONE_FOLDERS {
+        let p = install.join("data/newland/leveldata").join(f).join("leveldata.level");
         let Ok(file) = kenshi_io::fcs::read(&p) else { continue };
         match &mut out {
             None => out = Some(file),
@@ -198,6 +218,10 @@ pub struct Placement {
     /// The state record's "destroyed" (the building is a ruin: its parts draw their
     /// "destroyed mesh", F037846 / F037849 via the building's +0x1a1).
     pub destroyed: bool,
+    /// The state record's "power on": a UseableStuff's on switch (+0x3b5, saved by F029400,
+    /// loaded by F029401 into setOn F029284, which turns its lights and effects on or off).
+    /// None for other buildings (their states have none).
+    pub power_on: Option<bool>,
 }
 
 /// A door's state as a zone or save keeps it (DoorStuff, F029397 / F029398).
@@ -257,6 +281,7 @@ pub fn placements(zone: &kenshi_io::fcs::File) -> Vec<Placement> {
                 destroyed: st
                     .and_then(|r| r.bools.iter().find(|(k, _)| k == "destroyed").map(|(_, v)| *v))
                     .unwrap_or(false),
+                power_on: st.and_then(|r| r.bools.iter().find(|(k, _)| k == "power on").map(|(_, v)| *v)),
                 door_saved: (0..16)
                     .map(|n| {
                         let state = int(st, &format!("state{n}"))?;
@@ -334,8 +359,14 @@ impl Terrain {
     pub fn open(install: &Path) -> Result<Self, Error> {
         Ok(Terrain {
             map: Tiff::open(&install.join(HEIGHTMAP))?,
+            install: install.to_path_buf(),
             tiles: std::collections::HashMap::new(),
         })
+    }
+
+    /// The install the terrain was opened from.
+    pub fn install(&self) -> &Path {
+        &self.install
     }
 
     /// Samples per side (16385 for the shipped map).

@@ -68,11 +68,12 @@ pub const BITE_MAX: f32 = 50.0;
 
 /// @fn F039256
 ///
-/// How much one bite eats of a food with `left` food in it, the eater's hunger at `shown`
-/// (0..300): what is left, the room under 300, at most 50. (not ported) items of class 0x11
-/// count as 30 and are used up whole.
-pub fn bite(left: f32, shown: f32) -> f32 {
-    left.min(HUNGER_SHOWN_MAX - shown).clamp(0.0, BITE_MAX)
+/// How much one bite eats of a food with `left` food in it: what is left, the room under 300
+/// less `hunger`, at most 50. Kenshi takes the room off the hunger level (Character +0x4b8,
+/// 0 .. 3), not the hunger shown, so it is nearly always 300: callers pass the level. (not
+/// ported) items of class 0x11 count as 30 and are used up whole.
+pub fn bite(left: f32, hunger: f32) -> f32 {
+    left.min(HUNGER_SHOWN_MAX - hunger).clamp(0.0, BITE_MAX)
 }
 
 impl Hunger {

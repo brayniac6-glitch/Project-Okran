@@ -10,3 +10,7 @@ publish = false
 # Bevy is slow unoptimised: keep our crates debuggable, optimise dependencies
 [profile.dev.package."*"]
 opt-level = 3
+
+# Rebuilds after a change: keep the release build's unchanged codegen units
+[profile.release]
+incremental = true

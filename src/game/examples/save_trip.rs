@@ -21,6 +21,13 @@ fn main() {
     while sim.t < seconds {
         sim.step();
     }
+    // a worn backpack with bread in it, to come back the same
+    let first = sim.folk.iter().find(|p| p.player).map(|p| p.id).unwrap();
+    let find = |sim: &Sim, n: &str| sim.data.records.values().find(|r| r.name == n && r.item_type().is_some()).cloned().unwrap();
+    let (bag, bread) = (find(&sim, "Small Backpack"), find(&sim, "Bread"));
+    let inv = &mut sim.folk[first].inventory;
+    inv.add(kenshi_char::inventory::Item::from_record(&bag, 1), true);
+    inv.bag_mut().unwrap().add(kenshi_char::inventory::Item::from_record(&bread, 3), false);
     let save = sim.snapshot((zx, zy), |_| None);
     let path = std::env::temp_dir().join("kenshi-save-trip.ron");
     kenshi_game::save::write(&save, &path).unwrap();
@@ -28,6 +35,8 @@ fn main() {
     println!("saved {} people, {} zones, {} bytes", back.people.len(), back.zone_order.len(), std::fs::metadata(&path).map_or(0, |m| m.len()));
     let mut again = Sim::load(install, zx, zy, 0, &[format!("player:{}", back.players.len())]);
     again.restore(&back);
+    let bag_back: Vec<String> = again.folk[first].inventory.bag().map_or(Vec::new(), |b| b.sections.iter().flat_map(|s| &s.items).map(|p| format!("{} x{}", p.item.name, p.item.quantity)).collect());
+    println!("backpack after loading: {bag_back:?}");
     let mut bad = 0;
     for (p, q) in sim.folk.iter().zip(&again.folk) {
         let same = p.name == q.name

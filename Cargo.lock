@@ -3323,6 +3323,7 @@ dependencies = [
  "kenshi-char",
  "kenshi-data",
  "kenshi-io",
+ "kenshi-physics",
 ]
 
 [[package]]
