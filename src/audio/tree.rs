@@ -73,6 +73,8 @@ pub enum Action {
 pub struct Library {
     pub nodes: HashMap<u32, Node>,
     pub events: HashMap<u32, Vec<Action>>,
+    /// A play or stop action's fade (s; its property 0x0f, ms) by (event, target).
+    pub fades: HashMap<(u32, u32), f32>,
 }
 
 fn u16le(d: &[u8], o: usize) -> Option<u16> {
@@ -223,6 +225,15 @@ impl Library {
                 let Some(a) = objects.get(&aid) else { continue };
                 let ab = bank.body(a);
                 let (Some(t), Some(target)) = (u16le(ab, 0), u32le(ab, 2)) else { continue };
+                // its properties (after the bus flag): the fade time (0x0f, ms)
+                let n = *ab.get(7).unwrap_or(&0) as usize;
+                for k in 0..n {
+                    if ab.get(8 + k) == Some(&0x0f)
+                        && let Some(ms) = u32le(ab, 8 + n + 4 * k)
+                    {
+                        self.fades.insert((o.id, target), ms as i32 as f32 / 1000.0);
+                    }
+                }
                 acts.push(match t {
                     0x0403 => Action::Play(target),
                     0x0102 | 0x0103 | 0x0104 | 0x0105 => Action::Stop(target),

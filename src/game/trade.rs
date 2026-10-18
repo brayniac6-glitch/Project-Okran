@@ -322,6 +322,7 @@ mod tests {
             maker: None,
             model: None,
             uniform: None,
+            owner: None,
             contents: None,
             carry: 1.0,
         };

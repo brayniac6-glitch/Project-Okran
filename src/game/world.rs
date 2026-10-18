@@ -32,8 +32,9 @@
 //! back) and walks its route on the navmesh; one beyond 6000 goes away again. Each town keeps
 //! its "roaming squads" (one each) patrolling to other towns of its faction or open to it,
 //! waiting 2 to 6 hours at each. A campaign's forces set out from the faction's town or camp
-//! nearest the target (or 15000 units off), march on it, fight when there, and go home when
-//! beaten, having won, or after 24 hours.
+//! nearest the target (or 15000 units off) and march on it; there, its phase (F050809,
+//! `campaign_phases`) decides: the assault (fighting the player's people) or leaving, won after
+//! the assault's hours or with the defenders down, lost with its forces under a fifth.
 
 use crate::sim::Sim;
 use kenshi_data::{GameData, GameDataContainer, ItemType};
@@ -101,6 +102,26 @@ pub struct WorldSquad {
     pub arrived: bool,
 }
 
+/// A campaign's phase (CampaignInstance +0xc0) and its two clocks (+0x18 the phase's start,
+/// +0x20 when the target's defenders were last seen standing), game hours.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Phase {
+    pub phase: u8,
+    pub since: f64,
+    pub quiet: f64,
+}
+
+/// Campaign phases: on the way, the assault (its "pt2 AI leader"), over (retreating or gone
+/// home), victory.
+pub const PHASE_APPROACH: u8 = 0;
+pub const PHASE_ASSAULT: u8 = 1;
+pub const PHASE_OVER: u8 = 2;
+pub const PHASE_VICTORY: u8 = 3;
+/// F050809: a campaign is there within 400 units of a character it targets (0x14171f330, 400
+/// squared), within 0.8 of a town's radius of a town (0x14168a178, F048764).
+const ARRIVED_AT_CHARACTER: f32 = 400.0;
+const ARRIVED_AT_TOWN: f32 = 0.8;
+
 /// A town as the world keeps it.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TownState {
@@ -117,6 +138,8 @@ pub struct World {
     pub towns: Vec<TownState>,
     /// Unique characters (CHARACTER records) dead.
     pub dead_uniques: HashSet<String>,
+    /// Each running campaign's phase (CampaignInstance +0xc0, F050809), by campaign.
+    pub phases: HashMap<String, Phase>,
     /// Uniques whose death or captivity the player had a hand in (the unique table's flag,
     /// +0x34: set as it dies or is taken, cleared as it is free again, F039250).
     pub involved: HashSet<String>,
@@ -148,6 +171,9 @@ pub struct World {
     /// The options' "Town raid events: frequency" (settings.cfg "raidFrequencyMult", global
     /// 0x1421334e4, F032960): the territorial chances' multiplier.
     pub raid_frequency: f32,
+    /// The options' "Town raid events: size" (settings.cfg "raidSizeMult", F050803): a
+    /// campaign's "num forces" multiplier; 0 (not set yet) counts as 1.
+    pub raid_size: f32,
     /// Towns changed hands whose loaded people are still the old ones: re-peopled once no
     /// player character is near (`reseat_tick`).
     pub reseat: Vec<usize>,
@@ -156,9 +182,6 @@ pub struct World {
 /// (assumption) How far every player character must be from a changed town before its people
 /// change (world units: past where its zones would be kept loaded).
 const RESEAT_RANGE: f32 = 8000.0;
-
-/// (assumption) How near a player character comes to a town to find it (world units).
-
 
 fn num(r: &GameData, k: &str) -> f32 {
     r.floats.get(k).copied().or_else(|| r.ints.get(k).map(|&v| v as f32)).unwrap_or(0.0)
@@ -481,6 +504,7 @@ impl Sim {
         }
         self.world.next_check = self.hours_gone() + if std::env::var("KENSHI_CAMPAIGN").is_ok() { 0.1 } else { 6.0 };
         self.world.raid_frequency = kenshi_io::cfg::load(&self.install, "settings.cfg").get("raidFrequencyMult").and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(1.0);
+        self.world.raid_size = kenshi_io::cfg::load(&self.install, "settings.cfg").get("raidSizeMult").and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(1.0);
         // each town's roaming squads, one each
         let data = self.data.clone();
         for t in 0..self.towns.len() {
@@ -615,6 +639,7 @@ impl Sim {
         self.discover_towns();
         self.reseat_tick();
         self.campaigns_due();
+        self.campaign_phases();
         let now = self.hours_gone();
         // the 6-hourly checks: raids, campaigns, garrisons recovering
         if now >= self.world.next_check {
@@ -699,24 +724,10 @@ impl Sim {
             }
             // (an older save's raid) home
             Goal::Raid { .. } => self.go_home(k),
+            // how long it stays and what ends it are its phase's (`campaign_phases`)
             Goal::Campaign { campaign, target, there, hostile } => {
                 let there = there + dt / self.hour_secs as f32;
                 self.world.squads[k].goal = Goal::Campaign { campaign, target, there, hostile };
-                // (assumption) a visit (not hostile) stays 4 hours and has done what it came for
-                // (its "victory trigger" next: a taxman's next visit); an
-                // assault gives up after a day; an occupation stays
-                let occupying = self.world.squads[k].won == Some(crate::raid::Victory::Occupy);
-                if !occupying && there > if hostile { 24.0 } else { 4.0 } {
-                    if hostile {
-                        self.go_home(k);
-                    } else {
-                        let cid = match &self.world.squads[k].goal {
-                            Goal::Campaign { campaign, .. } => campaign.clone(),
-                            _ => String::new(),
-                        };
-                        self.campaign_over(&cid, true);
-                    }
-                }
             }
             Goal::Home { to } => {
                 if !self.world.squads[k].active {
@@ -752,11 +763,12 @@ impl Sim {
     fn announce(&mut self, k: usize, cid: &str, leader: usize, at: [f32; 3]) {
         let Some(c) = self.data.get(cid).cloned() else { return };
         let early = campaign_bool(&self.data, &c, "can talk before arrival");
-        if !self.world.squads[k].route.is_empty() && !early {
+        let there = self.campaign_there(k);
+        if !there && !early {
             return;
         }
         let first = |s: &WorldSquad| matches!(&s.goal, Goal::Campaign { campaign, .. } if campaign == cid);
-        if self.world.squads[k].route.is_empty() && !self.world.squads.iter().any(|s| first(s) && s.arrived) {
+        if there && !self.world.squads.iter().any(|s| first(s) && s.arrived) {
             for s in self.world.squads.iter_mut().filter(|s| first(s)) {
                 s.arrived = true;
             }
@@ -843,17 +855,24 @@ impl Sim {
 
     /// Send a squad home (its origin town or where it came from).
     pub(crate) fn go_home(&mut self, k: usize) {
+        // a campaign's squad on its retreat package (crate::raid_ai)
+        self.retreat_package(k);
+        // slavers shipping their catch: to their depot (crate::raid)
+        let depot = self.slave_depot(k);
+        if let Some(t) = depot
+            && std::env::var("KENSHI_WORLD_DEBUG").is_ok()
+        {
+            eprintln!("world: squad {k} ships its catch to {} ({:?})", self.towns[t].name, self.towns[t].faction);
+        }
         let s = &self.world.squads[k];
-        let to = s
-            .faction
-            .as_deref()
-            .and_then(|f| {
-                (0..self.towns.len()).filter(|&t| self.towns[t].faction.as_deref() == Some(f)).min_by(|&a, &b| {
-                    let d = |t: usize| (self.towns[t].position[0] - s.pos[0]).hypot(self.towns[t].position[2] - s.pos[2]);
-                    d(a).total_cmp(&d(b))
-                })
+        let home = || {
+            let f = s.faction.as_deref()?;
+            (0..self.towns.len()).filter(|&t| self.towns[t].faction.as_deref() == Some(f)).min_by(|&a, &b| {
+                let d = |t: usize| (self.towns[t].position[0] - s.pos[0]).hypot(self.towns[t].position[2] - s.pos[2]);
+                d(a).total_cmp(&d(b))
             })
-            .map_or([s.pos[0] + 15000.0, s.pos[1], s.pos[2]], |t| self.towns[t].position);
+        };
+        let to = depot.or_else(home).map_or([s.pos[0] + 15000.0, s.pos[1], s.pos[2]], |t| self.towns[t].position);
         self.world.squads[k].goal = Goal::Home { to };
         self.world.squads[k].route = self.route_for(&self.world.squads[k]);
     }
@@ -934,10 +953,10 @@ impl Sim {
         // a campaign at its target: one whose assault does not fight is won on arriving; a won
         // one (but an occupation) plays out its victory (`raid`)
         if let Goal::Campaign { campaign, .. } = self.world.squads[k].goal.clone()
-            && self.world.squads[k].route.is_empty()
+            && self.campaign_there(k)
         {
             let won = self.world.squads[k].won;
-            if won.is_none() && self.data.get(&campaign).is_some_and(|c| crate::raid::loots_without_fighting(&self.data, c)) {
+            if won.is_none() && self.assaulting(&campaign) && self.data.get(&campaign).is_some_and(|c| crate::raid::loots_without_fighting(&self.data, c)) {
                 self.campaign_over(&campaign, true);
                 return;
             }
@@ -957,9 +976,11 @@ impl Sim {
         {
             self.announce(k, &campaign, leader, at);
         }
-        // a campaign at its target: attack the player's people near
-        if let Goal::Campaign { hostile: true, .. } = self.world.squads[k].goal
-            && self.world.squads[k].route.is_empty()
+        // a campaign at its target in its assault (an ASSAULT_TOWN in phase 1): attack the
+        // player's people near
+        if let Goal::Campaign { campaign, .. } = self.world.squads[k].goal.clone()
+            && self.campaign_there(k)
+            && self.assaulting(&campaign)
         {
             // the assault's "liberate captives" (276, "Military Assault Town"): its faction's
             // people the player holds in a cage are let out, one freer each, by those not fighting
@@ -981,15 +1002,9 @@ impl Sim {
                     }
                     self.order_attack(&standing, f);
                 }
-                // none of the player's left standing: won, then its victory (`raid`)
+                // none of the player's left standing: once won, its victory (`raid`); the win
+                // itself is the phase's (`campaign_phases`)
                 None if self.world.squads[k].won.is_some() => self.victory_step(k, &standing, at),
-                None => {
-                    if let Goal::Campaign { campaign, .. } = self.world.squads[k].goal.clone() {
-                        self.campaign_over(&campaign, true);
-                    } else {
-                        self.go_home(k);
-                    }
-                }
                 _ => {}
             }
             self.arrive(k, dt);
@@ -1015,7 +1030,8 @@ impl Sim {
             self.arrive(k, dt);
             return;
         }
-        if self.world.squads[k].order_timer <= 0.0 {
+        // (those walking home on their Retreating goal go their own way, crate::raid_ai)
+        if self.world.squads[k].order_timer <= 0.0 && !self.retreats_by_plan(k) {
             self.world.squads[k].order_timer = 5.0;
             // (assumption) toward the waypoint, at most 1500 units a leg on the loaded navmesh
             let w = self.world.squads[k].route[0];
@@ -1048,9 +1064,7 @@ impl Sim {
     /// locked by a line's "lock campaign"): each whose chance now (`campaign_chance`, F050802)
     /// beats a roll of 0..1 is a candidate, and one of the candidates is set out, picked at
     /// random by their chances. (assumption) A hostile one is not set out by a faction allied
-    /// to the player. (not ported) The game's target finder (F050805: the player's towns about
-    /// the faction's, "specific target NPC"): here the player's base, or for one that "target
-    /// characters" their first standing character.
+    /// to the player. Its target: its target finder's (`campaign_way`, F050805); none, none.
     fn campaign_check(&mut self) {
         let data = self.data.clone();
         let player_faction = self.folk.iter().find(|p| p.player).and_then(|p| p.faction.clone());
@@ -1067,7 +1081,7 @@ impl Sim {
             {
                 if !self.world.campaigns_run.contains_key(cid) {
                     let side = data.get(cid).and_then(|c| c.refs("faction override").first().map(|(f, _)| f.clone())).unwrap_or(fid.clone());
-                    self.launch_campaign(cid, &side);
+                    self.launch_campaign(cid, &side, true);
                 }
                 continue;
             }
@@ -1084,7 +1098,7 @@ impl Sim {
                 }
                 let side = c.refs("faction override").first().map(|(f, _)| f.clone()).unwrap_or(fid.clone());
                 let characters = campaign_bool(&data, c, "target characters");
-                let Some(target) = self.campaign_target(characters) else { continue };
+                let Some((target, _)) = self.campaign_way(c, &side) else { continue };
                 if campaign_bool(&data, c, "is hostile") && player_faction.as_ref().and_then(|p| self.relations.get(p)).is_some_and(|r| r.is_ally(Some(&side))) {
                     continue;
                 }
@@ -1110,7 +1124,7 @@ impl Sim {
                 if std::env::var("KENSHI_WORLD_DEBUG").is_ok() {
                     eprintln!("world: -CAMPAIGN TRIGGERED: {}", data.get(&cid).map_or(cid.as_str(), |c| c.name.as_str()));
                 }
-                self.launch_campaign(&cid, &side);
+                self.launch_campaign(&cid, &side, true);
             }
         }
     }
@@ -1271,7 +1285,7 @@ impl Sim {
             }
             // one that could not set out is tried again (100 times)
             let side = self.scheduled_side(&cid);
-            if !side.is_some_and(|side| self.launch_campaign(&cid, &side)) {
+            if !side.is_some_and(|side| self.launch_campaign(&cid, &side, false)) {
                 let tries = self.world.trigger_tries.entry(cid.clone()).or_default();
                 *tries += 1;
                 if *tries <= 100 {
@@ -1336,6 +1350,53 @@ impl Sim {
         self.player_base()
     }
 
+    /// @fn F050805
+    ///
+    /// Where territorial campaign `c` of faction `side` marches, and from where (its target
+    /// finder): none when the faction has no home (its towns, then its camps: `campaign_home`'s);
+    /// the player's outposts (`Sim::outposts`) in the faction's territory (its "biomes"), else
+    /// all of them; unless it "ignores nogo zones", none in its "no-go zones"; then the first of
+    /// its homes whose nearest outpost is within its "range far" (x 10 as loaded, F050812):
+    /// that outpost, from that home. One that "target characters": the player's first standing
+    /// character, from wherever `campaign_home` finds. (not ported) The outposts' +0x128 that
+    /// keeps one off the list unless the campaign's +0x12 (unknown), the faction's own home list
+    /// (F041fe2: here its towns in the world's order), and the character branch's "specific
+    /// target NPC" list (+0x78).
+    fn campaign_way(&self, c: &GameData, side: &str) -> Option<([f32; 3], Option<[f32; 3]>)> {
+        let data = &self.data;
+        if campaign_bool(data, c, "target characters") {
+            return self.campaign_target(true).map(|t| (t, None));
+        }
+        let camps = self
+            .nests
+            .iter()
+            .filter(|n| !n.wiped && !n.record.is_empty())
+            .filter(|n| data.get(&n.record).is_some_and(|r| r.refs("faction").first().is_some_and(|(f, _)| f == side)))
+            .map(|n| n.at);
+        let homes: Vec<[f32; 3]> = self.towns.iter().filter(|t| t.faction.as_deref() == Some(side)).map(|t| t.position).chain(camps).collect();
+        if homes.is_empty() {
+            return None;
+        }
+        let faction = data.get(side);
+        let zone_in = |cat: &str, p: [f32; 3]| {
+            let b = self.biome_at(p[0], p[2]).map(|b| b.string_id.as_str());
+            faction.is_some_and(|f| f.refs(cat).iter().any(|(x, _)| Some(x.as_str()) == b))
+        };
+        let mut outposts: Vec<[f32; 3]> = self.outposts.iter().copied().filter(|&o| zone_in("biomes", o)).collect();
+        if outposts.is_empty() {
+            outposts = self.outposts.clone();
+        }
+        if !campaign_bool(data, c, "ignores nogo zones") {
+            outposts.retain(|&o| !zone_in("no-go zones", o));
+        }
+        let far = campaign_num(data, c, "range far") * 10.0;
+        let d = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).hypot(a[2] - b[2]);
+        homes.iter().find_map(|&h| {
+            let o = outposts.iter().copied().min_by(|&a, &b| d(a, h).total_cmp(&d(b, h)))?;
+            (d(o, h) <= far).then_some((o, Some(h)))
+        })
+    }
+
     /// A faction's town or camp nearest `target` (within `far` when above 0). (assumption) Its
     /// camps (nests not wiped out, of its TOWN "faction") count as its towns: the bandit
     /// factions have no others.
@@ -1355,6 +1416,309 @@ impl Sim {
             .min_by(|a, b| (a[0] - target[0]).hypot(a[2] - target[2]).total_cmp(&(b[0] - target[0]).hypot(b[2] - target[2])))
     }
 
+    /// @fn F048905
+    /// @fn F048906
+    /// @fn F048907
+    ///
+    /// Town::setupResidents / distributeResidents for the buildings of the zone just loaded
+    /// (placements from `from` on): a town whose buildings here have no resident squad in the
+    /// zone state (Kenshi hands its residents out as it sets the town up, its rows at Town
+    /// +0x300) gets them now. Its rows: its faction's "residents" then the town's (as it is
+    /// now; only the town's with "residents override"), each once, its number (val0) and
+    /// priority (val1). By priority, 5 down to 0 (a higher one never: as the game), each row
+    /// takes one building at a time (`resident_building`) until its number is filled or no
+    /// building is left for it; the buildings left the "default resident" (the town's, else,
+    /// without the override, its faction's). Each building's squad is spawned at it.
+    /// (assumption) The town's buildings: its BUILDING placements in this zone within its
+    /// radius, not destroyed, nor a feature, foliage, node, furniture, sign or gate; a resident whose leader is a unique already about (or dead) is
+    /// not made again (a town over two zones).
+    pub(crate) fn setup_residents(&mut self, from: usize) {
+        if self.quiet_zones || from >= self.placed.len() {
+            return;
+        }
+        let data = self.data.clone();
+        if self.layouts.is_none() {
+            self.layouts = Some(kenshi_world::nodes::Layouts::load(&self.install.clone()));
+        }
+        let mut towns: Vec<usize> = Vec::new();
+        for i in from..self.placed.len() {
+            if let Some(t) = kenshi_world::town::current_town(&self.towns, self.placed_at[i], None)
+                && !towns.contains(&t)
+            {
+                towns.push(t);
+            }
+        }
+        for t in towns {
+            let homes: Vec<usize> = (from..self.placed.len()).filter(|&i| self.towns[t].contains(self.placed_at[i], 1.0)).collect();
+            if homes.is_empty() || homes.iter().any(|&i| self.placed[i].squad.is_some() || self.placed[i].residents.is_some()) {
+                continue;
+            }
+            let Some(rec) = data.get(&self.town_record(t)) else { continue };
+            let overrides = rec.bools.get("residents override").copied().unwrap_or(false);
+            let faction = self.towns[t].faction.as_deref().and_then(|f| data.get(f)).filter(|_| !overrides);
+            let mut rows: Vec<(String, i32, i32)> = Vec::new();
+            for r in faction.into_iter().chain(std::iter::once(rec)) {
+                for (sq, v) in r.refs("residents") {
+                    if !rows.iter().any(|x| x.0 == *sq) {
+                        rows.push((sq.clone(), v.first().copied().unwrap_or(0), v.get(1).copied().unwrap_or(0)));
+                    }
+                }
+            }
+            let filler = rec.refs("default resident").first().or_else(|| faction.and_then(|f| f.refs("default resident").first())).map(|(s, _)| s.clone());
+            let building = |i: usize| {
+                data.get(&self.placed[i].building).is_some_and(|b| {
+                    b.item_type() == Some(ItemType::Building)
+                        && ["is feature", "is foliage", "is node", "is exterior furniture", "is interior furniture", "is sign", "is wall gate", "is gateway"].iter().all(|k| !b.bools.get(*k).copied().unwrap_or(false))
+                })
+            };
+            let mut free: Vec<usize> = homes.iter().copied().filter(|&i| building(i) && !self.placed[i].destroyed).collect();
+            if std::env::var("KENSHI_WORLD_DEBUG").is_ok() {
+                eprintln!("world: {} sets up its residents: {} buildings of {} placements, rows {rows:?}, filler {filler:?}", self.towns[t].name, free.len(), homes.len());
+            }
+            let mut given: Vec<(usize, String)> = Vec::new();
+            let mut level = 5;
+            while level >= 0 {
+                let mut again = false;
+                for r in rows.iter_mut().filter(|r| r.1 > 0 && r.2 == level) {
+                    let Some(tpl) = data.get(&r.0) else { continue };
+                    let Some(b) = self.resident_building(tpl, &free) else { continue };
+                    free.retain(|&x| x != b);
+                    given.push((b, r.0.clone()));
+                    r.1 -= 1;
+                    again |= r.1 != 0;
+                }
+                if !again {
+                    level -= 1;
+                }
+            }
+            if let Some(f) = filler {
+                given.extend(free.iter().map(|&b| (b, f.clone())));
+            }
+            for (b, sq) in given {
+                let Some(tpl) = data.get(&sq) else { continue };
+                let unique_about = tpl.refs("leader").iter().any(|(c, _)| {
+                    data.get(c).is_some_and(|c| c.bools.get("unique").copied().unwrap_or(false))
+                        && (self.world.dead_uniques.contains(c) || self.folk.iter().any(|p| p.character.as_deref() == Some(c.as_str())))
+                });
+                if unique_about {
+                    continue;
+                }
+                self.placed[b].squad = Some(sq.clone());
+                self.placed[b].residents = Some(sq.clone());
+                let pl = &self.placed[b];
+                let at = [pl.position[0], pl.world_y.unwrap_or(pl.position[1]), pl.position[2]];
+                if std::env::var("KENSHI_WORLD_DEBUG").is_ok() {
+                    eprintln!("world: {} gives {} the {}", self.towns[t].name, data.get(&pl.building).map_or("?", |r| r.name.as_str()), tpl.name);
+                }
+                self.spawn_resident_squad(tpl, at, Some(b));
+            }
+        }
+    }
+
+    /// @fn F048877
+    ///
+    /// The building of `free` (placements) a town gives resident squad `tpl`: none its "layout
+    /// interior" does not fit (the building has no such layout, `Layouts::for_building`);
+    /// with a "building" and no "layout interior", only those; each weighs 1, 0.4 one its
+    /// "layout exterior" does not fit, x10 one of its "building", x0.05 one of its "building
+    /// dislike"; one picked at random by weight. (not ported) A building already furnished
+    /// (taken only by a resident with a "building").
+    fn resident_building(&mut self, tpl: &GameData, free: &[usize]) -> Option<usize> {
+        let liked: Vec<&String> = tpl.refs("building").iter().map(|(b, _)| b).collect();
+        let disliked: Vec<&String> = tpl.refs("building dislike").iter().map(|(b, _)| b).collect();
+        let layout = |k: &str| tpl.strings.get(k).filter(|l| !l.is_empty()).cloned();
+        let (inner, outer) = (layout("layout interior"), layout("layout exterior"));
+        let only_liked = !liked.is_empty() && inner.is_none();
+        let data = self.data.clone();
+        let fits = |b: &str, l: &Option<String>| l.as_deref().is_none_or(|l| self.layouts.as_ref().is_some_and(|ls| !ls.for_building(&data, b, l).is_empty()));
+        let weights: Vec<(usize, f32)> = free
+            .iter()
+            .filter_map(|&b| {
+                let rec = &self.placed[b].building;
+                if (only_liked && !liked.contains(&rec)) || !fits(rec, &inner) {
+                    return None;
+                }
+                let mut w = if fits(rec, &outer) { 1.0 } else { 0.4 };
+                if liked.contains(&rec) {
+                    w *= 10.0;
+                }
+                if disliked.contains(&rec) {
+                    w *= 0.05;
+                }
+                Some((b, w))
+            })
+            .collect();
+        let total: f32 = weights.iter().map(|x| x.1).sum();
+        if total <= 0.0 {
+            return None;
+        }
+        let r = self.rng.uniform() * total;
+        let mut sum = 0.0;
+        weights.iter().find(|x| {
+            sum += x.1;
+            sum > r
+        }).or(weights.last()).map(|x| x.0)
+    }
+
+    /// Whether campaign squad `k` is there (F050809): at the end of its way, or within 400 units
+    /// of a character its campaign targets (`ARRIVED_AT_CHARACTER`), 0.8 of an outpost's radius
+    /// of one (`ARRIVED_AT_TOWN`, F048764). (assumption) The game measures from the player's
+    /// people (its target's), here from the squad.
+    pub(crate) fn campaign_there(&self, k: usize) -> bool {
+        let s = &self.world.squads[k];
+        let Goal::Campaign { campaign, target, .. } = &s.goal else { return s.route.is_empty() };
+        let characters = self.data.get(campaign).is_some_and(|c| campaign_bool(&self.data, c, "target characters"));
+        let near = if characters { ARRIVED_AT_CHARACTER } else { ARRIVED_AT_TOWN * kenshi_world::town::radius(1, 1.0) };
+        s.route.is_empty() || (s.pos[0] - target[0]).hypot(s.pos[2] - target[2]) < near
+    }
+
+    /// Whether campaign `cid` is assaulting: an ASSAULT_TOWN campaign (its "key" 0) in its
+    /// assault phase.
+    fn assaulting(&self, cid: &str) -> bool {
+        let key = self.data.get(cid).map_or(0.0, |c| campaign_num(&self.data, c, "key"));
+        key == 0.0 && self.world.phases.get(cid).is_some_and(|p| p.phase == PHASE_ASSAULT)
+    }
+
+    /// Campaign `cid` to phase `phase` (a line's DA_ASSAULT_PHASE / DA_RETREAT_PHASE /
+    /// DA_VICTORY_PHASE, F040912 cases 0x25..0x27, and the arrival): the assault (1) when the
+    /// campaign has one (its "pt2 AI leader"), else over (2); over, its squads go home (no
+    /// follow-ups); victory (3), its squads play out its victory (`raid`, no follow-ups). Both
+    /// clocks restart.
+    pub fn set_campaign_phase(&mut self, cid: &str, phase: u8) {
+        let Some(c) = self.data.get(cid).cloned() else { return };
+        let phase = if phase == PHASE_ASSAULT && campaign_refs(&self.data, &c, "pt2 AI leader").is_empty() { PHASE_OVER } else { phase };
+        let now = self.hours_gone();
+        self.world.phases.insert(cid.to_string(), Phase { phase, since: now, quiet: now });
+        let ks: Vec<usize> = (0..self.world.squads.len()).filter(|&k| self.world.squads[k].alive && matches!(&self.world.squads[k].goal, Goal::Campaign { campaign, .. } if campaign == cid)).collect();
+        match phase {
+            PHASE_OVER => {
+                for k in ks {
+                    self.go_home(k);
+                }
+            }
+            PHASE_VICTORY => {
+                let victory = crate::raid::victory_of(&self.data, &c);
+                for k in ks {
+                    self.begin_victory(k, victory);
+                }
+            }
+            _ => {}
+        }
+        if std::env::var("KENSHI_WORLD_DEBUG").is_ok() {
+            eprintln!("world: campaign {} phase {phase}", c.name);
+        }
+    }
+
+    /// The campaign squad `k` of person `id` is on, if any.
+    pub(crate) fn campaign_of(&self, id: usize) -> Option<String> {
+        let k = self.folk[id].world_squad?;
+        match &self.world.squads.get(k)?.goal {
+            Goal::Campaign { campaign, .. } => Some(campaign.clone()),
+            _ => None,
+        }
+    }
+
+    /// @fn F050809
+    ///
+    /// Every second, each running campaign's phase (CampaignInstance::update):
+    /// - on the way (0): once any of its squads is there (`campaign_there`), with a "dialog
+    ///   announcement" when it has been made (its lines may set the phase themselves), else at
+    ///   once, the assault (1) when it has one ("pt2 AI leader"), else over (2);
+    /// - the assault (1), by its "key": ASSAULT_TOWN won after 4 hours, or once the player's
+    ///   people about have been all down for 0.2 hours; DEFEND_TOWN done after 12 hours,
+    ///   TRADER_VISIT after 1 (done: won); lost once under a fifth of its people stand;
+    /// - over (2): forgotten after 3 hours.
+    ///   (not ported) The checks the game makes past the hours (F001a23, F009acf: assumed to
+    ///   pass) and the home-town test of a character target. (assumption) The defenders: the
+    ///   player's people within 3000 units of the target.
+    fn campaign_phases(&mut self) {
+        let now = self.hours_gone();
+        // (a campaign on its way with no phase kept, from an older save: on the way)
+        let running: Vec<String> = self
+            .world
+            .squads
+            .iter()
+            .filter(|s| s.alive && s.won.is_none())
+            .filter_map(|s| match &s.goal {
+                Goal::Campaign { campaign, .. } => Some(campaign.clone()),
+                _ => None,
+            })
+            .collect();
+        for c in running {
+            self.world.phases.entry(c).or_insert(Phase { phase: PHASE_APPROACH, since: now, quiet: now });
+        }
+        let ids: Vec<String> = self.world.phases.keys().cloned().collect();
+        for cid in ids {
+            let Some(ph) = self.world.phases.get(&cid).copied() else { continue };
+            let squads: Vec<usize> = (0..self.world.squads.len()).filter(|&k| matches!(&self.world.squads[k].goal, Goal::Campaign { campaign, .. } if *campaign == cid)).collect();
+            let Some(c) = self.data.get(&cid).cloned() else {
+                self.world.phases.remove(&cid);
+                continue;
+            };
+            match ph.phase {
+                PHASE_APPROACH => {
+                    let there = squads.iter().any(|&k| self.world.squads[k].alive && self.campaign_there(k));
+                    if !there {
+                        continue;
+                    }
+                    let announcement = !campaign_refs(&self.data, &c, "dialog announcement").is_empty();
+                    if announcement && !squads.iter().any(|&k| self.world.squads[k].announced) {
+                        continue;
+                    }
+                    // (the arrival's message, "{1} has arrived at {2}", is `announce`'s)
+                    self.set_campaign_phase(&cid, PHASE_ASSAULT);
+                }
+                PHASE_ASSAULT => {
+                    let key = campaign_num(&self.data, &c, "key") as i32;
+                    let hours = now - ph.since;
+                    let won = match key {
+                        0 => {
+                            // the defenders about the target: the player's people near it
+                            let target = squads.iter().find_map(|&k| match &self.world.squads[k].goal {
+                                Goal::Campaign { target, .. } => Some(*target),
+                                _ => None,
+                            });
+                            let up = target.is_some_and(|t| {
+                                self.folk.iter().any(|p| {
+                                    let q = p.mover.position_units();
+                                    p.player && !p.dead && !p.down && !p.away && (q[0] - t[0]).hypot(q[2] - t[2]) < 3000.0
+                                })
+                            });
+                            let mut quiet = ph.quiet;
+                            if up {
+                                quiet = now;
+                                if let Some(p) = self.world.phases.get_mut(&cid) {
+                                    p.quiet = now;
+                                }
+                            }
+                            hours > 4.0 || (!up && now - quiet > 0.2)
+                        }
+                        2 => hours > 12.0,
+                        3 => hours > 1.0,
+                        _ => false,
+                    };
+                    if won {
+                        self.campaign_over(&cid, true);
+                        continue;
+                    }
+                    // its forces under a fifth standing: lost
+                    let (all, standing) = squads
+                        .iter()
+                        .filter(|&&k| self.world.squads[k].active)
+                        .flat_map(|&k| self.world.squads[k].members.iter().copied())
+                        .fold((0usize, 0usize), |(a, s), m| (a + 1, s + usize::from(!self.folk[m].dead && !self.folk[m].down)));
+                    if all > 0 && (standing as f32) < 0.2 * all as f32 {
+                        self.campaign_over(&cid, false);
+                    }
+                }
+                PHASE_OVER if now - ph.since > 3.0 => {
+                    self.world.phases.remove(&cid);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// @fn F050815
     ///
     /// A campaign sets out: "num forces" people of its "squads to use" from its faction's home
@@ -1363,14 +1727,21 @@ impl Sim {
     /// on the way to {2}" for another ({1} its "display name", {2} the player's outpost or
     /// person); then each of its "trigger player ally" campaigns whose faction ("faction
     /// override") is the player's ally scheduled at once (F050814). Whether it did.
-    fn launch_campaign(&mut self, cid: &str, side: &str) -> bool {
+    fn launch_campaign(&mut self, cid: &str, side: &str, territorial: bool) -> bool {
         let data = self.data.clone();
         let Some(c) = data.get(cid) else { return false };
         // (testing) KENSHI_CAMPAIGN_AT_SQUAD: at the player's people even when it wants a base
         let characters = campaign_bool(&data, c, "target characters") || std::env::var("KENSHI_CAMPAIGN_AT_SQUAD").is_ok();
-        let Some(target) = self.campaign_target(characters) else { return false };
+        // a territorial one where its target finder sends it (F050805); (assumption) a
+        // scheduled one (a line's, a follow-up: most have no "range far" for the finder) at the
+        // player's base or people from the faction's home nearest
+        let way = if territorial && !characters { self.campaign_way(c, side) } else { None };
+        if std::env::var("KENSHI_WORLD_DEBUG").is_ok() {
+            eprintln!("world: {} target finder: {way:?} (outposts {:?})", c.name, self.outposts);
+        }
+        let Some((target, home)) = way.or_else(|| self.campaign_target(characters).map(|t| (t, None))) else { return false };
         let far = campaign_num(&data, c, "range far") * 10.0;
-        let origin = self.campaign_home(side, target, if far > 0.0 { far.max(20000.0) } else { 0.0 }).unwrap_or_else(|| {
+        let origin = home.or_else(|| self.campaign_home(side, target, if far > 0.0 { far.max(20000.0) } else { 0.0 })).unwrap_or_else(|| {
             let a = self.rng.uniform() * std::f32::consts::TAU;
             [target[0] + a.cos() * 15000.0, target[1], target[2] + a.sin() * 15000.0]
         });
@@ -1381,7 +1752,9 @@ impl Sim {
             return false;
         }
         let hostile = campaign_bool(&data, c, "is hostile");
-        let forces = campaign_num(&data, c, "num forces").max(1.0);
+        // F050803: "num forces" x the options' raid size
+        let size = if self.world.raid_size > 0.0 { self.world.raid_size } else { 1.0 };
+        let forces = (campaign_num(&data, c, "num forces") * size).max(1.0);
         let speed = SPEED * campaign_num(&data, c, "travel speed unloaded").max(1.0);
         let goal = Goal::Campaign { campaign: cid.to_string(), target, there: 0.0, hostile };
         let mut people = self.special_leader_squad(c, side, origin, goal.clone(), speed) as f32;
@@ -1396,6 +1769,7 @@ impl Sim {
         *self.world.campaigns_run.entry(cid.to_string()).or_insert(0) += 1;
         let now = self.hours_gone();
         self.world.campaign_last.insert(cid.to_string(), now);
+        self.world.phases.insert(cid.to_string(), Phase { phase: PHASE_APPROACH, since: now, quiet: now });
         let shown = campaign_str(&data, c, "display name").unwrap_or_else(|| data.get(side).map_or(side.to_string(), |r| r.name.clone()));
         let to = if characters {
             self.folk.iter().find(|p| p.player && !p.dead && !p.down).map(|p| p.id).map_or("you".to_string(), |p| self.display_name(p))
@@ -1403,7 +1777,7 @@ impl Sim {
             self.outpost_name.clone()
         };
         self.messages.push(if hostile { format!("Warning: {shown} moving towards {to}") } else { format!("{shown} on the way to {to}") });
-        eprintln!("world: campaign {} triggered from {origin:?}", c.name);
+        eprintln!("world: campaign {} triggered from {origin:?} to {target:?}", c.name);
         // its allies' campaigns ("trigger player ally"): those whose faction is the player's ally
         let player_faction = self.folk.iter().find(|p| p.player).and_then(|p| p.faction.clone());
         for (ally, _) in campaign_refs(&data, c, "trigger player ally") {
@@ -1433,6 +1807,10 @@ impl Sim {
         let victory = data.get(cid).filter(|_| won).map_or(crate::raid::Victory::Leave, |c| crate::raid::victory_of(&data, c));
         for k in ks {
             self.begin_victory(k, victory);
+        }
+        let now = self.hours_gone();
+        if let Some(ph) = self.world.phases.get_mut(cid) {
+            *ph = Phase { phase: PHASE_OVER, since: now, quiet: now };
         }
         let Some(c) = data.get(cid) else { return };
         let list = campaign_refs(&data, c, if won { "victory trigger" } else { "loss trigger" });

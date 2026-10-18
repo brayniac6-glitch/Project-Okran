@@ -19,12 +19,13 @@
 //! (stand-in) What starts each tutorial is not traced; the rewrite starts these when it sees:
 //! a new game (Basic Controls, then GUI overview, then What do I do?), a town found, a character
 //! hurt, fighting, knocked out, hungry, imprisoned, enslaved, in disguise, a recruit, build
-//! mode, a production building built, the prospecting window. (not ported) The pages' pointers
-//! at the GUI (F049757's yellow box over the widget a page names); (assumption) a new tip's
-//! white flash fades over a second.
+//! mode, a production building built, the prospecting window. (assumption) A new tip's white
+//! flash fades over a second.
+//!
+//! A page may point at the GUI it speaks of (`pointer`): a yellow box over that widget.
 use super::Game;
 use super::build_ui::{ListRow, list_rows};
-use super::tutorial_table::TUTORIALS;
+use super::tutorial_table::{POINTERS, TUTORIALS};
 use bevy::prelude::*;
 use kenshi_gui::{Built, GuiClick, GuiRes, SetCaption, SetVisible};
 use std::collections::{HashSet, VecDeque};
@@ -121,9 +122,19 @@ impl Tutorials {
     }
 
     /// The options' Reset Tutorials: every tutorial shown again.
-    pub fn reset(&mut self) {
+    /// @fn F032929
+    ///
+    /// The options' Reset Tutorials: none seen any more (Kenshi deletes ./__tutorials.data),
+    /// the tips waiting gone, none queued.
+    pub fn reset(&mut self, commands: &mut Commands) {
         self.seen.clear();
         self.save_seen();
+        for (_, ui, ..) in self.tips.drain(..) {
+            for r in ui.roots {
+                commands.entity(r).try_despawn();
+            }
+        }
+        self.queue.clear();
     }
 
     fn save_seen(&self) {
@@ -170,7 +181,7 @@ pub fn update(
     mut clicks: MessageReader<GuiClick>,
     windows: Query<&Window>,
     rows: Query<(&Interaction, &ListRow), Changed<Interaction>>,
-    (build, prospect, time): (Option<Res<super::build_ui::BuildMode>>, Res<super::prospect_ui::ProspectWindow>, Res<Time>),
+    (build, prospect, time, settings): (Option<Res<super::build_ui::BuildMode>>, Res<super::prospect_ui::ProspectWindow>, Res<Time>, Option<Res<super::options_ui::Settings>>),
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     (mut last, mut hooked, mut hooked_open): (Local<f32>, Local<bool>, Local<bool>),
     (mut sound, mut nodes): (Option<ResMut<super::sound::Sound>>, Query<&mut Node>),
@@ -187,7 +198,21 @@ pub fn update(
             tut.want(&id, true);
         }
     }
-    let on = kenshi_io::cfg::load(&game.root, "settings.cfg").get("tutorials").is_none_or(|v| v.trim() != "0");
+    // the options' "Tutorials" (F049785 as it changes: off, the panel hidden and the tips
+    // waiting gone, not seen; none started while off)
+    let on = settings.as_ref().is_none_or(|s| s.on("tutorials"));
+    if !on {
+        if let Some((_, _, ui)) = tut.showing.take() {
+            for r in ui.roots {
+                commands.entity(r).try_despawn();
+            }
+        }
+        for (_, ui, ..) in tut.tips.drain(..) {
+            for r in ui.roots {
+                commands.entity(r).try_despawn();
+            }
+        }
+    }
     let mut clicked: Vec<GuiClick> = clicks.read().cloned().collect();
     // (testing) KENSHI_TUTORIALS_OPEN=<seconds>[,<rows>]: the tutorials window opened then, its
     // list scrolled that many rows
@@ -490,6 +515,118 @@ pub fn update(
     show_page(&mut commands, &tut.list[k], 0, &ui);
     tut.showing = Some((k, 0, ui));
 }
+
+/// The box a tutorial page points with (TutorialGUI +0xd0 the case, +0xe0 the box, +0xe8 its
+/// flash's way, +0xec its alpha).
+#[derive(Default)]
+pub struct Pointer {
+    case: u8,
+    node: Option<Entity>,
+    way: f32,
+    alpha: f32,
+}
+
+/// @fn F049763
+/// @fn F049782
+///
+/// The page shown's pointer (`POINTERS`): a WhiteSkin box in #e8e920 (0.909, 0.913, 0.125) on
+/// the Top layer, not taking the mouse, over the widget the case names (F049757:
+/// `hud_ui::Hud::pointer_target`, `ResearchWindow::pointer_target`). A new case puts it there
+/// at alpha 0; each frame its alpha goes by its way x 0.4 a second within 0.1 .. 0.4, turning
+/// at each end (its way 1 at first), and it shows only while its widget does. No case (another
+/// page, or none shown) hides it, its way 1 and alpha 0 again (F049728). (stand-in) Kenshi
+/// places the box when the page starts (the GUI overview's second page again each frame); here
+/// each frame, so it follows a widget that moves. (assumption) The frame's time is the
+/// global at 0x142133790.
+pub fn pointer(
+    mut commands: Commands,
+    tut: Res<Tutorials>,
+    hud: Res<super::hud_ui::Hud>,
+    research: Res<super::research_ui::ResearchWindow>,
+    time: Res<Time>,
+    widgets: Query<(&ComputedNode, &bevy::ui::UiGlobalTransform, &InheritedVisibility)>,
+    mut ptr: Local<Pointer>,
+) {
+    let case = tut
+        .showing
+        .as_ref()
+        .and_then(|(k, page, _)| POINTERS.iter().find(|(id, _)| *id == tut.list[*k].id).and_then(|(_, c)| c.get(*page).copied()))
+        .unwrap_or(0);
+    if case != ptr.case {
+        ptr.case = case;
+        if case == 0 {
+            ptr.way = 1.0;
+            ptr.alpha = 0.0;
+        } else {
+            ptr.alpha = 0.0;
+        }
+    }
+    if ptr.way == 0.0 {
+        ptr.way = 1.0;
+    }
+    // (a game unloaded took the box with it)
+    if ptr.node.is_some_and(|n| widgets.get(n).is_err() && commands.get_entity(n).is_err()) {
+        ptr.node = None;
+    }
+    // (WhiteSkin is Kenshi_UI.png's white corner: a plain fill)
+    let node = *ptr.node.get_or_insert_with(|| {
+        commands.spawn((Node { position_type: PositionType::Absolute, ..default() }, BackgroundColor(Color::NONE), GlobalZIndex(TOP), Visibility::Hidden, Pickable::IGNORE, bevy::ui::FocusPolicy::Pass)).id()
+    });
+    if case == 0 {
+        commands.entity(node).try_insert(Visibility::Hidden);
+        return;
+    }
+    // the widget and its rect (physical pixels)
+    let target = hud.pointer_target(case).or_else(|| research.pointer_target(case).map(|e| super::hud_ui::PointerTarget { main: e, rects: vec![e], shape: super::hud_ui::PointerShape::One }));
+    let rect_of = |e: Entity| {
+        widgets.get(e).ok().map(|(c, t, _)| {
+            let min = t.translation - c.size * 0.5;
+            (Rect::from_corners(min, min + c.size), c.inverse_scale_factor)
+        })
+    };
+    let placed = target.as_ref().and_then(|t| {
+        let rects: Vec<(Rect, f32)> = t.rects.iter().filter_map(|&e| rect_of(e)).collect();
+        let (first, inv) = *rects.first()?;
+        let r = match t.shape {
+            super::hud_ui::PointerShape::One => first,
+            super::hud_ui::PointerShape::ToBottom => Rect::new(first.min.x, first.min.y, first.max.x, 1080.0),
+            super::hud_ui::PointerShape::Span => Rect::new(first.min.x, first.min.y, first.max.x, rects.last().map_or(first.max.y, |l| l.0.max.y)),
+            super::hud_ui::PointerShape::Union => rects.iter().fold(first, |a, (b, _)| a.union(*b)),
+        };
+        let shown = widgets.get(t.main).is_ok_and(|(_, _, v)| v.get());
+        Some((r, inv, shown))
+    });
+    let Some((r, inv, shown)) = placed else {
+        commands.entity(node).try_insert(Visibility::Hidden);
+        return;
+    };
+    // its flash
+    let dt = time.delta_secs();
+    ptr.alpha = (ptr.alpha + ptr.way * dt * 0.4).clamp(0.1, 0.4);
+    if ptr.way > 0.0 {
+        if ptr.alpha >= 0.4 {
+            ptr.way = -1.0;
+        }
+    } else if ptr.alpha <= 0.1 {
+        ptr.way = 1.0;
+    }
+    let alpha = ptr.alpha;
+    commands.entity(node).try_insert((
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(r.min.x * inv),
+            top: Val::Px(r.min.y * inv),
+            width: Val::Px(r.width().max(0.0) * inv),
+            height: Val::Px((r.max.y - r.min.y).max(0.0) * inv),
+            ..default()
+        },
+        if shown { Visibility::Visible } else { Visibility::Hidden },
+        BackgroundColor(Color::srgba(0.909, 0.913, 0.125, alpha)),
+    ));
+}
+
+/// Kenshi's Top layer (over the tooltips' ToolTip, core_layer.xml).
+const TOP: i32 = 310;
 
 /// @fn F049758
 ///

@@ -5,44 +5,36 @@
 //! - Heal Allies / Rescue Allies: the medic and rescue jobs take in allied factions' people too.
 //! - Help Allies: the player's people's Protect allies job (`sim`, F050285) counts another
 //!   squad's people only with it.
-//! - Sleep when injured: an idle injured character at home goes to a free bed, and gets up once
-//!   healed.
-//! - Sit when idle: an idle character at home sits on a free chair or bench.
+//! - Sleep when injured, Sit when idle, Ditch items: the built-in goals the goal ranking adds
+//!   (F036915), planned (crate::jobs).
 //!
-//! (stand-in) Kenshi runs these through its AI: the jobs as player tasks, the idle ones as the
-//! built-in goals its goal ranking adds when the options allow (F036915: tasks 242 ditching
-//! resources, 153 / 257 going to and getting out of bed, 275 sitting around), whose conditions
-//! are not ported. Here they are direct errands with the reaches and waits below assumed.
-//! - Ditch items: "If they have nothing else to do, characters will automatically put any
-//!   excess materials they are carrying into storage": an idle character at home carrying
-//!   what one of the player's resource storages keeps ("limit inventory") takes it there
-//!   (task 242, Ditching resources). (assumption) The excess is all of it; storages without a
-//!   limit are not ditched into.
+//! The Medic order is the Medic job on the planner (crate::law's Medic goal). (stand-in) Kenshi
+//! runs the rescue job through its AI as a player task (Find and rescue, 148); here it is a
+//! direct errand with the reaches below assumed.
 //! "Feed animals" is the hunger step's (`sim`).
 use crate::sim::Sim;
-use kenshi_world::furniture::{BF_BED, BF_CHAIR, BF_THRONE};
+use kenshi_world::furniture::BF_BED;
 
 /// A player character's standing job from the orders panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Job {
-    Medic,
     Rescue,
 }
 
 /// (assumption) How far a medic or rescuer looks for patients, and how far a bed may be.
 const JOB_RANGE: f32 = 1500.0;
 const BED_RANGE: f32 = 3000.0;
-/// (assumption) How near the player's buildings counts as home, and how long a character
-/// stands idle before sitting.
-const HOME_RANGE: f32 = 2500.0;
-const SIT_AFTER: f32 = 10.0;
 
 impl Sim {
-    /// The Medic order: each of `ids` treats the wounded about it (`routines_tick`).
+    /// The Medic order: each of `ids` given the Medic job (58, F036821; an urgent goal, so taken
+    /// with JOBS off too), its JOBS turned on: planned (crate::law's Medic finder, F050304 ->
+    /// First aid, 25) as the NPC medics' goal is.
     pub fn order_medic(&mut self, ids: &[usize]) {
         for &id in ids {
-            if self.folk.get(id).is_some_and(|p| p.player && !p.down) {
-                self.folk[id].job = Some(Job::Medic);
+            if self.folk.get(id).is_some_and(|p| p.player && !p.down) && !self.folk[id].jobs.iter().any(|j| j.task == crate::law::MEDIC) {
+                let label = self.job_label(crate::law::MEDIC, id);
+                self.folk[id].jobs.push(crate::orders::Job { task: crate::law::MEDIC, target: id, label });
+                self.folk[id].jobs_on = true;
             }
         }
     }
@@ -81,8 +73,9 @@ impl Sim {
             .map(|(k, _)| k)
     }
 
-    /// Ditch items: the nearest built storage of the player's that keeps ("limit inventory")
-    /// something `id` carries (its main grid or worn backpack), and those records.
+    /// (stand-in) Ditching resources' storage (crate::jobs): the nearest built storage of the
+    /// player's that keeps ("limit inventory") something `id` carries (its main grid or worn
+    /// backpack), and those records. (assumption) Storages without a limit are not ditched into.
     pub(crate) fn ditch_target(&self, id: usize) -> Option<(usize, Vec<String>)> {
         let inv = &self.folk[id].inventory;
         let carried: Vec<String> = inv
@@ -109,55 +102,17 @@ impl Sim {
             })
     }
 
-    fn at_home(&self, at: [f32; 3]) -> bool {
-        self.buildings.iter().any(|b| b.confirmed && (b.at[0] - at[0]).hypot(b.at[2] - at[2]) < HOME_RANGE)
-    }
-
-    /// Whether `id` stands about with nothing to do.
-    fn is_idle(&self, id: usize) -> bool {
-        let p = &self.folk[id];
-        p.ai.orders.is_empty()
-            && p.first_aid.is_none()
-            && p.carrying.is_none()
-            && p.bed.is_none()
-            && p.operating.is_none()
-            && p.fetch.is_none()
-            && p.pickup.is_none()
-            && !self.arena.f[id].active
-            && !self.bed_errands.iter().any(|e| e.id == id)
-    }
-
-    /// Every second: the player's people's jobs and idle habits.
+    /// Every second: the player's people's rescue job.
     pub fn routines_tick(&mut self, dt: f32) {
         self.routine_timer += dt;
         if self.routine_timer < 1.0 {
             return;
         }
-        let step = std::mem::take(&mut self.routine_timer);
+        self.routine_timer = 0.0;
         let opts = self.ai_options.clone();
         let players: Vec<usize> = self.folk.iter().filter(|p| p.player && !p.dead && !p.down && !p.away && p.prison.is_none() && p.carried_by.is_none()).map(|p| p.id).collect();
         for id in players {
             match self.folk[id].job {
-                Some(Job::Medic) => {
-                    if self.folk[id].first_aid.is_some() {
-                        continue;
-                    }
-                    let patient = (0..self.folk.len())
-                        .filter(|&k| !self.folk[k].dead && self.folk[k].race.is_none() && self.looked_after(k, opts.heal_allies) && self.apart(id, k) < JOB_RANGE)
-                        .map(|k| (k, self.arena.f[k].medical.aid_need(false).flesh))
-                        .filter(|(_, n)| *n > 0.0)
-                        .max_by(|a, b| a.1.total_cmp(&b.1))
-                        .map(|(k, _)| k);
-                    match patient {
-                        Some(k) if self.folk[id].inventory.sections.iter().any(|s| s.items.iter().any(|i| i.item.medkit.is_some_and(|m| 0.0 < m.charges))) => self.order_first_aid(&[id], k),
-                        Some(_) => {
-                            self.messages.push(format!("{} has no medical kit", self.display_name(id)));
-                            self.folk[id].job = None;
-                        }
-                        None => self.folk[id].job = None,
-                    }
-                    continue;
-                }
                 Some(Job::Rescue) => {
                     if self.folk[id].carrying.is_some() {
                         if !self.bed_errands.iter().any(|e| e.id == id) {
@@ -187,48 +142,6 @@ impl Sim {
                     continue;
                 }
                 None => {}
-            }
-            let idle = self.is_idle(id);
-            self.folk[id].idle_for = if idle { self.folk[id].idle_for + step } else { 0.0 };
-            let at = self.folk[id].mover.position_units();
-            // Sleep when injured: home, hurt, to bed; up again once healed
-            if opts.sleep_injured {
-                let need = self.arena.f[id].medical.aid_need(false).flesh;
-                if self.folk[id].rest_injured && self.folk[id].bed.is_some() && need <= 0.0 && self.arena.f[id].medical.parts.iter().all(|q| q.health() >= q.max_health() - 0.5) {
-                    self.folk[id].rest_injured = false;
-                    self.get_out_of_bed(id);
-                    continue;
-                }
-                if idle && need > 0.0 && self.at_home(at)
-                    && let Some(b) = self.free_bed_near(at, HOME_RANGE)
-                {
-                    self.order_sleep(&[id], b);
-                    self.folk[id].rest_injured = true;
-                    continue;
-                }
-            }
-            // Ditch items: what a resource storage keeps, into it
-            if opts.ditch_items && idle && self.folk[id].haul.is_none() && self.at_home(at)
-                && let Some((to, items)) = self.ditch_target(id)
-            {
-                let dest = self.buildings[to].at;
-                self.order_move(&[id], dest);
-                self.folk[id].haul = Some(crate::production::Haul { from: crate::production::DITCH, to, items });
-                continue;
-            }
-            // Sit when idle: home, a while idle, a free chair
-            if opts.sit_idle && idle && self.folk[id].idle_for > SIT_AFTER && self.at_home(at) {
-                let taken: Vec<usize> = self.folk.iter().filter_map(|p| p.operating).collect();
-                let chair = (0..self.furn.len())
-                    .filter(|&k| matches!(self.furn[k].function, BF_CHAIR | BF_THRONE) && !taken.contains(&k) && self.operators.get(k).is_none_or(|o| o.is_none()))
-                    .map(|k| (k, (self.furn[k].position[0] - at[0]).hypot(self.furn[k].position[2] - at[2])))
-                    .filter(|(_, d)| *d < HOME_RANGE)
-                    .min_by(|a, b| a.1.total_cmp(&b.1));
-                if let Some((k, _)) = chair {
-                    let p = self.furn[k].position;
-                    self.order_operate_furniture(id, k, p);
-                    self.folk[id].idle_for = 0.0;
-                }
             }
         }
     }

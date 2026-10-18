@@ -31,7 +31,11 @@ fn main() {
         }
         if !found.is_empty() {
             let z = kenshi_world::zone_of(t.position[0], t.position[2]);
-            println!("{} zone {}.{}: {}", t.name, z.0, z.1, found.join(", "));
+            // the zone state's resident squads in the town (none: Town::setupResidents's to
+            // hand out, F048905 / F048907)
+            let placed = kenshi_world::read_zone(install, z.0, z.1).map(|f| kenshi_world::placements(&f)).unwrap_or_default();
+            let set: usize = placed.iter().filter(|p| t.contains(p.position, 1.0) && (p.squad.is_some() || p.residents.is_some())).count();
+            println!("{} zone {}.{}: {} [zone state residents: {set}]", t.name, z.0, z.1, found.join(", "));
         }
     }
 }

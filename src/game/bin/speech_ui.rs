@@ -85,6 +85,8 @@ pub fn update(
         }
     }
     for (who, text) in std::mem::take(&mut game.sim.said) {
+        // (F040907: "Language censorship")
+        let text = super::options_ui::censor(&text);
         let line = format!("{}: {text}", game.sim.display_name(who));
         super::log(&mut game.log, line);
         if std::env::var("KENSHI_SPEECH_DEBUG").is_ok() {

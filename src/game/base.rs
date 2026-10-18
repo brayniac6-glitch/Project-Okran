@@ -5,21 +5,19 @@
 //! F037796 (estimated build time = materials / ("build speed mult" / (day length / 24)) hours),
 //! F031256 (Task_Build: a builder's rate lerp(engineer / 100, 0.3, 2.0), the building's
 //! construction done at progress 1).
-//! A site's materials go in from the builder's inventory (Task "Adding materials", 71), fetched
-//! from the nearest storage holding them first (Task "Finding building mats", 115).
+//! Building is the planner's (crate::jobs): the "Build" order and the Engineer job plan Building
+//! (2, Task_Build) after its materials are fetched from a storage (Finding building mats, 115;
+//! Collecting resource, 247) and put in (Adding materials, 71).
 //! (stand-in) Repairs, research and crafting take their materials from the worker's inventory,
 //! else straight out of a built storage of the player's ([`Sim::take_material`]), not fetched.
 
 use crate::sim::Sim;
 use kenshi_char::inventory::{Inventory, Item, Section};
-use crate::production::{functionality, take_item, take_one};
+use crate::production::{functionality, take_one};
 use kenshi_data::{GameData, GameDataContainer, ItemType};
 
 /// Inventory owners from here on are the player's buildings (`Sim::inv`).
 pub const BUILDING_OWNER: usize = 1 << 20;
-
-/// (assumption) How near a storage's edge a builder takes materials from it (units).
-const FETCH_REACH: f32 = 40.0;
 
 /// The default construction material (F036238 "580-gamedata.base": Building Material).
 pub const BUILDING_MATERIAL: &str = "580-gamedata.base";
@@ -192,25 +190,17 @@ pub fn unlocked<'a>(data: &'a GameDataContainer, done: &[String]) -> Vec<&'a Gam
 }
 
 impl Sim {
-    /// Order characters to build building `b`: each walks to it and builds while there are
-    /// materials ([`Sim::build_tick`]).
+    /// "Build" (order 2, Building, the order a right click on a site gives): an order on the
+    /// task system's list for each of `ids`, planned as the Engineer job's building is
+    /// (crate::jobs).
     pub fn order_build(&mut self, ids: &[usize], b: usize) {
         let Some(site) = self.buildings.get(b) else { return };
         if site.done {
             return;
         }
-        let (at, r) = (site.at, site.radius);
-        for &id in ids {
-            if self.folk.get(id).is_some_and(|p| !p.down) {
-                // (assumption) to the site's edge on the builder's side
-                let me = self.folk[id].mover.position_units();
-                let (dx, dz) = (me[0] - at[0], me[2] - at[2]);
-                let d = dx.hypot(dz).max(1e-3);
-                let to = [at[0] + dx / d * r, at[1], at[2] + dz / d * r];
-                self.order_move(&[id], to);
-                self.folk[id].build = Some(b);
-            }
-        }
+        let at = site.at;
+        let ids: Vec<usize> = ids.iter().copied().filter(|&id| self.folk.get(id).is_some_and(|p| !p.down)).collect();
+        self.order_task(&ids, crate::jobs::BUILDING, crate::sim::Target::Building(b), at);
     }
 
     /// The player's building under `at` (units), if any.
@@ -295,68 +285,66 @@ impl Sim {
         self.buildings.iter_mut().filter(|b| b.done).filter_map(|b| b.storage.as_mut()).any(|inv| take_one(inv, record))
     }
 
-    /// Task_Build each tick: a builder by its building (within its radius + 15) works at its rate
-    /// (F031256) times the building's speed per game hour of materials; each material's worth
-    /// starts by taking that material ([`Sim::take_material`]); without one, the work waits.
-    /// Done at the materials' total: the building is built and its builders stop.
-    pub fn build_tick(&mut self, dt: f32) {
+    /// The buildings each tick: each one placed joins its outpost (F036212). (The builders'
+    /// work is their Building steps', crate::jobs.)
+    pub fn build_tick(&mut self, _dt: f32) {
         self.assign_outposts();
-        let hour = self.hour_secs as f32;
-        for id in 0..self.folk.len() {
-            let Some(b) = self.folk[id].build else { continue };
-            if self.folk[id].down || b >= self.buildings.len() || (self.buildings[b].done && !self.needs_repair(b)) {
-                self.folk[id].build = None;
-                continue;
-            }
-            let (site, r) = (self.buildings[b].at, self.buildings[b].radius);
-            let me = self.folk[id].mover.position_units();
-            // fetching materials: at the storage, takes them and heads back
-            if let Some((store, true)) = self.folk[id].build_fetch {
-                self.fetch_step(id, b, store);
-                continue;
-            }
-            if (me[0] - site[0]).hypot(me[2] - site[2]) > r + 15.0 {
-                continue;
-            }
-            self.folk[id].build_fetch = None;
-            // a built one damaged: repaired (crate::upkeep)
-            if self.buildings[b].done {
-                if self.repair_work(id, b, dt) {
-                    self.folk[id].build = None;
-                }
-                self.arena.f[id].skills.train(kenshi_char::StatsEnumerated::StatEngineering, dt * 0.05, 1.0);
-                continue;
-            }
-            // the work needs materials added to the site: those the builder carries go in, else
-            // it fetches them (`fetch_materials`)
-            let site_b = &self.buildings[b];
-            if site_b.progress >= site_b.used as f32 {
-                let Some(m) = site_b.next_material().map(str::to_string) else { continue };
-                if self.add_materials(id, b, &m) == 0 {
-                    self.fetch_materials(id, b, &m);
-                    continue;
-                }
-            }
-            let rate = builder_rate(self.arena.f[id].level(kenshi_char::StatsEnumerated::StatEngineering));
-            let site_b = &mut self.buildings[b];
-            site_b.progress = (site_b.progress + rate * site_b.speed * self.advanced.building * dt / hour).min(site_b.used as f32);
-            if site_b.progress >= site_b.total() as f32 - 1e-4 {
-                site_b.done = true;
-                site_b.progress = site_b.total() as f32;
-                if std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
-                    eprintln!("built {}", site_b.record);
-                }
-            }
-            // (assumption) builders train engineering as they work (F031256's training call, its
-            // amount not read): as a hit of strength training scaled to the time
-            self.arena.f[id].skills.train(kenshi_char::StatsEnumerated::StatEngineering, dt * 0.05, 1.0);
-        }
     }
+
+    /// @fn F031256
+    ///
+    /// Task_Build's update for builder `id` at building `b`: one built but damaged is repaired
+    /// (crate::upkeep); else, while the materials put in are ahead of the work, the work goes
+    /// on at the builder's rate times the building's speed per game hour of materials, the
+    /// building built at the materials' total; the work caught up with the materials put in
+    /// (F037723), the next material is wanted. (assumption) Builders train engineering as they
+    /// work (F031256's training call, its amount not read): as a hit of strength training
+    /// scaled to the time.
+    pub(crate) fn build_work(&mut self, id: usize, b: usize, dt: f32) -> BuildWork {
+        let hour = self.hour_secs as f32;
+        let engineering = kenshi_char::StatsEnumerated::StatEngineering;
+        if self.buildings[b].done {
+            let whole = self.repair_work(id, b, dt);
+            self.arena.f[id].skills.train(engineering, dt * 0.05, 1.0);
+            return if whole { BuildWork::Finished } else { BuildWork::Working };
+        }
+        let site_b = &self.buildings[b];
+        if site_b.progress >= site_b.used as f32 {
+            return match site_b.next_material() {
+                Some(m) => BuildWork::NoMaterials(m.to_string()),
+                None => BuildWork::Working,
+            };
+        }
+        let rate = builder_rate(self.arena.f[id].level(engineering));
+        let site_b = &mut self.buildings[b];
+        site_b.progress = (site_b.progress + rate * site_b.speed * self.advanced.building * dt / hour).min(site_b.used as f32);
+        let mut work = BuildWork::Working;
+        if site_b.progress >= site_b.total() as f32 - 1e-4 {
+            site_b.done = true;
+            site_b.progress = site_b.total() as f32;
+            work = BuildWork::Finished;
+            if std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
+                eprintln!("built {}", site_b.record);
+            }
+        }
+        self.arena.f[id].skills.train(engineering, dt * 0.05, 1.0);
+        work
+    }
+}
+
+/// What came of a builder's update (`Sim::build_work`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BuildWork {
+    Working,
+    /// The work has caught up with the materials put in: this one is wanted next.
+    NoMaterials(String),
+    /// Built, or repaired whole.
+    Finished,
 }
 
 impl Sim {
     /// How many of `record` the site still needs from its next material on.
-    fn still_needed(&self, b: usize, record: &str) -> u32 {
+    pub(crate) fn still_needed(&self, b: usize, record: &str) -> u32 {
         let pb = &self.buildings[b];
         let mut k = pb.used;
         let mut n = 0;
@@ -373,7 +361,7 @@ impl Sim {
     /// Task "Adding materials" (71): the builder at its site puts in what it carries of the
     /// next material (no more than the site still needs); the work may go on that far. How
     /// many went in.
-    fn add_materials(&mut self, id: usize, b: usize, record: &str) -> u32 {
+    pub(crate) fn add_materials(&mut self, id: usize, b: usize, record: &str) -> u32 {
         let want = self.still_needed(b, record);
         let mut added = 0;
         while added < want && take_one(&mut self.folk[id].inventory, record) {
@@ -384,69 +372,6 @@ impl Sim {
             eprintln!("builder {id} adds {added} of {record} to {}", self.buildings[b].record);
         }
         added
-    }
-
-    /// Task "Finding building mats" (115, its target a storage with some: HAVE_SOME_BUILD_MATS):
-    /// the builder walks to the nearest built storage holding the material; none: the work
-    /// waits, the material named missing.
-    fn fetch_materials(&mut self, id: usize, b: usize, record: &str) {
-        let me = self.folk[id].mover.position_units();
-        let store = (0..self.buildings.len())
-            .filter(|&k| self.buildings[k].done && self.buildings[k].storage.as_ref().is_some_and(|s| s.sections.iter().any(|sec| sec.items.iter().any(|p| p.item.record == record))))
-            .min_by(|&x, &y| {
-                let d = |k: usize| (self.buildings[k].at[0] - me[0]).hypot(self.buildings[k].at[2] - me[2]);
-                d(x).total_cmp(&d(y))
-            });
-        let Some(store) = store else {
-            self.missing_material = Some(record.to_string());
-            return;
-        };
-        let to = self.edge_toward(store, me);
-        self.order_move(&[id], to);
-        self.folk[id].build = Some(b);
-        self.folk[id].build_fetch = Some((store, true));
-        if std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
-            eprintln!("builder {id} goes to storage {store} for {record}");
-        }
-    }
-
-    /// A fetching builder at storage `store`: takes what the site still needs of its next
-    /// material (as much as it can carry), then walks back.
-    fn fetch_step(&mut self, id: usize, b: usize, store: usize) {
-        let me = self.folk[id].mover.position_units();
-        let at = self.buildings[store].at;
-        if (me[0] - at[0]).hypot(me[2] - at[2]) > self.buildings[store].radius + FETCH_REACH {
-            return;
-        }
-        let Some(record) = self.buildings[b].next_material().map(str::to_string) else { return };
-        let want = self.still_needed(b, &record);
-        let mut got = 0;
-        while got < want {
-            let Some(inv) = self.buildings[store].storage.as_mut() else { break };
-            let Some(one) = take_item(inv, &record) else { break };
-            if !self.folk[id].inventory.add(one.clone(), false) {
-                if let Some(inv) = self.buildings[store].storage.as_mut() {
-                    inv.add(one, false);
-                }
-                break;
-            }
-            got += 1;
-        }
-        if std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
-            eprintln!("builder {id} takes {got} of {record} from storage {store}");
-        }
-        let site = self.edge_toward(b, me);
-        self.order_move(&[id], site);
-        self.folk[id].build = Some(b);
-        self.folk[id].build_fetch = Some((store, false));
-    }
-
-    /// The edge of building `k` on the side of `from` (units).
-    fn edge_toward(&self, k: usize, from: [f32; 3]) -> [f32; 3] {
-        let (at, r) = (self.buildings[k].at, self.buildings[k].radius);
-        let (dx, dz) = (from[0] - at[0], from[2] - at[2]);
-        let d = dx.hypot(dz).max(1e-3);
-        [at[0] + dx / d * r, at[1], at[2] + dz / d * r]
     }
 
     /// The best research bench level built (0: none).

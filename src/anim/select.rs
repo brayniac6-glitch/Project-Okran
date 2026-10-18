@@ -490,6 +490,33 @@ pub struct Library {
     /// Everything else by record name (+0x78; overlays only here), and by weather type (+0x140).
     pub other: Vec<AnimationData>,
     pub weather: Vec<AnimationData>,
+    /// An animal's "turning anim" (+0xf8), its play speed times the reference's first value
+    /// x 0.01 (F038936): what it plays turning on the spot (F037138).
+    pub turning: Option<AnimationData>,
+}
+
+impl Library {
+    /// @fn F038936
+    ///
+    /// An ANIMAL_CHARACTER's library: its "animations" sorted (F038935); its "turning anim"
+    /// kept apart, its play speed times the reference's value x 0.01; its "strafe anim" taken as
+    /// its strafe when the animations have none; both for either stealth mode.
+    pub fn animal(data: &kenshi_data::GameDataContainer, a: &GameData) -> Library {
+        let mut l = Library::sort(a.refs("animations").iter().filter_map(|(sid, _)| data.get(sid)));
+        l.turning = a.refs("turning anim").first().and_then(|(sid, v)| {
+            let mut t = AnimationData::from_record(data.get(sid)?);
+            t.play_speed *= v[0] as f32 * 0.01;
+            t.stealth_mode = 2;
+            Some(t)
+        });
+        if l.strafes.is_empty()
+            && let Some(mut s) = a.refs("strafe anim").first().and_then(|(sid, _)| data.get(sid)).map(AnimationData::from_record)
+        {
+            s.stealth_mode = 2;
+            l.strafes.push(s);
+        }
+        l
+    }
 }
 
 impl Library {

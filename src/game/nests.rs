@@ -6,12 +6,23 @@
 //!
 //! A biome whose nests stand at fixed markers only takes the level's nest markers (towns of
 //! kind 8). A nest's people are made once, when it is first built.
+//!
+//! A nest is a town of its own (TownBase): its camp's buildings with a functionality (sitting
+//! spots and stools, camp beds, the campfire, torches) are its furniture (`register_camp`, as
+//! a zone's are, when built and again after a load), and its squads' package handler runs at
+//! it (Package_HangAroundBar +0x10, F029191): "Patrol hometown" goes round the nest and an
+//! outdoors-only handler (signal func 26 / 27, the nests' "At home" packages) seats them on its
+//! sitting spots (`outdoor_chair`).
 
 use crate::sim::Sim;
 use kenshi_world::biome::{biome_of_zone, zone_at, zone_centre};
 use kenshi_world::nest::{CampPiece, nest_def};
 use kenshi_world::ZONE_SIZE;
 use serde::{Deserialize, Serialize};
+
+/// A nest's furniture stands in no zone placement: its `placement` is this plus the nest's
+/// index.
+pub const NEST_PLACEMENT: usize = 1 << 40;
 
 
 /// A camp or den in the world.
@@ -35,6 +46,12 @@ pub struct Nest {
     pub built: bool,
     #[serde(default)]
     pub wiped: bool,
+    /// Its camp's furniture (indices into `Sim::furn`), registered once built (not saved: again
+    /// after a load).
+    #[serde(skip)]
+    pub furniture: Vec<usize>,
+    #[serde(skip)]
+    pub registered: bool,
 }
 
 impl Sim {
@@ -64,7 +81,7 @@ impl Sim {
         let roll = self.rng.uniform();
         let Some(nest) = self.pick_nest(rec, roll) else {
             // a biome with nests to make but none to make them from: counted as made
-            self.nests.push(Nest { record: String::new(), name: String::new(), biome: b, at: [0.0; 3], pieces: vec![], loose: vec![], members: vec![], built: true, wiped: false });
+            self.nests.push(Nest { record: String::new(), name: String::new(), biome: b, at: [0.0; 3], pieces: vec![], loose: vec![], members: vec![], built: true, wiped: false, furniture: vec![], registered: false });
             return;
         };
         let Some(at) = self.homeless_spawn_point(b) else { return };
@@ -72,7 +89,7 @@ impl Sim {
         if std::env::var("KENSHI_NEST_DEBUG").is_ok() {
             eprintln!("nest {name} ({nest}) in {biome_name} at {:?}", at.map(|v| v as i32));
         }
-        self.nests.push(Nest { record: nest, name, biome: b, at, pieces: vec![], loose: vec![], members: vec![], built: false, wiped: false });
+        self.nests.push(Nest { record: nest, name, biome: b, at, pieces: vec![], loose: vec![], members: vec![], built: false, wiped: false, furniture: vec![], registered: false });
     }
 
     /// @fn F048115
@@ -201,6 +218,10 @@ impl Sim {
                 continue;
             }
             if n.built {
+                if !n.registered {
+                    self.register_camp(k);
+                }
+                let n = &self.nests[k];
                 if !n.members.is_empty() && n.members.iter().all(|&i| self.folk.get(i).is_none_or(|p| p.dead)) {
                     let name = n.name.clone();
                     self.nests[k].wiped = true;
@@ -257,8 +278,84 @@ impl Sim {
             n.loose = loose.into_iter().map(|d| (d.record, d.mesh, d.at, d.yaw, d.scale)).collect();
             n.members = members;
             n.built = true;
+            self.register_camp(k);
         }
     }
+
+    /// Nest `k`'s camp as a town's: its buildings with a functionality become furniture (their
+    /// function, operators and use range, F029399; an approach point on the navmesh), and its
+    /// squads' package handlers run at it (+0x10: the nest's centre and radius).
+    fn register_camp(&mut self, k: usize) {
+        let data = self.data.clone();
+        let m = kenshi_world::navmesh::METRES;
+        let pieces = self.nests[k].pieces.clone();
+        let mut added = Vec::new();
+        for (record, at, yaw) in &pieces {
+            let Some(b) = data.get(record) else { continue };
+            let Some((function, max_operators, use_range)) = kenshi_world::furniture::functionality(&data, b) else { continue };
+            let (s, c) = (yaw * 0.5).sin_cos();
+            let approach = self.nav.closest_point(at.map(|v| v * m), 50.0).map_or(*at, |(_, q)| q.map(|v| v / m));
+            self.furniture_approach.push(approach);
+            self.operators.push(None);
+            self.bed_taken.push(None);
+            added.push(self.furn.len());
+            self.furn.push(kenshi_world::furniture::Furniture {
+                function,
+                max_operators,
+                use_range,
+                position: *at,
+                rotation: [c, 0.0, s, 0.0],
+                record: record.clone(),
+                name: b.name.clone(),
+                placement: NEST_PLACEMENT + k,
+            });
+        }
+        let radius = data.get(&self.nests[k].record).map_or(1000.0, |r| nest_def(r).radius);
+        let at = self.nests[k].at;
+        let platoons: Vec<usize> = self.nests[k].members.iter().filter_map(|&i| self.folk.get(i).and_then(|p| p.platoon)).collect();
+        for pl in platoons {
+            if let Some(Some(b)) = self.bar_states.get_mut(pl) {
+                b.town = Some((at, radius));
+            }
+        }
+        if std::env::var("KENSHI_NEST_DEBUG").is_ok() {
+            eprintln!("nest {}: {} pieces of furniture", self.nests[k].name, added.len());
+        }
+        self.nests[k].furniture = added;
+        self.nests[k].registered = true;
+    }
+}
+
+/// @fn F029228
+///
+/// An outdoors-only handler's chair for `me` (Package_HangAroundBar +0x151: no bar, F029219):
+/// the one it holds while nobody else sits there; else of the sitting furniture (function 17)
+/// out of doors of the town or nest it runs at (F029215's search drops those inside a
+/// building: here a nest's, or one standing alone as its own placement), within its radius,
+/// those no other member holds and nobody else uses, the nearest to its centre.
+/// (assumption) With no town or nest known, the chairs within 2000 units of `me` (`at`).
+pub fn outdoor_chair(state: &crate::sim::BarState, me: usize, furniture: &[kenshi_world::furniture::Furniture], operators: &[Option<usize>], placed_at: &[[f32; 3]], at: [f32; 3]) -> Option<usize> {
+    let (centre, radius) = state.town.unwrap_or((at, 2000.0));
+    let outdoors = |f: &kenshi_world::furniture::Furniture| {
+        f.placement >= NEST_PLACEMENT || placed_at.get(f.placement).is_some_and(|p| (p[0] - f.position[0]).hypot(p[2] - f.position[2]) < 1.0)
+    };
+    let free = |i: usize| operators.get(i).copied().flatten().is_none_or(|o| o == me);
+    if let Some(&h) = state.held.get(&me)
+        && h < furniture.len()
+        && free(h)
+    {
+        return Some(h);
+    }
+    let others: Vec<usize> = state.held.iter().filter(|(m, _)| **m != me).map(|(_, c)| *c).collect();
+    (0..furniture.len())
+        .filter(|&i| {
+            let f = &furniture[i];
+            f.function == kenshi_world::furniture::BF_CHAIR && outdoors(f) && free(i) && !others.contains(&i) && (f.position[0] - centre[0]).hypot(f.position[2] - centre[2]) <= radius
+        })
+        .min_by(|&a, &b| {
+            let d = |i: usize| (furniture[i].position[0] - centre[0]).powi(2) + (furniture[i].position[2] - centre[2]).powi(2);
+            d(a).total_cmp(&d(b))
+        })
 }
 
 impl Sim {
@@ -278,7 +375,7 @@ impl Sim {
             None => self.pick_nest(rec, roll)?,
         };
         let name = data.get(&nest).map_or(String::new(), |r| r.name.clone());
-        self.nests.push(Nest { record: nest, name: name.clone(), biome: b, at, pieces: vec![], loose: vec![], members: vec![], built: false, wiped: false });
+        self.nests.push(Nest { record: nest, name: name.clone(), biome: b, at, pieces: vec![], loose: vec![], members: vec![], built: false, wiped: false, furniture: vec![], registered: false });
         Some(name)
     }
 }

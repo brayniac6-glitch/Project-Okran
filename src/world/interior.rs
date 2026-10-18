@@ -173,23 +173,84 @@ pub struct Door {
     /// The centre of the door's part meshes, world placed (units).
     pub position: [f32; 3],
     /// The door record's sliding (DoorStuff, F029394): "door move speed" (of its opening a
-    /// second), "door move dist" (units), "door axis" (0, 1, 2: the building's x, y, z),
+    /// second), "door move dist" (units), "door axis" (0, 1, 2: its collision box's x, y, z),
     /// "door comes out" (units it first moves out of its frame), "always locks".
     pub speed: f32,
     pub dist: f32,
     pub axis: i32,
     pub out: f32,
     pub always_locks: bool,
+    /// Where it slides and comes out (unit vectors in the building's frame; F029383): its
+    /// collision box's "door axis" column, and its thinnest other axis turned away from the
+    /// building's origin toward the box.
+    pub slide: [f32; 3],
+    pub out_dir: [f32; 3],
     /// The door's opening as a line (units): its ends across the doorway (along the slide axis,
     /// as far as its meshes reach), and the heights it spans.
     pub ends: [[f32; 2]; 2],
     pub heights: [f32; 2],
 }
 
-/// The doors of a zone's placements.
+/// A door collision box's axis `k` in the building's frame: the collision is made Z-up, its
+/// actors turned Y-up ((x, y, z) -> (x, z, -y), kenshi_io::nxu), so x stays x, y is -z and z up.
+pub fn box_axis(k: i32) -> [f32; 3] {
+    match k {
+        1 => [0.0, 0.0, -1.0],
+        2 => [0.0, 1.0, 0.0],
+        _ => [1.0, 0.0, 0.0],
+    }
+}
+
+/// @fn F029383
+///
+/// A door's slide and come-out directions and the axis its doorway spans (building frame), from
+/// its first collision box (the door part's "xml collision"): the slide its "door axis" column
+/// (the box's global orientation's), the way out the box's thinnest other axis, turned toward the
+/// box from the door's actor (at the building's origin), the doorway its "door navmesh axis"
+/// column. Without a box, the box axes as made (`box_axis`) and the thinner of the meshes'
+/// other extents.
+fn door_frame(data: &GameDataContainer, res: &Resources, d: &kenshi_data::GameData, extents: [f32; 3]) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let axis = d.ints.get("door axis").copied().unwrap_or(0).clamp(0, 2);
+    let nav = d.ints.get("door navmesh axis").copied().unwrap_or(0).clamp(0, 2);
+    let boxed = d.refs("parts").iter().find_map(|(psid, _)| {
+        let part = data.get(psid)?;
+        let file = part.files.get("xml collision").filter(|f| !f.is_empty())?;
+        let shapes = kenshi_io::nxu::read(&res.path(file)?).ok()?;
+        shapes.into_iter().find_map(|sh| match sh.kind {
+            kenshi_io::nxu::ShapeKind::Box(dims) => Some((sh.pose, dims)),
+            _ => None,
+        })
+    });
+    match boxed {
+        Some((pose, dims)) => {
+            let col = |k: usize| [pose.rows[0][k], pose.rows[1][k], pose.rows[2][k]];
+            let a = axis as usize;
+            let thin = (0..3).filter(|&k| k != a).min_by(|&x, &y| dims[x].total_cmp(&dims[y])).unwrap_or(0);
+            let mut out = col(thin);
+            if out[0] * pose.pos[0] + out[1] * pose.pos[1] + out[2] * pose.pos[2] < 0.0 {
+                out = out.map(|v| -v);
+            }
+            (col(a), out, col(nav as usize))
+        }
+        None => {
+            let slide = box_axis(axis);
+            let k = slide.iter().position(|v| v.abs() > 0.5).unwrap_or(0);
+            let thin = (0..3).filter(|&j| j != k).min_by(|&x, &y| extents[x].total_cmp(&extents[y])).unwrap_or(2);
+            let mut out = [0.0; 3];
+            out[thin] = 1.0;
+            (slide, out, box_axis(nav))
+        }
+    }
+}
+
+/// The doors of a zone's placements. A ruin has none (F037851 makes a building's "doors" only
+/// when it is not destroyed, +0x1a1).
 pub fn doors(data: &GameDataContainer, res: &Resources, placements: &[Placement]) -> Vec<Door> {
     let mut out = vec![];
     for (i, p) in placements.iter().enumerate() {
+        if p.destroyed {
+            continue;
+        }
         let Some(b) = data.get(&p.building) else {
             continue;
         };
@@ -217,10 +278,25 @@ pub fn doors(data: &GameDataContainer, res: &Resources, placements: &[Placement]
             if lo[0] > hi[0] {
                 continue;
             }
-            // the slide axis turned with the building, and how far the door reaches along it
-            let axis = d.ints.get("door axis").copied().unwrap_or(0);
             let [w, x, y, z] = p.rotation;
-            let local = if axis == 2 { [0.0, 0.0, 1.0] } else { [1.0, 0.0, 0.0] };
+            // the door's extents along the building's axes (its meshes' world bounds turned back)
+            let unrot = |v: [f32; 3]| {
+                let (qx, qy, qz) = (-x, -y, -z);
+                let t = [2.0 * (qy * v[2] - qz * v[1]), 2.0 * (qz * v[0] - qx * v[2]), 2.0 * (qx * v[1] - qy * v[0])];
+                [v[0] + w * t[0] + (qy * t[2] - qz * t[1]), v[1] + w * t[1] + (qz * t[0] - qx * t[2]), v[2] + w * t[2] + (qx * t[1] - qy * t[0])]
+            };
+            let (mut llo, mut lhi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for c in 0..8 {
+                let v = unrot([if c & 1 == 0 { lo[0] } else { hi[0] }, if c & 2 == 0 { lo[1] } else { hi[1] }, if c & 4 == 0 { lo[2] } else { hi[2] }]);
+                for k in 0..3 {
+                    llo[k] = llo[k].min(v[k]);
+                    lhi[k] = lhi[k].max(v[k]);
+                }
+            }
+            let (slide, out_dir, doorway) = door_frame(data, res, d, [lhi[0] - llo[0], lhi[1] - llo[1], lhi[2] - llo[2]]);
+            // the doorway's line ("door navmesh axis") turned with the building, and how far the
+            // door reaches along it
+            let local = if doorway[1].abs() > 0.5 { [1.0, 0.0, 0.0] } else { doorway };
             let rot = |v: [f32; 3]| {
                 // q v q*, q = (w, x, y, z)
                 let (qx, qy, qz) = (x, y, z);
@@ -248,6 +324,8 @@ pub fn doors(data: &GameDataContainer, res: &Resources, placements: &[Placement]
                 axis: d.ints.get("door axis").copied().unwrap_or(0),
                 out: d.floats.get("door comes out").copied().unwrap_or(0.0),
                 always_locks: d.bools.get("always locks").copied().unwrap_or(false),
+                slide,
+                out_dir,
             });
         }
     }

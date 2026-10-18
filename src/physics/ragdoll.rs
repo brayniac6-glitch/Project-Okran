@@ -1,39 +1,64 @@
 //! Ragdolls: the rigid bodies and joints of a Scythe `.phs` file (F025944), simulated.
 //!
-//! (stand-in) Kenshi hands these to PhysX 2.8; this solves the same bodies, shapes, joint limits
-//! and damping with extended position-based dynamics (sub-stepped rigid bodies, one solve per
-//! sub-step). Bodies collide with the ground and with each other unless jointed (as PhysX
-//! joints disable their pair's contacts), on PhysX's default material (static and dynamic
-//! friction 0.5, no bounce); no buildings yet. (approximation) Against each other, a box is the
+//! (stand-in) Kenshi hands these to PhysX 2.8; this solves the same bodies, shapes, joints and
+//! settings with extended position-based dynamics (sub-stepped rigid bodies, one solve per
+//! sub-step), on the values Kenshi gives PhysX: the scene (F045103), the bodies' descriptors
+//! (F025969, then F045312 for a ragdoll's parts), the shapes' (F025966) and the joints'
+//! (F025967 / F025968), stepped once a frame at most 0.04 s (F045111). Bodies collide with the
+//! ground, the buildings and with each other unless jointed (as PhysX joints disable their pair's
+//! contacts unless NX_JF_COLLISION_ENABLED). (approximation) Against each other, a box is the
 //! capsule along its longest side as thick as its thinnest.
 use glam::{Mat3, Quat, Vec3};
 use crate::world::Surroundings;
 use kenshi_io::phs::{Frame, JointKind, Phs, ShapeKind};
 
-/// The physics scene's gravity (units / s^2; the -98.1 in the physics module's data, F045103's
-/// neighbourhood: 9.81 m/s^2 in decimetres).
+/// The physics scene's gravity (units / s^2: 9.81 m/s^2 in decimetres; NxSceneDesc, F045103).
 pub const GRAVITY: Vec3 = Vec3::new(0.0, -98.1, 0.0);
-const SUBSTEPS: usize = 12;
-/// PhysX 2.8's NX_MAX_ANGULAR_VELOCITY (its default, also in Kenshi's collision files): no
-/// body turns faster (radians / s).
+/// A physics step: the frame's time, at most this (s). Kenshi's scene steps variably
+/// (NX_TIMESTEP_VARIABLE): one step per frame (F045111, F045103).
+pub const MAX_STEP: f32 = 0.04;
+/// The least solver iteration count a body gets (F025969 raises the file's to 16); a ragdoll
+/// solves with its bodies' most, one sub-step per iteration here. (assumption) As PhysX solves an
+/// island with the highest count among its bodies.
+const MIN_ITERATIONS: u32 = 16;
+/// PhysX 2.8's NX_MAX_ANGULAR_VELOCITY default (Kenshi leaves the scene's and the bodies' at it,
+/// F045103 / F025969: -1): no body turns faster (radians / s).
 const MAX_ANGULAR: f32 = 7.0;
-/// (stand-in for PhysX's penalty depenetration) a contact pushes a body out at most this fast
-/// (units / s), so starting deep inside something does not fling it.
+/// (stand-in for PhysX's solver pulling penetration out over its iterations) a contact pushes a
+/// body out at most this fast (units / s), so starting deep inside something does not fling it.
 const MAX_DEPENETRATION: f32 = 40.0;
 /// A box's corners collide as spheres this big (units) set inside them.
 const CORNER: f32 = 0.3;
-const STATIC_FRICTION: f32 = 0.5;
-const DYNAMIC_FRICTION: f32 = 0.5;
-/// (stand-in for PhysX's sleep test) a ragdoll whose bodies all stay within this distance
-/// (units) and turn (radians) over `SLEEP_TIME` seconds sleeps.
-const SLEEP_DRIFT: f32 = 0.15;
-const SLEEP_TURN: f32 = 0.1;
-const SLEEP_TIME: f32 = 0.4;
-/// (stand-in) once every body is slower than these (units / s, radians / s), the ragdoll is
-/// damped this much more (per second) so it comes to rest instead of creeping.
-const SETTLE_SPEED: f32 = 3.0;
-const SETTLE_TURN: f32 = 1.0;
-const SETTLE_DAMPING: f32 = 4.0;
+/// The scene's skin width (NX_SKIN_WIDTH 0.25, F045103): shapes rest this far (units) inside
+/// what they touch. A shape's own (its file's, F025966) when not negative; (assumption) a pair
+/// rests the more of its two skins deep.
+const SKIN: f32 = 0.25;
+/// Every material Kenshi makes and its default material (F045103): static friction 20, dynamic
+/// 1, restitution 0.05, averaged between the two (NX_CM_AVERAGE, so as given), with the scene's
+/// friction scaled 4 times (NX_STA_FRICT_SCALING / NX_DYN_FRICT_SCALING 4).
+const STATIC_FRICTION: f32 = 20.0 * 4.0;
+const DYNAMIC_FRICTION: f32 = 1.0 * 4.0;
+const RESTITUTION: f32 = 0.05;
+/// PhysX 2.8's NX_BOUNCE_THRESHOLD default (-2; Kenshi leaves it): contacts closing slower than
+/// this (units / s) don't bounce.
+const BOUNCE_THRESHOLD: f32 = 2.0;
+/// A ragdoll part's damping, linear and angular (F045312 sets both on every actor that follows
+/// a bone, after the file's, F025969).
+const PART_DAMPING: [f32; 2] = [0.5, 0.5];
+/// The bodies' sleep test (F025969: NX_BF_ENERGY_SLEEP_TEST with sleepEnergyThreshold 0.05, the
+/// wake-up counter left at PhysX's 20 x 0.02 s): a body whose mass-normalised kinetic energy
+/// (units^2 / s^2) stays below the threshold that long may sleep, and the ragdoll sleeps when
+/// all may. (assumption) The energy is PhysX's 0.5 (v^2 + w.(I/m)w); the velocity filter
+/// F045312 turns on (NX_BF_FILTER_SLEEP_VEL) is stood in for in `Ragdoll::step`.
+const SLEEP_ENERGY: f32 = 0.05;
+const WAKE_TIME: f32 = 20.0 * 0.02;
+/// A body held to a bone is woken for this long each frame (NxActor::wakeUp(9), F044974).
+const HELD_WAKE: f32 = 9.0;
+/// (stand-in) This solver's contacts on building meshes creep where PhysX's come to rest, which
+/// would keep the energy test awake: a ragdoll whose bodies all stay within this distance
+/// (units) and turn (radians) over the wake-up time sleeps as well.
+const STILL_DRIFT: f32 = 0.15;
+const STILL_TURN: f32 = 0.1;
 
 /// A collision shape in its body's frame.
 #[derive(Debug, Clone, Copy)]
@@ -51,7 +76,15 @@ pub struct BodyDef {
     pub bind: Vec3,
     inv_mass: f32,
     inv_inertia: Mat3,
+    /// The inertia per unit mass (body frame), for the sleep test's energy.
+    unit_inertia: Mat3,
+    /// Linear and angular damping (per second).
     damping: [f32; 2],
+    gravity: bool,
+    /// Its shapes' skin width (units).
+    skin: f32,
+    /// Its solver iteration count (F025969: the file's, at least 16).
+    iterations: u32,
     colliders: Vec<Collider>,
     /// Capsules (ends in the body's frame, radius) for contacts between bodies.
     hulls: Vec<(Vec3, Vec3, f32)>,
@@ -72,6 +105,10 @@ struct JointDef {
     low: f32,
     high: f32,
     swing: f32,
+    limited: bool,
+    /// Springs (stiffness, target radians): the twist (or hinge) spring and the swing spring.
+    twist_spring: Option<(f32, f32)>,
+    swing_spring: Option<f32>,
 }
 
 /// A ragdoll as loaded: bodies in bind space and the joints between them.
@@ -81,6 +118,8 @@ pub struct Template {
     joints: Vec<JointDef>,
     /// The body pairs that collide (not jointed).
     pairs: Vec<(usize, usize)>,
+    /// Sub-steps per step: the bodies' highest solver iteration count.
+    substeps: usize,
 }
 
 fn rot(f: &Frame) -> Quat {
@@ -132,16 +171,30 @@ impl Template {
     pub fn new(p: &Phs) -> Template {
         let mut bodies = Vec::with_capacity(p.actors.len());
         for a in &p.actors {
-            let density = if a.density > 0.0 { a.density } else { 1.0 };
-            let parts: Vec<(ShapeKind, Vec3, Vec3, Quat, f32)> = a
+            // PhysX's mass from shapes: each shape its own mass, or its density x volume; the sum
+            // then scaled to the body's mass when that is above 0, else by the actor's density.
+            // (assumption) Neither set (a descriptor PhysX refuses): density 1.
+            let mut parts: Vec<(ShapeKind, Vec3, Vec3, Quat, f32)> = a
                 .shapes
                 .iter()
                 .map(|s| {
                     let size = Vec3::from(s.size);
-                    (s.kind, size, Vec3::from(s.frame.pos), rot(&s.frame), density * volume(s.kind, size))
+                    let m = if s.mass > 0.0 { s.mass } else { s.density * volume(s.kind, size) };
+                    (s.kind, size, Vec3::from(s.frame.pos), rot(&s.frame), m)
                 })
                 .collect();
-            let mass: f32 = parts.iter().map(|p| p.4).sum();
+            let raw: f32 = parts.iter().map(|p| p.4).sum();
+            let scale = if a.mass > 0.0 && raw > 0.0 {
+                a.mass / raw
+            } else if a.density > 0.0 {
+                a.density
+            } else {
+                1.0
+            };
+            for part in &mut parts {
+                part.4 *= scale;
+            }
+            let mass: f32 = if a.fixed { 0.0 } else { parts.iter().map(|p| p.4).sum() };
             let com = if mass > 0.0 {
                 parts.iter().map(|p| p.2 * p.4).sum::<Vec3>() / mass
             } else {
@@ -192,12 +245,20 @@ impl Template {
             } else {
                 (0.0, Mat3::ZERO)
             };
+            // F025969: linear damping the file's +0x228, angular ten times its +0x224; F045312
+            // then sets 0.5 and 0.5 on an actor that follows a bone
+            let damping = if a.bone_slot >= 0 { PART_DAMPING } else { [a.damping[0], a.damping[1] * 10.0] };
+            let skin = a.shapes.iter().map(|s| if s.skin >= 0.0 { s.skin } else { SKIN }).fold(0.0, f32::max);
             bodies.push(BodyDef {
                 bone: a.bone.clone(),
                 bind: com,
                 inv_mass,
                 inv_inertia,
-                damping: a.damping,
+                unit_inertia: if mass > 0.0 { inertia * (1.0 / mass) } else { Mat3::ZERO },
+                damping,
+                gravity: !a.no_gravity,
+                skin: if a.shapes.is_empty() { SKIN } else { skin },
+                iterations: a.iterations.max(MIN_ITERATIONS),
                 colliders,
                 hulls,
             });
@@ -211,6 +272,14 @@ impl Template {
                 let at = Vec3::from(j.frame.pos);
                 let f = rot(&j.frame);
                 let (low, high) = (j.low.min(j.high).to_radians(), j.low.max(j.high).to_radians());
+                // F025968: a hinge's spring target turned to radians, a ball joint's twist
+                // target multiplied by 57.3 (degrees taken for radians: Kenshi's, kept);
+                // (assumption) a swing spring pulls toward no swing, its target unused
+                let twist_spring = j.springs[0].map(|s| {
+                    let target = if j.kind == JointKind::Hinge { s.target.to_radians() } else { s.target.to_degrees() };
+                    (s.spring, target)
+                });
+                let swing_spring = if j.kind == JointKind::Ball { j.springs[1].map(|s| s.spring) } else { None };
                 Some(JointDef {
                     a,
                     b,
@@ -222,15 +291,26 @@ impl Template {
                     low,
                     high,
                     swing: j.swing.to_radians(),
+                    limited: j.limited,
+                    twist_spring,
+                    swing_spring,
                 })
             })
             .collect::<Vec<JointDef>>();
         let n = bodies.len();
+        // jointed bodies don't touch unless the joint says (NX_JF_COLLISION_ENABLED, F025967)
+        let apart: Vec<(usize, usize)> = p
+            .joints
+            .iter()
+            .filter(|j| !j.collide)
+            .filter_map(|j| Some((usize::try_from(j.actors[0]).ok()?, usize::try_from(j.actors[1]).ok()?)))
+            .collect();
         let pairs = (0..n)
             .flat_map(|i| (i + 1..n).map(move |j| (i, j)))
-            .filter(|&(i, j)| !joints.iter().any(|jd| (jd.a, jd.b) == (i, j) || (jd.a, jd.b) == (j, i)))
+            .filter(|&(i, j)| !apart.iter().any(|&p| p == (i, j) || p == (j, i)))
             .collect();
-        Template { bodies, joints, pairs }
+        let substeps = bodies.iter().filter(|b| b.inv_mass > 0.0).map(|b| b.iterations).max().unwrap_or(MIN_ITERATIONS) as usize;
+        Template { bodies, joints, pairs, substeps }
     }
 }
 
@@ -242,6 +322,9 @@ struct State {
     w: Vec3,
     px: Vec3,
     pq: Quat,
+    /// The velocities the sub-step started with (for the bounce).
+    pv: Vec3,
+    pw: Vec3,
 }
 
 /// A ragdoll in the world.
@@ -252,10 +335,13 @@ pub struct Ragdoll {
     h: f32,
     /// Bodies held at poses (index, centre of mass, rotation).
     pinned: Vec<(usize, Vec3, Quat)>,
-    /// This sub-step's ground contacts: body, point (body frame), normal, depth corrected.
-    contacts: Vec<(usize, Vec3, Vec3, f32)>,
+    /// This sub-step's ground contacts: body, point (body frame), normal, load (depth), and the
+    /// way left to its skin depth.
+    contacts: Vec<(usize, Vec3, Vec3, f32, f32)>,
+    /// The wake-up counter (s): counts down while every body is below the sleep energy.
+    wake_counter: f32,
+    /// The stillness stand-in: how long every body has stayed near `rest`.
     still: f32,
-    /// The poses the stillness test measures from.
     rest: Vec<(Vec3, Quat)>,
     pub asleep: bool,
 }
@@ -325,9 +411,12 @@ impl Ragdoll {
                 w: Vec3::ZERO,
                 px: x,
                 pq: q,
+                pv: Vec3::ZERO,
+                pw: Vec3::ZERO,
             })
             .collect();
-        Ragdoll { s, h: 1.0 / 360.0, pinned: Vec::new(), contacts: Vec::new(), still: 0.0, rest: poses.to_vec(), asleep: false }
+        // a new body's wake-up counter (NxBodyDesc wakeUpCounter, F025969)
+        Ragdoll { s, h: 1.0 / 360.0, pinned: Vec::new(), contacts: Vec::new(), wake_counter: WAKE_TIME, still: 0.0, rest: poses.to_vec(), asleep: false }
     }
 
     /// Move the bodies to meet their joints and limits (a starting pose from animation may
@@ -359,8 +448,14 @@ impl Ragdoll {
         self.s.iter().fold((0.0f32, 0.0f32), |(v, w), s| (v.max(s.v.length()), w.max(s.w.length())))
     }
 
+    /// Wake it for PhysX's default wake-up time (NxActor::wakeUp, 20 x 0.02 s).
     pub fn wake(&mut self) {
+        self.wake_for(WAKE_TIME);
+    }
+
+    fn wake_for(&mut self, t: f32) {
         self.asleep = false;
+        self.wake_counter = self.wake_counter.max(t);
         self.still = 0.0;
     }
 
@@ -386,7 +481,7 @@ impl Ragdoll {
         } else {
             self.pinned.push((i, x, q));
         }
-        self.wake();
+        self.wake_for(HELD_WAKE);
     }
 
     /// Let every pinned body go.
@@ -479,8 +574,11 @@ impl Ragdoll {
                 let ua = axes(self, j.fa, a, Vec3::X);
                 let ub = axes(self, j.fb, b, Vec3::X);
                 let phi = ua.cross(ub).dot(n).atan2(ua.dot(ub));
-                if let Some(d) = past_limit(phi, j.low, j.high) {
+                if let Some(d) = past_limit(phi, j.low, j.high).filter(|_| j.limited) {
                     self.angular(t, a, b, n * d);
+                }
+                if let Some((k, target)) = j.twist_spring {
+                    self.spring(t, a, b, n * wrap(phi - target), k);
                 }
             }
             JointKind::Ball => {
@@ -488,31 +586,55 @@ impl Ragdoll {
                 let ua = axes(self, j.fa, a, Vec3::X);
                 let ub = axes(self, j.fb, b, Vec3::X);
                 let angle = ua.dot(ub).clamp(-1.0, 1.0).acos();
-                if angle > j.swing {
+                if angle > j.swing && j.limited {
                     let n = ua.cross(ub).normalize_or_zero();
                     self.angular(t, a, b, n * (angle - j.swing));
+                }
+                if let Some(k) = j.swing_spring {
+                    let (ua, ub) = (axes(self, j.fa, a, Vec3::X), axes(self, j.fb, b, Vec3::X));
+                    let angle = ua.dot(ub).clamp(-1.0, 1.0).acos();
+                    self.spring(t, a, b, ua.cross(ub).normalize_or_zero() * angle, k);
                 }
                 // twist about that axis
                 let rel = (self.s[a].q * j.fa).inverse() * (self.s[b].q * j.fb);
                 let tw = 2.0 * rel.x.atan2(rel.w);
                 let n = axes(self, j.fb, b, Vec3::X);
-                if let Some(d) = past_limit(tw, j.low, j.high) {
+                if let Some(d) = past_limit(tw, j.low, j.high).filter(|_| j.limited) {
                     self.angular(t, a, b, n * d);
+                }
+                if let Some((k, target)) = j.twist_spring {
+                    self.spring(t, a, b, n * wrap(tw - target), k);
                 }
             }
             JointKind::Other(_) => {}
         }
     }
 
-    /// Bodies `i` and `j` pushed apart where their hulls overlap.
+    /// A joint spring of stiffness `k` turning `a` by `dphi` and `b` against it, as a soft
+    /// constraint (compliance 1 / k over the sub-step). (not ported) The springs' dampers.
+    fn spring(&mut self, t: &Template, a: usize, b: usize, dphi: Vec3, k: f32) {
+        let th = dphi.length();
+        if th < 1e-7 || k <= 0.0 {
+            return;
+        }
+        let n = dphi / th;
+        let w = n.dot(self.inv_inertia(t, a) * n) + n.dot(self.inv_inertia(t, b) * n);
+        let compliance = 1.0 / (k * self.h * self.h);
+        if w > 0.0 {
+            self.angular(t, a, b, dphi * (w / (w + compliance)));
+        }
+    }
+
+    /// Bodies `i` and `j` pushed apart where their hulls overlap more than their skin.
     fn touch(&mut self, t: &Template, i: usize, j: usize) {
+        let skin = t.bodies[i].skin.max(t.bodies[j].skin);
         for &(a1, b1, r1) in &t.bodies[i].hulls {
             for &(a2, b2, r2) in &t.bodies[j].hulls {
                 let (si, sj) = (self.s[i], self.s[j]);
                 let (c1, c2) = closest(si.x + si.q * a1, si.x + si.q * b1, sj.x + sj.q * a2, sj.x + sj.q * b2);
                 let d = c1 - c2;
                 let dist = d.length();
-                let depth = r1 + r2 - dist;
+                let depth = r1 + r2 - dist - skin;
                 if depth <= 0.0 || dist < 1e-6 {
                     continue;
                 }
@@ -545,12 +667,22 @@ impl Ragdoll {
         }
     }
 
-    /// Body `i` pushed out along `n` by `depth` at the contact point `c`, then held by friction.
+    /// Body `i` touching along `n`, `depth` deep at the contact point `c`: pushed out to its skin,
+    /// held by friction. A contact inside the skin is still one (PhysX's solver lets shapes close
+    /// to skin depth, no further, and pushes out what is past it): it closes no faster than
+    /// reaches the skin this sub-step and holds by friction. (stand-in) The depth stands for the
+    /// contact's load in the friction cone.
     fn push_out(&mut self, t: &Template, i: usize, c: Vec3, n: Vec3, depth: f32) {
-        let depth = depth.min(MAX_DEPENETRATION * self.h);
+        let load = depth.min(MAX_DEPENETRATION * self.h);
+        if load <= 0.0 {
+            return;
+        }
+        let out = (depth - t.bodies[i].skin).min(MAX_DEPENETRATION * self.h);
         let s = self.s[i];
-        self.positional(t, i, None, n * depth, c - s.x, Vec3::ZERO);
-        self.contacts.push((i, s.q.inverse() * (c - s.x), n, depth));
+        if out > 0.0 {
+            self.positional(t, i, None, n * out, c - s.x, Vec3::ZERO);
+        }
+        self.contacts.push((i, s.q.inverse() * (c - s.x), n, load, (t.bodies[i].skin - depth).max(0.0)));
         // friction: the contact point's slide this sub-step undone, up to the friction cone
         let s = self.s[i];
         let local = s.q.inverse() * (c - s.x);
@@ -560,27 +692,37 @@ impl Ragdoll {
         let slide = d - n * d.dot(n);
         let len = slide.length();
         if len > 1e-7 {
-            let undo = if len < STATIC_FRICTION * depth { 1.0 } else { (DYNAMIC_FRICTION * depth / len).min(1.0) };
+            let undo = if len < STATIC_FRICTION * load { 1.0 } else { (DYNAMIC_FRICTION * load / len).min(1.0) };
             self.positional(t, i, None, -slide * undo, now - s.x, Vec3::ZERO);
         }
     }
 
-    /// Advance `dt` seconds among `world`'s ground and solids.
+    /// Advance `dt` seconds among `world`'s ground and solids: one PhysX step of at most
+    /// `MAX_STEP` (F045111), solved in the template's sub-steps.
     pub fn step(&mut self, t: &Template, dt: f32, world: &dyn Surroundings) {
         if self.asleep || dt <= 0.0 {
             return;
         }
-        let h = dt.min(1.0 / 30.0) / SUBSTEPS as f32;
+        let dt = dt.min(MAX_STEP);
+        let substeps = t.substeps.max(1);
+        let h = dt / substeps as f32;
         self.h = h;
+        // (assumption) PhysX 2.8's damping, once a step: v *= max(0, 1 - damping dt)
+        for (i, s) in self.s.iter_mut().enumerate() {
+            let [lin, ang] = t.bodies[i].damping;
+            s.v *= (1.0 - lin * dt).max(0.0);
+            s.w *= (1.0 - ang * dt).max(0.0);
+        }
+        let start: Vec<(Vec3, Quat)> = self.s.iter().map(|s| (s.x, s.q)).collect();
         let mut found = Vec::new();
         // a pinned body goes to its pose in even steps
         let pins: Vec<(usize, Vec3, Quat, Vec3, Quat)> = self.pinned.iter().map(|&(i, x, q)| (i, self.s[i].x, self.s[i].q, x, q)).collect();
-        for k in 0..SUBSTEPS {
+        for k in 0..substeps {
             for (i, s) in self.s.iter_mut().enumerate() {
                 s.px = s.x;
                 s.pq = s.q;
                 if let Some(&(_, x0, q0, x1, q1)) = pins.iter().find(|p| p.0 == i) {
-                    let f = (k + 1) as f32 / SUBSTEPS as f32;
+                    let f = (k + 1) as f32 / substeps as f32;
                     s.x = x0.lerp(x1, f);
                     s.q = q0.slerp(q1, f);
                     continue;
@@ -588,7 +730,11 @@ impl Ragdoll {
                 if t.bodies[i].inv_mass == 0.0 {
                     continue;
                 }
-                s.v += GRAVITY * h;
+                if t.bodies[i].gravity {
+                    s.v += GRAVITY * h;
+                }
+                s.pv = s.v;
+                s.pw = s.w;
                 s.x += s.v * h;
                 s.q = add_rotation(s.q, s.w * h);
             }
@@ -632,21 +778,24 @@ impl Ragdoll {
                     s.w = -s.w;
                 }
             }
-            // the contacts' velocities: no bounce, sliding slowed by dynamic friction up to the
-            // normal correction's speed
-            for (i, local, n, depth) in std::mem::take(&mut self.contacts) {
+            // the contacts' velocities: one closing faster than the bounce threshold bounces back
+            // at the restitution, others stop closing; sliding slowed by dynamic friction up to
+            // the normal correction's speed
+            for (i, local, n, depth, slack) in std::mem::take(&mut self.contacts) {
                 let s = self.s[i];
                 let r = s.q * local;
                 let v = s.v + s.w.cross(r);
                 let vn = v.dot(n);
+                let before = (s.pv + s.pw.cross(r)).dot(n);
+                let target = if before < -BOUNCE_THRESHOLD { -RESTITUTION * before } else { -slack / h };
                 let vt = v - n * vn;
                 let mut dv = Vec3::ZERO;
                 let lt = vt.length();
                 if lt > 1e-7 {
                     dv -= vt / lt * (DYNAMIC_FRICTION * depth / h).min(lt);
                 }
-                if vn < 0.0 {
-                    dv -= n * vn;
+                if vn < target {
+                    dv += n * (target - vn);
                 }
                 let l = dv.length();
                 if l < 1e-7 {
@@ -664,27 +813,38 @@ impl Ragdoll {
                 s.v += p * m;
                 s.w += ii * r.cross(p);
             }
-            let settling = self.s.iter().all(|s| s.v.length() < SETTLE_SPEED && s.w.length() < SETTLE_TURN);
-            let extra = if settling { SETTLE_DAMPING } else { 0.0 };
-            for (i, s) in self.s.iter_mut().enumerate() {
-                let [lin, ang] = t.bodies[i].damping;
-                s.v *= (1.0 - (lin + extra) * h).max(0.0);
-                s.w *= (1.0 - (ang + extra) * h).max(0.0);
+            for s in &mut self.s {
                 s.w = s.w.clamp_length_max(MAX_ANGULAR);
             }
         }
-        let moving = self
+        // the sleep test: any body's energy at the threshold keeps the ragdoll awake for the
+        // wake-up time; below it the counter runs down, and at 0 it sleeps. (stand-in for the
+        // velocity filter Kenshi turns on, NX_BF_FILTER_SLEEP_VEL, F045312) Each body's velocity
+        // here is its motion over the whole step, not its last sub-step's.
+        let energetic = self.s.iter().zip(&t.bodies).zip(&start).any(|((s, b), &(x0, q0))| {
+            let v = (s.x - x0) / dt;
+            let dq = s.q * q0.inverse();
+            let w = Vec3::new(dq.x, dq.y, dq.z) * (2.0 / dt) * dq.w.signum();
+            let r = Mat3::from_quat(s.q);
+            0.5 * (v.length_squared() + w.dot(r * b.unit_inertia * r.transpose() * w)) >= SLEEP_ENERGY
+        });
+        if energetic {
+            self.wake_counter = self.wake_counter.max(WAKE_TIME);
+        } else {
+            self.wake_counter -= dt;
+        }
+        let moved = self
             .s
             .iter()
             .zip(&self.rest)
-            .any(|(s, &(x, q))| s.x.distance(x) > SLEEP_DRIFT || s.q.angle_between(q) > SLEEP_TURN);
-        if moving {
+            .any(|(s, &(x, q))| s.x.distance(x) > STILL_DRIFT || s.q.angle_between(q) > STILL_TURN);
+        if moved || !self.pinned.is_empty() {
             self.still = 0.0;
             self.rest = self.s.iter().map(|s| (s.x, s.q)).collect();
         } else {
             self.still += dt;
         }
-        if self.still >= SLEEP_TIME {
+        if self.wake_counter <= 0.0 || self.still >= WAKE_TIME {
             self.asleep = true;
             for s in &mut self.s {
                 s.v = Vec3::ZERO;
@@ -709,10 +869,23 @@ mod tests {
             pos: at,
             damping: [0.0, 0.05],
             density: 1.0,
+            mass: 0.0,
+            sleep: [-1.0, -1.0],
+            iterations: 32,
+            fixed: false,
+            no_gravity: false,
+            bone_slot: 0,
             bone: name.into(),
             bone_frame: frame(at),
             offsets: Vec::new(),
-            shapes: vec![Shape { frame: frame(at), kind: ShapeKind::Capsule, size: [1.0, 4.0, 1.0] }],
+            shapes: vec![Shape {
+                frame: frame(at),
+                kind: ShapeKind::Capsule,
+                size: [1.0, 4.0, 1.0],
+                density: 1.0,
+                mass: 0.0,
+                skin: -1.0,
+            }],
         }
     }
 
@@ -725,8 +898,26 @@ mod tests {
             r.step(&t, 1.0 / 60.0, &crate::world::Ground(|_, _| 0.0));
         }
         let (x, _) = r.poses().next().unwrap();
-        // upright on its end: the centre half the length up
-        assert!((x.y - 2.0).abs() < 0.2, "{x}");
+        // upright on its end: the centre half the length up, less the skin it rests in
+        assert!((x.y - (2.0 - SKIN)).abs() < 0.1, "{x}");
+        // and the energy test has put it to sleep
+        assert!(r.asleep);
+    }
+
+    #[test]
+    fn mass_from_the_body_or_the_density() {
+        // the body's mass when set (the shapes scaled to it), else density x volume
+        let mut a = capsule("a", [0.0, 10.0, 0.0]);
+        let free = Template::new(&Phs { version: 1.4, actors: vec![a.clone()], joints: vec![], lights: vec![] });
+        let v = volume(ShapeKind::Capsule, Vec3::new(1.0, 4.0, 1.0));
+        assert!((1.0 / free.bodies[0].inv_mass - v).abs() < 1e-3);
+        a.density = 0.0;
+        a.mass = 1.0;
+        let set = Template::new(&Phs { version: 1.4, actors: vec![a], joints: vec![], lights: vec![] });
+        assert!((1.0 / set.bodies[0].inv_mass - 1.0).abs() < 1e-5);
+        // a ragdoll part's damping (F045312) and at least 16 iterations
+        assert_eq!(set.bodies[0].damping, PART_DAMPING);
+        assert_eq!(set.substeps, 32);
     }
 
     #[test]
@@ -742,6 +933,10 @@ mod tests {
                 low: 0.0,
                 swing: 0.0,
                 actors: [0, 1],
+                limited: true,
+                collide: false,
+                springs: [None; 3],
+                projection: (0, 0.0, 0.0),
             }],
             lights: vec![],
         };

@@ -83,7 +83,7 @@ impl Hazard {
 
 impl Sim {
     /// A race's "weather immunity" types.
-    fn immune(&self, id: usize, affect: i32) -> bool {
+    pub(crate) fn immune(&self, id: usize, affect: i32) -> bool {
         let race = self.race_of(id);
         race.is_some_and(|r| self.weather_kinds_of(&r, "weather immunity").0.contains(&affect))
     }

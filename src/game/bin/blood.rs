@@ -11,6 +11,12 @@
 //! alpha) are tinted by the race's "blood colour" (its colour x the image's grey). The map covers
 //! 2048 units (2048 texels) round
 //! where the first blood fell and starts afresh when blood falls beyond it.
+//!
+//! The options: "Blood" off, no blood is painted (F047741 paints only with it on; the blood
+//! sprays of F044504 are not ported); "Decal Range" (F047734: the blood patches drawn within
+//! it) and "Decal Resolution" (F047737: the decal textures' size), (stand-in) here the map's
+//! width (2048 units at the default 1000, none at 0) and its texels a unit (1 at the default
+//! 1024; at most 4096 texels across), a change starting the map afresh.
 
 use super::Game;
 use bevy::asset::RenderAssetUsages;
@@ -21,6 +27,7 @@ use kenshi_combat::arena::Cue;
 use kenshi_render::terrain_material::{KenshiTerrainMaterial, TerrainLook};
 use std::collections::HashSet;
 
+/// The map at the options' defaults (Decal Range 1000, Decal Resolution 1024).
 const TEXELS: usize = 2048;
 const WIDTH: f32 = 2048.0;
 const KINDS: [&str; 4] = ["pool", "splash", "line", "smear"];
@@ -38,6 +45,11 @@ pub struct Blood {
     timer: f32,
     dead: HashSet<usize>,
     roll: u64,
+    /// The map's texels across and width (units), by the decal options when it was made.
+    texels: usize,
+    width: f32,
+    /// Anything painted on the map since it was last cleared.
+    painted: bool,
 }
 
 impl Blood {
@@ -57,7 +69,8 @@ impl Blood {
         let (flip_x, flip_y) = (self.next() < 0.5, self.next() < 0.5);
         let images = self.images.take().expect("loaded");
         let img = &images[kind][pick];
-        let texel = WIDTH / TEXELS as f32;
+        let (texels, width) = (self.texels.max(1), self.width.max(1.0));
+        let texel = width / texels as f32;
         let n = (size / texel).max(2.0) as i64;
         let aspect = img.height as f32 / img.width as f32;
         let (w, h) = (n, ((n as f32) * aspect).max(1.0) as i64);
@@ -65,12 +78,12 @@ impl Blood {
         let cy = ((at.y - self.corner.y) / texel) as i64;
         for j in 0..h {
             let y = cy - h / 2 + j;
-            if y < 0 || y >= TEXELS as i64 {
+            if y < 0 || y >= texels as i64 {
                 continue;
             }
             for i in 0..w {
                 let x = cx - w / 2 + i;
-                if x < 0 || x >= TEXELS as i64 {
+                if x < 0 || x >= texels as i64 {
                     continue;
                 }
                 let mut sx = (i as f32 / w as f32 * img.width as f32) as u32;
@@ -87,7 +100,7 @@ impl Blood {
                     continue;
                 }
                 let grey = s[0] as f32 / 255.0;
-                let d = &mut self.pixels[y as usize * TEXELS + x as usize];
+                let d = &mut self.pixels[y as usize * texels + x as usize];
                 for k in 0..3 {
                     let src = (colour[k] * grey * 255.0).min(255.0);
                     d[k] = (src * a + d[k] as f32 * (1.0 - a)) as u8;
@@ -97,6 +110,7 @@ impl Blood {
         }
         self.images = Some(images);
         self.dirty = true;
+        self.painted = true;
     }
 }
 
@@ -127,8 +141,20 @@ pub fn paint(
     mut images: ResMut<Assets<Image>>,
     mut look: ResMut<TerrainLook>,
     mut materials: ResMut<Assets<KenshiTerrainMaterial>>,
+    settings: Option<Res<super::options_ui::Settings>>,
 ) {
     let dt = time.delta_secs();
+    // the options: Blood, Decal Range, Decal Resolution
+    let (on, range, res) = settings.as_ref().map_or((true, 1000.0, 1024.0), |s| (s.on("Blood"), s.f32("Decal Range"), s.f32("Decal Resolution")));
+    // off (or no range): none painted, and what was painted no longer drawn
+    let off = !on || range <= 0.0;
+    if off && blood.painted {
+        blood.pixels.iter_mut().for_each(|p| *p = [0; 4]);
+        blood.painted = false;
+        blood.dirty = true;
+    }
+    let width = (WIDTH * range / 1000.0).clamp(256.0, 8192.0);
+    let texels = ((width * res / 1024.0 * TEXELS as f32 / WIDTH) as usize).clamp(64, 4096);
     let sim = &game.sim;
     let pos = |id: usize| sim.folk.get(id).map(|p| {
         let q = p.mover.position_units();
@@ -183,19 +209,24 @@ pub fn paint(
             }
         }
     }
+    if off {
+        marks.clear();
+    }
     if !marks.is_empty() {
         if blood.images.is_none() {
             blood.images = Some(load_images(&game));
         }
         // a map round the first mark, made afresh when one falls beyond it
-        let inside = |b: &Blood, at: Vec2| b.image.is_some() && at.x > b.corner.x + 100.0 && at.y > b.corner.y + 100.0 && at.x < b.corner.x + WIDTH - 100.0 && at.y < b.corner.y + WIDTH - 100.0;
-        if !inside(&blood, marks[0].1) {
-            blood.corner = marks[0].1 - Vec2::splat(WIDTH * 0.5);
-            blood.pixels = vec![[0; 4]; TEXELS * TEXELS];
+        let inside = |b: &Blood, at: Vec2| b.image.is_some() && at.x > b.corner.x + 100.0 && at.y > b.corner.y + 100.0 && at.x < b.corner.x + b.width - 100.0 && at.y < b.corner.y + b.width - 100.0;
+        if !inside(&blood, marks[0].1) || blood.texels != texels || blood.width != width {
+            blood.texels = texels;
+            blood.width = width;
+            blood.corner = marks[0].1 - Vec2::splat(width * 0.5);
+            blood.pixels = vec![[0; 4]; texels * texels];
             let mut img = Image::new(
-                Extent3d { width: TEXELS as u32, height: TEXELS as u32, depth_or_array_layers: 1 },
+                Extent3d { width: texels as u32, height: texels as u32, depth_or_array_layers: 1 },
                 TextureDimension::D2,
-                vec![0; TEXELS * TEXELS * 4],
+                vec![0; texels * texels * 4],
                 TextureFormat::Rgba8Unorm,
                 RenderAssetUsages::default(),
             );
@@ -208,7 +239,7 @@ pub fn paint(
                 None => images.add(img),
             };
             blood.image = Some(h.clone());
-            let area = Vec4::new(blood.corner.x, blood.corner.y, 1.0 / WIDTH, 1.0);
+            let area = Vec4::new(blood.corner.x, blood.corner.y, 1.0 / width, 1.0);
             look.set_blood(h, area, &mut materials);
         }
         for (kind, at, size, strength, colour) in marks {

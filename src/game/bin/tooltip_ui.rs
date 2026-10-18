@@ -62,12 +62,15 @@ pub struct State {
 /// The tooltip's lines inside `parent` (F048673): a row each, its left text growing and
 /// wrapping, its right text at the right. A tip's text: a line "label\tvalue\tcolour" a row (the
 /// colour: empty, both in the text colour; v, the value #afa68b; c, both #afa68b; g / r, the
-/// value #a8b774 / #59231a; t, both #492620; h, the label #492620 and the value #afa68b), a
-/// line without a tab a paragraph.
+/// value #a8b774 / #59231a; t, both #492620; h, the label #492620 and the value #afa68b; k, the
+/// label #afa68b; #rrggbb, both in that colour), a
+/// line without a tab a paragraph, its MyGUI colour tags ("#rrggbb", "##" a #) colouring what
+/// follows them, on into the next paragraphs.
 fn lines(commands: &mut Commands, parent: Entity, text: &str, font: &TextFont) {
     let text_node = |s: &str, c: Color, j: Justify| {
         (Text::new(s.to_string()), font.clone(), TextColor(c), TextLayout::new(j, bevy::text::LineBreak::WordBoundary))
     };
+    let mut colour = TEXT;
     for line in text.lines() {
         let row = match line.split('\t').collect::<Vec<_>>().as_slice() {
             [label, value, c] => {
@@ -78,6 +81,12 @@ fn lines(commands: &mut Commands, parent: Entity, text: &str, font: &TextFont) {
                     "r" => (TEXT, hud_ui::RED),
                     "t" => (hud_ui::DARK_RED, hud_ui::DARK_RED),
                     "h" => (hud_ui::DARK_RED, hud_ui::TAN),
+                    "k" => (hud_ui::TAN, TEXT),
+                    // a colour of its own ("#rrggbb", an item's grade line)
+                    c if c.len() == 7 && c.starts_with('#') && u32::from_str_radix(&c[1..], 16).is_ok() => {
+                        let v = hud_ui::tag(u32::from_str_radix(&c[1..], 16).unwrap_or(0));
+                        (v, v)
+                    }
                     _ => (TEXT, TEXT),
                 };
                 let row = commands
@@ -91,10 +100,53 @@ fn lines(commands: &mut Commands, parent: Entity, text: &str, font: &TextFont) {
                 }
                 row
             }
-            _ => commands.spawn((text_node(line, TEXT, Justify::Left), Node { width: Val::Percent(100.0), ..default() })).id(),
+            _ => {
+                let parts = coloured(line, &mut colour);
+                let (first, c) = parts.first().cloned().unwrap_or_default();
+                let e = commands.spawn((text_node(&first, c, Justify::Left), Node { width: Val::Percent(100.0), ..default() })).id();
+                for (t, c) in parts.into_iter().skip(1) {
+                    let span = commands.spawn((TextSpan::new(t), font.clone(), TextColor(c))).id();
+                    commands.entity(e).add_child(span);
+                }
+                e
+            }
         };
         commands.entity(parent).add_child(row);
     }
+}
+
+/// A paragraph's runs by MyGUI's colour tags ("#rrggbb" sets the colour from there on, "##" is a
+/// #), starting in `colour` and leaving it as the paragraph ends it.
+fn coloured(line: &str, colour: &mut Color) -> Vec<(String, Color)> {
+    let mut out: Vec<(String, Color)> = vec![(String::new(), *colour)];
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < line.len() {
+        if b[i] == b'#' {
+            if b.get(i + 1) == Some(&b'#') {
+                out.last_mut().unwrap().0.push('#');
+                i += 2;
+                continue;
+            }
+            if let Some(hex) = line.get(i + 1..i + 7)
+                && let Ok(v) = u32::from_str_radix(hex, 16)
+                && hex.bytes().all(|c| c.is_ascii_hexdigit())
+            {
+                *colour = hud_ui::tag(v);
+                out.push((String::new(), *colour));
+                i += 7;
+                continue;
+            }
+        }
+        let ch = line[i..].chars().next().unwrap();
+        out.last_mut().unwrap().0.push(ch);
+        i += ch.len_utf8();
+    }
+    out.retain(|(t, _)| !t.is_empty());
+    if out.is_empty() {
+        out.push((String::new(), *colour));
+    }
+    out
 }
 
 /// @fn F048667

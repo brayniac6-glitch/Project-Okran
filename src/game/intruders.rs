@@ -17,18 +17,15 @@
 //! intruder lines attack (DA_ATTACK_CHASE_FOREVER), mark a temporary enemy or raise the crime
 //! alarm; a guard witnessing the trespassing adds its bounty (crate::law).
 //!
-//! "Locked up" is a squad's flag (F044498) set when one of its people locks a door of its home
-//! with every door of it shut (Task_LockDoor, F030907 / F030911) and cleared when one is opened
-//! or a lock picked (F030901..F030903, Task_PickLock F031344). (stand-in) Here it is read off the
-//! doors: a home is locked up while it has doors and every one is shut, locked and whole.
+//! "Locked up" is a squad's flag (F044498) set when one of its people closes a lockable door of
+//! its home or locks one (Task_CloseDoor F030907, Task_LockDoor F030911), so long as no door of
+//! the home stands open or opening, and cleared when one is opened or a lock picked
+//! (F030901..F030903, Task_PickLock F031344). (assumption) A home met with every door shut,
+//! locked and whole starts locked up (the squad's flag as it was left).
 //!
 //! Then "Remove Home Intruder" (task 223) and "Intruder out" (224, Task_TakeIntruderOutside,
-//! done once INTRUDER_IS_OUTSIDE, F038580): a resident picks up anyone knocked out inside its
-//! home (F050282: down, not carried, not held, in the building that is the squad's home) and
-//! carries them out of the door. (assumption) The sensor's list F050282 reads (filter 0x201) is
-//! taken as those not of the household, squad or faction. (stand-in) They are put down `OUT_BY`
-//! units out from the nearest door of the home; their scores (Method 59) are not ported: an idle
-//! resident takes the task.
+//! done once INTRUDER_IS_OUTSIDE, F038580) run on the planner (crate::law): a resident lifts
+//! anyone knocked out inside its home (F050282) and carries them out of the door.
 use crate::sim::{DOOR_CLOSED, Sim};
 use kenshi_ai::PerceptionShortTerm;
 
@@ -42,16 +39,28 @@ const OT_LAW_ENFORCEMENT: i32 = 1;
 const OT_MILITARY: i32 = 2;
 /// F046547: how visible a slave must be to be seen getting away (F046500).
 const SLAVE_SEEN: f32 = 0.05;
-/// (assumption) How far out from the door an intruder is put down (units).
-const OUT_BY: f32 = 80.0;
 
-/// A knocked-out intruder being carried out of `home` (placement) by `by` to `out` (units).
-#[derive(Debug, Clone)]
-pub struct Eject {
-    pub by: usize,
-    pub whom: usize,
-    pub home: usize,
-    pub out: [f32; 3],
+/// "Closing door" (73, Task_CloseDoor) and "Locking door from inside" (162, Task_LockDoor):
+/// the door tasks run here (`door_tasks_tick`; crate::sim leaves them to this).
+pub const CLOSING_DOOR: u16 = 73;
+pub const DOOR_RUNNABLE: [u16; 2] = [CLOSING_DOOR, crate::sim::LOCKING_DOOR];
+/// Task_CloseDoor's wait before the door closes (s, F030907); Task_LockDoor's lock turns at this
+/// much a second, done at 1 (F030911).
+const CLOSE_SECONDS: f32 = 2.0;
+const LOCK_RATE: f32 = 0.3;
+
+/// @fn F044498
+///
+/// The squad living in `home` locks it up (its AI +0xe8 set): unless set already, and only while
+/// no door of it stands open or opening.
+pub fn lock_up(locked_up: &mut std::collections::HashMap<usize, bool>, doors: &[crate::sim::DoorState], home: usize) {
+    if locked_up.get(&home).copied().unwrap_or(false) {
+        return;
+    }
+    if doors.iter().any(|d| d.door.placement == home && !d.gone && matches!(d.phase, crate::sim::DOOR_OPEN | crate::sim::DOOR_OPENING)) {
+        return;
+    }
+    locked_up.insert(home, true);
 }
 
 impl Sim {
@@ -80,27 +89,33 @@ impl Sim {
         doors.peek().is_some() && doors.all(|d| d.phase == DOOR_CLOSED && d.locked && !d.broken)
     }
 
-    /// @fn F044498
     /// @fn F030902
     ///
-    /// Each tick, the homes' "locked up" flags: set (F044498: only while no door of the home is
-    /// open or opening) as its residents lock it up; cleared when someone who is not the
-    /// player's opens a door of it (Task_OpenDoor F030902 / F030901). The player's people
-    /// opening it leave the flag set: inside they are intruders still.
-    /// (stand-in) The residents' closing and locking (Task_CloseDoor F030907, Task_LockDoor
-    /// F030911) is not ported: the flag is set whenever every door of the home is shut, locked and
-    /// whole. Who opened a door is taken as the nearest one walking within twice the door's
-    /// reach.
+    /// Each tick, the homes' "locked up" flags (set by the residents' door tasks,
+    /// `door_tasks_tick`): cleared when someone who is not the player's opens a door of it
+    /// (Task_OpenDoor F030902 / F030901). The player's people opening it leave the flag set:
+    /// inside they are intruders still.
+    /// (assumption) Who opened a door is taken as the nearest one walking within twice the
+    /// door's reach; a home first met with every door shut, locked and whole is locked up.
     pub fn locked_up_tick(&mut self) {
         let n = self.door_states.len();
         if self.law_state.door_phase.len() != n {
             self.law_state.door_phase = self.door_states.iter().map(|d| d.phase).collect();
+            let homes: Vec<usize> = self.door_states.iter().filter(|d| !d.gone).map(|d| d.door.placement).collect();
+            for b in homes {
+                if !self.law_state.locked_up.contains_key(&b) {
+                    let secured = self.doors_secured(b);
+                    self.law_state.locked_up.insert(b, secured);
+                }
+            }
         }
         let mut cleared: Vec<usize> = Vec::new();
         for d in 0..n {
             let (was, now) = (self.law_state.door_phase[d], self.door_states[d].phase);
             self.law_state.door_phase[d] = now;
-            if was != DOOR_CLOSED || now == DOOR_CLOSED {
+            // opened: from shut or shutting to opening or open
+            let opening = |ph: i32| matches!(ph, crate::sim::DOOR_OPEN | crate::sim::DOOR_OPENING);
+            if opening(was) || !opening(now) {
                 continue;
             }
             let at = self.door_states[d].door.position;
@@ -122,12 +137,76 @@ impl Sim {
         for b in cleared {
             self.law_state.locked_up.insert(b, false);
         }
-        let homes: Vec<usize> = self.door_states.iter().filter(|d| !d.gone).map(|d| d.door.placement).collect();
-        for b in homes {
-            if self.doors_secured(b) {
-                self.law_state.locked_up.insert(b, true);
+    }
+
+    /// @fn F030907
+    /// @fn F030911
+    ///
+    /// The door tasks of whoever has one in hand (its target a door), facing the door:
+    /// - Closing door (73, Task_CloseDoor): after 2 s the door starts closing (F029334); each
+    ///   update, a door with a lock (level 1 or more, not broken) of the closer's home locks the
+    ///   home up (F044498); done once the door is shut.
+    /// - Locking door from inside (162, Task_LockDoor): the lock turns 0.3 a second; at 1 the
+    ///   door starts closing, its lock is locked ("Character_Lock") and a door of the locker's
+    ///   home locks the home up (F044498); done.
+    /// (not ported) The lock sound.
+    pub fn door_tasks_tick(&mut self, dt: f32) {
+        use crate::sim::Target;
+        let ids: Vec<usize> = self.folk.iter().filter(|p| !p.dead && !p.down && p.ai.queue.first().is_some_and(|s| DOOR_RUNNABLE.contains(&s.task))).map(|p| p.id).collect();
+        self.law_state.door_time.retain(|id, _| ids.contains(id));
+        for me in ids {
+            let Some(step) = self.folk[me].ai.queue.first().cloned() else { continue };
+            let done = |sim: &mut Sim| {
+                sim.folk[me].ai.queue.remove(0);
+                sim.folk[me].started = false;
+                sim.law_state.door_time.remove(&me);
+            };
+            let Target::Door(d) = step.target else {
+                done(self);
+                continue;
+            };
+            if d >= self.door_states.len() || self.door_states[d].gone {
+                done(self);
+                continue;
+            }
+            // facing the door
+            let (at, q) = (self.door_states[d].door.position, self.folk[me].mover.position_units());
+            let (dx, dz) = (at[0] - q[0], at[2] - q[2]);
+            let len = dx.hypot(dz);
+            if len > 1e-3 {
+                self.folk[me].facing = [dx / len, 0.0, dz / len];
+            }
+            let home = self.folk[me].home;
+            let b = self.door_states[d].door.placement;
+            let before = self.law_state.door_time.get(&me).copied().unwrap_or(0.0);
+            if step.task == CLOSING_DOOR {
+                let mut t = before + dt;
+                if t > CLOSE_SECONDS {
+                    self.door_states[d].start_close();
+                    t = 0.0;
+                }
+                self.law_state.door_time.insert(me, t);
+                let s = &self.door_states[d];
+                if s.level >= 1 && !s.broken && home == Some(b) {
+                    lock_up(&mut self.law_state.locked_up, &self.door_states, b);
+                }
+                if self.door_states[d].phase == DOOR_CLOSED {
+                    done(self);
+                }
             } else {
-                self.law_state.locked_up.entry(b).or_insert(false);
+                let t = before + dt * LOCK_RATE;
+                self.law_state.door_time.insert(me, t);
+                if before < 1.0 && 1.0 <= t {
+                    let s = &mut self.door_states[d];
+                    s.start_close();
+                    if !s.broken {
+                        s.locked = true;
+                    }
+                    if home == Some(b) {
+                        lock_up(&mut self.law_state.locked_up, &self.door_states, b);
+                    }
+                    done(self);
+                }
             }
         }
     }
@@ -233,89 +312,10 @@ impl Sim {
         if self.relations.get(mine).is_some_and(|r| r.is_ally(as_who.as_deref())) { 0.5 } else { 99.0 }
     }
 
-    /// The point `OUT_BY` out from the door of building `b` nearest `at` (units).
-    fn outside_of(&self, b: usize, at: [f32; 3]) -> Option<[f32; 3]> {
-        let inner = self.inside_point.get(b).copied().flatten()?;
-        let d = self.door_states.iter().filter(|d| d.door.placement == b && !d.gone).min_by(|x, y| {
-            let l = |p: [f32; 3]| (p[0] - at[0]).hypot(p[2] - at[2]);
-            l(x.door.position).total_cmp(&l(y.door.position))
-        })?;
-        let p = d.door.position;
-        let (dx, dz) = (p[0] - inner[0], p[2] - inner[2]);
-        let l = dx.hypot(dz).max(1e-3);
-        let out = [p[0] + dx / l * OUT_BY, p[1], p[2] + dz / l * OUT_BY];
-        // onto the navmesh (its coordinates are tenths of units)
-        self.nav.closest_point(out.map(|v| v / 10.0), 10.0).map(|(_, q)| q.map(|v| v * 10.0))
-    }
-
-    /// @fn F050282
-    ///
-    /// Tasks 223 / 224: residents carry the knocked out out of their homes (see the module notes).
-    fn eject_tick(&mut self) {
-        // new ones: an idle resident and someone down in its home not of its own
-        let busy: Vec<usize> = self.ejecting.iter().flat_map(|e| [e.by, e.whom]).collect();
-        let residents: Vec<usize> = self
-            .folk
-            .iter()
-            .filter(|p| !p.player && !p.down && !p.dead && !p.away && p.home.is_some() && p.inside == p.home && p.carrying.is_none() && p.pickup.is_none() && p.prison.is_none())
-            .map(|p| p.id)
-            .filter(|&r| !self.arena.f[r].active && !busy.contains(&r))
-            .collect();
-        for r in residents {
-            let home = self.folk[r].home.unwrap();
-            let busy: Vec<usize> = self.ejecting.iter().map(|e| e.whom).collect();
-            let downed = self.folk.iter().find(|q| {
-                q.down && !q.dead && q.inside == Some(home) && q.carried_by.is_none() && q.prison.is_none() && q.bed.is_none() && q.home != Some(home) && !busy.contains(&q.id) && (q.platoon.is_none() || q.platoon != self.folk[r].platoon) && (q.player || q.faction != self.folk[r].faction)
-            });
-            let Some(w) = downed.map(|q| q.id) else { continue };
-            let Some(out) = self.outside_of(home, self.folk[w].mover.position_units()) else { continue };
-            self.order_pickup(&[r], w);
-            self.ejecting.push(Eject { by: r, whom: w, home, out });
-            if std::env::var("KENSHI_LAW_DEBUG").is_ok() {
-                eprintln!("law: {r} takes intruder {w} out of {home}");
-            }
-        }
-        // under way
-        let tick = self.tick;
-        let mut k = 0;
-        while k < self.ejecting.len() {
-            let e = self.ejecting[k].clone();
-            let (b, w) = (&self.folk[e.by], &self.folk[e.whom]);
-            let lost = b.down || b.dead || self.arena.f[e.by].active || w.dead || !w.down || w.carried_by.is_some_and(|c| c != e.by) || (b.carrying != Some(e.whom) && b.pickup != Some(e.whom));
-            if lost {
-                if self.folk[e.by].carrying == Some(e.whom) {
-                    self.order_drop(&[e.by]);
-                }
-                self.ejecting.remove(k);
-                continue;
-            }
-            if self.folk[e.by].carrying == Some(e.whom) {
-                let at = self.folk[e.by].mover.position_units();
-                if self.folk[e.by].inside != Some(e.home) && (at[0] - e.out[0]).hypot(at[2] - e.out[2]) < 40.0 {
-                    // INTRUDER_IS_OUTSIDE: put down
-                    self.order_drop(&[e.by]);
-                    self.ejecting.remove(k);
-                    if std::env::var("KENSHI_LAW_DEBUG").is_ok() {
-                        eprintln!("law: {} put intruder {} outside", e.by, e.whom);
-                    }
-                    continue;
-                }
-                // on its way unless it already is (a stalled walk is ordered again now and then)
-                let going = self.folk[e.by].ai.orders.first().is_some_and(|o| o.pos == e.out);
-                if !going || (self.folk[e.by].speed < 1.0 && tick % 300 == 0) {
-                    self.order_move(&[e.by], e.out);
-                }
-            }
-            k += 1;
-        }
-    }
-
-    /// Once a second: residents carry out the knocked out (`eject_tick`) and the NPCs look at
-    /// the player's people they sense (`look`).
+    /// Once a second: the NPCs look at the player's people they sense (`look`).
     /// (assumption) The sensor's look comes once a second for each pair; the sensed are those
     /// it sees (`visibility` past 0.01, F046539) or hears.
     pub fn intruders_tick(&mut self) {
-        self.eject_tick();
         let targets: Vec<usize> = self.folk.iter().filter(|p| p.player && !p.dead && !p.away).map(|p| p.id).collect();
         if targets.is_empty() {
             return;
@@ -392,7 +392,7 @@ impl Sim {
         }
         if !self.takes_for_enemy(w, t, true) {
             if wf != crate::sim::PLAYER_FACTION && !self.anti_slavery(&wf) && !held && self.slave_state(t) != 0 {
-                let seen = self.visibility(w, t) > SLAVE_SEEN;
+                let seen = self.sight(w, t) > SLAVE_SEEN;
                 let owners = self.folk[t].slave.as_ref().map(|s| s.faction.clone());
                 let mine = owners.as_deref().is_none_or(|o| o == wf);
                 match self.slave_state(t) {

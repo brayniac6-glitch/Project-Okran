@@ -755,6 +755,37 @@ impl LodTerrain {
         out
     }
 
+    /// Terrain::getApproximateHeight (the plugin's 0x1800133f0, the walk 0x180007d50): within
+    /// the map's square, down the split nodes to the one drawn there (child 1 at or past the
+    /// first child's far x, 2 at or past its far z), then that node's patch vertex nearest the
+    /// point (floor(f + 0.5) of 16 steps a side): its own height and normal (not the morph
+    /// target's). None outside the map, or where that node has no patch yet (the plugin's -99).
+    pub fn approximate_height(&self, x: f32, z: f32) -> Option<(f32, Vec3)> {
+        let root = self.node(self.root);
+        if x < root.x0 || x > root.x0 + root.size || z < root.z0 || z > root.z0 + root.size {
+            return None;
+        }
+        let mut i = self.root;
+        loop {
+            let n = self.node(i);
+            if n.split
+                && let Some(c) = n.children
+            {
+                let first = self.node(c[0]);
+                let q = (x >= first.x0 + first.size) as usize | ((z >= first.z0 + first.size) as usize) << 1;
+                i = c[q];
+                continue;
+            }
+            let p = n.patch.as_ref()?;
+            let steps = (VERTS - 1) as f32;
+            // (the point is within the node: the index is 0 ..= 16 either way)
+            let ix = ((x - n.x0) / n.size * steps + 0.5).floor() as usize;
+            let iz = ((z - n.z0) / n.size * steps + 0.5).floor() as usize;
+            let k = iz.min(VERTS - 1) * VERTS + ix.min(VERTS - 1);
+            return Some((p.h[k], p.n[k]));
+        }
+    }
+
     /// Nodes held and drawn (for the log).
     pub fn stats(&self) -> (usize, usize) {
         let held = self.nodes.iter().filter(|n| n.is_some()).count();

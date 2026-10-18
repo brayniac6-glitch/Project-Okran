@@ -170,18 +170,40 @@ pub fn nearest(towns: &[Town], p: [f32; 3], kind: i32, except: Option<usize>) ->
     best
 }
 
-/// The character's current town after a think (F038707, its town part): the town it was in (else
-/// the nearest) while the position is within its radius, else the nearest such town; the radius
-/// counts 1.5 times for a character already in a town, once otherwise. The player's own towns
-/// (checked first, at 1.25) and the building escape (a town left while inside one of its
-/// buildings) are not taken.
-/// @fn F038707
+/// The town at a position: the nearest within its radius (F038707's town part for something
+/// in no town before, outside every building; `character_town`).
 pub fn current_town(towns: &[Town], p: [f32; 3], was: Option<usize>) -> Option<usize> {
+    character_town(towns, p, was, &[], None)
+}
+
+/// How near one of its town's gateways a character keeps that town: 300 units, across and up
+/// (F038707's 90000 squared).
+pub const GATE_REACH: f32 = 300.0;
+
+/// The character's current town after a think (F038707, its town part):
+/// - the town it was in (else the nearest, F048796) while the position is within its radius,
+///   1.5 times for a character already in a town, once otherwise (F048764);
+/// - or while it stands within `GATE_REACH` of that town's nearest gateway (Town +0x308,
+///   F048826: the town's buildings that are a GatewayBuilding, +0x3d8 F038246, by their
+///   position, Building +0x38 = +0x40); `gateways` holds each town's gateways;
+/// - else, inside a building (Character::insideBuilding F039242), that building's town
+///   (F023168: the town nearest the building, at any distance); `inside` is its position.
+///
+/// (not taken) The player's own towns first, within 1.25 times (the player's outposts are not
+/// towns here); the manager's second list (F048792, (assumption) the nests) tried before the
+/// building; Town +0x230 (F048831, the town's ground loaded) is taken as true.
+/// @fn F038707
+pub fn character_town(towns: &[Town], p: [f32; 3], was: Option<usize>, gateways: &[(usize, [f32; 3])], inside: Option<[f32; 3]>) -> Option<usize> {
     let mult = if was.is_some() { 1.5 } else { 1.0 };
-    let near = nearest(towns, p, 10, None);
-    was.or(near)
-        .filter(|&c| towns[c].contains(p, mult))
-        .or_else(|| near.filter(|&n| towns[n].contains(p, mult)))
+    let by_gate = |c: usize| {
+        gateways
+            .iter()
+            .filter(|(t, _)| *t == c)
+            .any(|(_, g)| (g[0] - p[0]).powi(2) + (g[1] - p[1]).powi(2) + (g[2] - p[2]).powi(2) < GATE_REACH * GATE_REACH)
+    };
+    was.or_else(|| nearest(towns, p, 10, None))
+        .filter(|&c| towns[c].contains(p, mult) || by_gate(c))
+        .or_else(|| inside.and_then(|b| nearest(towns, b, 10, None)))
 }
 
 #[cfg(test)]
@@ -211,13 +233,31 @@ mod tests {
     }
 
     #[test]
+    fn gateways_and_buildings_keep_their_town() {
+        let ts = [town(2, 0.0), town(2, 10_000.0)];
+        // 2600 out: beyond the radius (2500), but 250 from the first town's gateway
+        let p = [2600.0, 0.0, 0.0];
+        assert_eq!(character_town(&ts, p, None, &[], None), None);
+        assert_eq!(character_town(&ts, p, None, &[(0, [2600.0, 0.0, 250.0])], None), Some(0));
+        assert_eq!(character_town(&ts, p, None, &[(0, [2600.0, 0.0, 350.0])], None), None);
+        // up counts too
+        assert_eq!(character_town(&ts, p, None, &[(0, [2600.0, 400.0, 0.0])], None), None);
+        // inside a building: the town nearest it, however far
+        assert_eq!(character_town(&ts, [4000.0, 0.0, 0.0], None, &[], Some([4000.0, 0.0, 0.0])), Some(0));
+        assert_eq!(character_town(&ts, [6000.0, 0.0, 0.0], None, &[], Some([6000.0, 0.0, 0.0])), Some(1));
+    }
+
+    #[test]
     fn staying_in_town_reaches_further() {
         let ts = [town(2, 0.0), town(2, 10_000.0)];
         assert_eq!(current_town(&ts, [3000.0, 0.0, 0.0], None), None);
         assert_eq!(current_town(&ts, [2000.0, 0.0, 0.0], None), Some(0));
         // once in, 1.5 times the radius
         assert_eq!(current_town(&ts, [3000.0, 0.0, 0.0], Some(0)), Some(0));
-        assert_eq!(current_town(&ts, [8000.0, 0.0, 0.0], Some(0)), Some(1));
+        // out of it: no town that think (F038707 tries only the town it was in), the nearest
+        // the next
+        assert_eq!(current_town(&ts, [8000.0, 0.0, 0.0], Some(0)), None);
+        assert_eq!(current_town(&ts, [8000.0, 0.0, 0.0], None), Some(1));
         assert!(!town(8, 0.0).contains([0.0; 3], 1.0));
     }
 }

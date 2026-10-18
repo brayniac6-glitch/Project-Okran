@@ -51,8 +51,28 @@ fn main() {
             sim.folk[p].mover.position = [at[0] + 4.0 + j as f32 * 1.5, at[1], at[2] + 3.0];
             sim.arena.f[p].mover.position = sim.folk[p].mover.position;
         }
+        // (SPEECH_TALK_FIRST: talked to first, so attacked mid-talk)
+        if std::env::var("SPEECH_TALK_FIRST").is_ok()
+            && let Some(conv) = sim.talk(n, players[0])
+        {
+            println!("{name} says: {}", conv.npc_text);
+        }
         sim.order_attack(&players, n);
         println!("the squad attacks {name} ({n})");
+        next_hop = f32::INFINITY;
+    }
+    // SPEECH_TEMP_ENEMY=<name>: that NPC's squad tags the first of the player's a temporary
+    // enemy (DA_FLAG_TEMP_ENEMY), beside it; who fights whom is shown as it goes
+    let mut watch: Option<usize> = None;
+    if let Ok(name) = std::env::var("SPEECH_TEMP_ENEMY")
+        && let Some(n) = sim.folk.iter().find(|p| !p.player && !p.dead && sim.display_name(p.id) == name).map(|p| p.id)
+    {
+        let at = sim.folk[n].mover.position;
+        sim.folk[players[0]].mover.position = [at[0] + 6.0, at[1], at[2] + 3.0];
+        sim.arena.f[players[0]].mover.position = sim.folk[players[0]].mover.position;
+        sim.tag_short(n, players[0], kenshi_ai::PerceptionShortTerm::StTemporaryEnemy);
+        println!("{name} ({n}) tags {} a temporary enemy", players[0]);
+        watch = Some(n);
         next_hop = f32::INFINITY;
     }
     // SPEECH_FIRSTAID=1: an NPC beaten down, the first of the player's (given a medkit) treats it
@@ -89,6 +109,18 @@ fn main() {
                 }
                 println!("t {:.0}: beside {} ({})", sim.t, sim.display_name(n), n);
             }
+        }
+        if let Some(n) = watch
+            && sim.tick.is_multiple_of(300)
+        {
+            println!(
+                "t {:.0}: {n} fighting {} focus {:?}, doing {:?}, jobs {:?}",
+                sim.t,
+                sim.arena.f[n].active,
+                sim.arena.f[n].focus,
+                sim.folk[n].ai.current.as_ref().map(|c| c.task),
+                sim.folk[n].ai.jobs.iter().flatten().map(|j| j.task).collect::<Vec<_>>()
+            );
         }
         for (who, text) in std::mem::take(&mut sim.said) {
             println!("t {:.0}: {} says: {text}", sim.t, sim.display_name(who));

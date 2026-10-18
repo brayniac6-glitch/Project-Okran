@@ -188,13 +188,24 @@ pub fn bows(
             .filter(|(_, i)| matches!(i.kind, Some(kenshi_data::ItemType::Weapon | kenshi_data::ItemType::Crossbow)))
             .collect();
         if std::env::var("KENSHI_WEAPON_DEBUG").is_ok() && game.sim.tick.is_multiple_of(120) && (f.active || p.weapon_out) {
+            let held: Vec<(String, String)> = p
+                .inventory
+                .sections
+                .iter()
+                .flat_map(|s| s.items.iter().map(move |i| (s.name.to_string(), &i.item)))
+                .filter(|(_, i)| matches!(i.kind, Some(kenshi_data::ItemType::Weapon | kenshi_data::ItemType::Crossbow)))
+                .map(|(s, i)| (s, i.name.clone()))
+                .collect();
             eprintln!(
-                "weapons {id}: out {} active {} down {} shooting {} slotted {:?} current {:?}",
+                "weapons {id}: out {} active {} down {} shooting {} slotted {:?} wielded {:?} weapons anywhere {:?} race {:?} current {:?}",
                 p.weapon_out,
                 f.active,
                 f.down,
                 f.shooting,
                 slotted.iter().map(|(s, i)| (*s, i.name.clone(), i.kind)).collect::<Vec<_>>(),
+                f.wielded.category,
+                held,
+                p.race,
                 p.ai.current.as_ref().map(|t| t.task)
             );
         }
@@ -286,12 +297,26 @@ pub fn test_hook(mut game: ResMut<Game>, mut frames: Local<u32>) {
         game.focus = Vec3::from(game.sim.arena.f[me].pos()) + Vec3::Y * 12.0 - game.zone.origin;
     }
     let mut parts = v.splitn(2, ',');
-    if parts.next().and_then(|f| f.parse::<u32>().ok()) != Some(*frames) {
+    let at = parts.next().and_then(|f| f.parse::<u32>().ok());
+    // KENSHI_CROSSBOW_ATTACK_AT=<frame>: the attack ordered then instead (the weapon sheathed
+    // till then)
+    let attack_at = std::env::var("KENSHI_CROSSBOW_ATTACK_AT").ok().and_then(|f| f.parse::<u32>().ok()).or(at);
+    if at != Some(*frames) && attack_at != Some(*frames) {
         return;
     }
     let name = parts.next().unwrap_or("Oldworld Bow MkI").to_string();
     let Some(&me) = game.selected.first() else { return };
     let data = game.sim.data.clone();
+    if at == Some(*frames) {
+    // KENSHI_CROSSBOW_ONLY: the weapons worn before taken off first
+    if std::env::var("KENSHI_CROSSBOW_ONLY").is_ok() {
+        let inv = &mut game.sim.folk[me].inventory;
+        for s in ["hip", "back"] {
+            if let Some(k) = inv.section(s) {
+                inv.sections[k].items.clear();
+            }
+        }
+    }
     // "melee[:<weapon>]": no crossbow, a fight hand to hand or with that weapon equipped
     if let Some(w) = name.strip_prefix("melee:")
         && let Some(r) = data.of_type(kenshi_data::ItemType::Weapon).find(|r| r.name == w)
@@ -321,6 +346,10 @@ pub fn test_hook(mut game: ResMut<Game>, mut frames: Local<u32>) {
         }
     }
     game.sim.equip(me);
+    }
+    }
+    if attack_at != Some(*frames) {
+        return;
     }
     let here = game.sim.folk[me].mover.position_units();
     let foe = game

@@ -25942,7 +25942,7 @@ F025940	1401a47f0	145	ScytheLoader::readShapeDesc		physics				named		three rows 
 F025941	1401a48c0	860	ScytheLoader::readShape		physics				named		readShapeDesc; int +0x54; size vec3 +0x58 (full extents: box sides, sphere diameter, capsule diameter x and length y); 4 floats; name (len + bytes); >= 1.2 second name; 2 flags; convex mesh (type 9; before 1.2 when flagged): flag, nv, nt, nv vertices, nv normals, nt*3 u16 indices, >= 1.2 2 flags; 4 trailing flags
 F025942	1401a4df0	234	FUN_1401a4df0		unk				raw		
 F025943	1401a4ee0	264	FUN_1401a4ee0		unk				raw		
-F025944	1401a4ff0	4412	ScytheLoader::load		physics				named		.phs: f32 version; i32 actors; per actor: counts of shapes (+0x80), offsets (+0x90), 0x7c records (+0xa0), int; position vec3; f32, f32, u8; damping linear (+0x220), angular (+0x224), f32; 0x20 bytes; density (+0x22c); 8 bytes (sleep speeds); 12; 0x24; >= 1.1 u8; name ("Actor" before 1.2; then 2 bytes); >= 1.3 int; >= 1.4 int, bone name, bone position + 3 rows, u8; shapes (F025941), offsets (desc, name, scale vec3), 0x7c records. >= 1.4 model offsets. i32 joints, raw 0x264 bytes each (0x138 before 1.2): anchor +0, 3 rows +0xc, type +0x30 (1 hinge about row 1, 2 ball twisting about row 0), limits high +0x58 low +0x5c swing +0x60 (degrees), actor indices +0x6c/+0x70 (-1 none). Then lists of 0x38c records, shapes, offsets, 0x7c records (empty in ragdolls)
+F025944	1401a4ff0	4412	ScytheLoader::load		physics				named		.phs: f32 version; i32 actors; per actor: counts of shapes (+0x80), offsets (+0x90), 0x7c records (+0xa0), int +0x214; position vec3; f32 +0x30, f32 +0x218, u8 static +0x21c; density +0x220, angular damping /10 +0x224, linear damping +0x228; 0x20 bytes; mass +0x22c; sleep lin/ang vel +0x264; 12; 0x24; >= 1.1 u8; name ("Actor" before 1.2; then +0x26d, no-gravity +0x26c); >= 1.3 solver iterations +0x270 (else 4); >= 1.4 bone slot +0xb0, bone name, bone position + 3 rows, u8; shapes (F025941: density +0x68, mass +0x6c, skin +0x70), offsets, 0x7c records. >= 1.4 model offsets. i32 joints, raw 0x264 bytes each (0x138 before 1.2): see F025968. Then lists of 0x38c records, shapes, offsets, 0x7c records (empty in ragdolls)
 F025945	1401a6140	5	thunk_FUN_1401a4ff0		compiler				skip		
 F025946	1401a6910	113	FUN_1401a6910		unk				raw		
 F025947	1401a69e0	41	FUN_1401a69e0		unk				raw		
@@ -25964,10 +25964,10 @@ F025962	1401a74f0	338	FUN_1401a74f0		unk				raw
 F025963	1401a7650	338	FUN_1401a7650		unk				raw		
 F025964	1401a7a90	443	FUN_1401a7a90		unk				raw		
 F025965	1401a7cc0	101	FUN_1401a7cc0		unk				raw		
-F025966	1401a7d80	254	FUN_1401a7d80		unk				raw		
-F025967	1401a7e90	787	FUN_1401a7e90		unk				raw		
-F025968	1401a81b0	2596	FUN_1401a81b0		unk				raw		
-F025969	1401a8be0	4351	FUN_1401a8be0		unk				raw		
+F025966	1401a7d80	254	ScytheLoader::shapeCommon		physics				named	physics	shape desc from a Scythe shape record: local pose (rows, position less the actor's), group, material (physics +0x348), density +0x68, mass +0x6c, skin width +0x70; flag 0x100 from +0x3a4
+F025967	1401a7e90	787	ScytheLoader::jointCommon		physics				named	physics	joint desc: actors, global anchor and axes from the record frame (util lib); maxForce +0x74 / maxTorque +0x78 when above 0; NX_JF_COLLISION_ENABLED when +0x7c
+F025968	1401a81b0	2596	ScytheLoader::createJoint		physics				named	physics	Scythe joint record by type (+0x30): 2 spherical (limits on +0x68: twist low +0x5c high +0x58, swing +0x60, degrees -> radians, hardness 1 restitution 0; projection +0xdc/+0xe0; twist spring +0x108 (target +0x10c x 57.3), swing spring +0x118 (target x 57.3), joint spring +0x128), 1 revolute (limits, projection +0xdc/+0xe0/+0xe4, motor +0xf8 x 100000, spring +0x108 target in radians), 3/4/7/8/9 other joints; then created
+F025969	1401a8be0	4351	ScytheLoader::createActor		physics				named	physics	Scythe actor record -> NxActorDesc: density +0x220; unless static (+0x21c) an NxBodyDesc: mass +0x22c, linear damping +0x228, angular damping +0x224 x 10, sleep lin/ang vel +0x264/+0x268, solver iterations max(+0x270, 16), flags visualization | energy sleep test (| disable gravity when +0x26c), sleep energy 0.05, wake counter 0.4; shapes by type (sphere radius size.x/2 x scale, F025966), created with retries
 F025970	1401a9cf0	158	FUN_1401a9cf0		unk				raw		
 F025971	1401a9da0	245	FUN_1401a9da0		unk				raw		
 F025972	1401a9ea0	80	FUN_1401a9ea0		unk				raw		
@@ -44972,7 +44972,7 @@ F044970	1407d4470	126	FUN_1407d4470		unk				raw
 F044971	1407d4500	1628	FUN_1407d4500		unk				raw		
 F044972	1407d4b70	153	FUN_1407d4b70		unk				raw		
 F044973	1407d4c10	175	FUN_1407d4c10		thirdparty				skip		
-F044974	1407d4cd0	1466	FUN_1407d4cd0	ScythePhysicsT	thirdparty				skip		
+F044974	1407d4cd0	1466	FUN_1407d4cd0	ScythePhysicsT	thirdparty				skip		per-frame entity update: attached actor (index +0x130) woken with wakeUp(9) and posed at its character bone; nodes follow the actors
 F044975	1407d5290	684	FUN_1407d5290	ScythePhysicsT	thirdparty				skip		
 F044976	1407d6690	139	FUN_1407d6690		unk				raw		
 F044977	1407d6750	11	FUN_1407d6750		unk				raw		
@@ -45101,7 +45101,7 @@ F045099	1407dbcd0	140	FUN_1407dbcd0		unk				raw
 F045100	1407dbd70	74	FUN_1407dbd70		unk				raw		
 F045101	1407dbdc0	159	FUN_1407dbdc0		unk				raw		
 F045102	1407dbeb0	24	FUN_1407dbeb0		unk				raw		
-F045103	1407dbee0	3027	FUN_1407dbee0		unk				raw		
+F045103	1407dbee0	3027	PhysicsActual::init		physics				named	physics	PhysX SDK and scene: NxSceneDesc gravity (0,-98.1,0), maxTimestep 1/60, maxIter 16, NX_TIMESTEP_VARIABLE, hardware then software, flags 0x44; SDK params sleep lin vel^2 2.25, ang vel^2 1.96, skin width 0.25, dyn/static friction scaling 4; group collision pairs off; 4 materials and the default one: dynamic friction 1, static 20, restitution 0.05, average combine
 F045104	1407dcac0	380	FUN_1407dcac0	ScythePhysicsT	thirdparty				skip		
 F045105	1407dcc50	82	FUN_1407dcc50	_ScytheRootObjectInterfaceT	thirdparty				skip		
 F045106	1407dccb0	82	FUN_1407dccb0	PhysicsThreadedBaseInterface	physics				raw		
@@ -45109,7 +45109,7 @@ F045107	1407dcd10	111	FUN_1407dcd10	StaticBoxEntity	physics				raw
 F045108	1407dcd90	73	FUN_1407dcd90		unk				raw		
 F045109	1407dcde0	339	FUN_1407dcde0		unk				raw		
 F045110	1407dcf40	276	FUN_1407dcf40		thirdparty				skip		
-F045111	1407dd060	351	FUN_1407dd060	PhysicsActual	physics				raw		
+F045111	1407dd060	351	PhysicsActual::update	PhysicsActual	physics				named	physics	(dt): 0 while paused; simulate(min(dt, 0.04)) then fetchResults(rigid bodies, blocking); logs a failed fetch
 F045112	1407dd1d0	169	FUN_1407dd1d0		thirdparty				skip		
 F045113	1407dd280	150	FUN_1407dd280		unk				raw		
 F045114	1407dd320	416	FUN_1407dd320		thirdparty				skip		
@@ -45310,7 +45310,7 @@ F045308	1407e29a0	3	FUN_1407e29a0	_ScytheRootObjectInterfaceT	thirdparty				skip
 F045309	1407e29b0	3	FUN_1407e29b0	_ScytheRootObjectInterfaceT	thirdparty				skip		
 F045310	1407e29d0	79	FUN_1407e29d0		unk				raw		
 F045311	1407e2a30	111	FUN_1407e2a30		unk				raw		
-F045312	1407e2ae0	277	FUN_1407e2ae0	ScytheRagdollPhysicsT	thirdparty				skip		
+F045312	1407e2ae0	277	FUN_1407e2ae0	ScytheRagdollPhysicsT	thirdparty				skip		ragdoll part set-up per created actor: group; an actor following a bone (record +0xb0 >= 0) gets linear and angular damping 0.5, material physics +0x360, body flag NX_BF_FILTER_SLEEP_VEL; no bone found -> kinematic
 F045313	1407e2c00	12	FUN_1407e2c00		unk				raw		
 F045314	1407e2c20	107	FUN_1407e2c20		unk				raw		
 F045315	1407e2ca0	114	FUN_1407e2ca0		unk				raw		

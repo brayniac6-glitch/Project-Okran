@@ -29,6 +29,12 @@ pub struct Shape {
     /// Full extents: a box's sides; a sphere's diameter (x); a capsule's diameter (x) and
     /// length along its local Y (y).
     pub size: [f32; 3],
+    /// The shape's density and mass (record +0x68 / +0x6c, NxShapeDesc density / mass, F025966):
+    /// a mass above 0 is the shape's, else density x volume.
+    pub density: f32,
+    pub mass: f32,
+    /// Skin width (record +0x70, F025966); negative takes the scene's.
+    pub skin: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,10 +42,24 @@ pub struct Actor {
     pub name: String,
     /// World (bind) position of the body; its rotation is the identity.
     pub pos: [f32; 3],
-    /// Linear and angular damping.
+    /// Linear damping (+0x228) and angular damping as the file stores it (+0x224; the body
+    /// gets ten times it, F025969).
     pub damping: [f32; 2],
-    /// Density (mass from the shapes' volumes).
+    /// Density (+0x220, NxActorDesc density): scales the shapes' masses when `mass` is 0.
     pub density: f32,
+    /// Mass (+0x22c, NxBodyDesc mass): the shapes' masses scaled to it when above 0.
+    pub mass: f32,
+    /// Sleep linear and angular velocity (+0x264 / +0x268; negative takes the scene's).
+    pub sleep: [f32; 2],
+    /// Solver iteration count (+0x270; 4 in files before 1.3).
+    pub iterations: u32,
+    /// Static: no body (+0x21c).
+    pub fixed: bool,
+    /// Gravity off (+0x26c, NX_BF_DISABLE_GRAVITY).
+    pub no_gravity: bool,
+    /// The int read before the bone name (+0xb0; -1 before 1.4): at 0 or above the actor follows
+    /// a bone, and ScytheRagdollPhysicsT sets it up as a ragdoll part (F045312).
+    pub bone_slot: i32,
     /// The skeleton bone the body drives, and that bone's bind frame.
     pub bone: String,
     pub bone_frame: Frame,
@@ -70,6 +90,24 @@ pub struct Joint {
     /// The two actors joined (indices into `Phs::actors`, -1 for none); limits measure the
     /// second against the first.
     pub actors: [i32; 2],
+    /// The limits are on (+0x68, F025968).
+    pub limited: bool,
+    /// The joined bodies still collide (+0x7c, NX_JF_COLLISION_ENABLED, F025967).
+    pub collide: bool,
+    /// Springs, each when switched on: a ball joint's twist spring or a hinge's spring (+0x108),
+    /// a ball joint's swing spring (+0x118) and its joint spring (+0x128), F025968.
+    pub springs: [Option<Spring>; 3],
+    /// Projection mode, distance and angle (+0xdc / +0xe0 / +0xe4; mode 1 point-min-distance).
+    pub projection: (i32, f32, f32),
+}
+
+/// A joint spring as the file stores it (a switch byte, then target, spring, damper).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spring {
+    /// Degrees.
+    pub target: f32,
+    pub spring: f32,
+    pub damper: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -163,7 +201,8 @@ fn shape(r: &mut R, ver: f32) -> io::Result<Shape> {
     let (frame, kind) = shape_head(r)?;
     r.i32()?;
     let size = r.v3()?;
-    r.skip(16)?;
+    r.f32()?;
+    let (density, mass, skin) = (r.f32()?, r.f32()?, r.f32()?);
     r.string()?;
     if ver >= f(1.2) {
         r.string()?;
@@ -187,7 +226,7 @@ fn shape(r: &mut R, ver: f32) -> io::Result<Shape> {
         5 => ShapeKind::Capsule,
         k => ShapeKind::Other(k),
     };
-    Ok(Shape { frame, kind, size })
+    Ok(Shape { frame, kind, size, density, mass, skin })
 }
 
 /// A model offset record: description, name, scale.
@@ -217,28 +256,33 @@ pub fn parse(b: &[u8]) -> io::Result<Phs> {
         let pos = r.v3()?;
         r.f32()?;
         r.f32()?;
-        r.u8()?;
-        let lin = r.f32()?;
-        let ang = r.f32()?;
-        r.f32()?;
-        r.skip(0x20)?;
+        let fixed = r.u8()? != 0;
         let density = r.f32()?;
-        r.skip(8 + 12 + 0x24)?;
+        let ang = r.f32()?;
+        let lin = r.f32()?;
+        r.skip(0x20)?;
+        let mass = r.f32()?;
+        let sleep = [r.f32()?, r.f32()?];
+        r.skip(12 + 0x24)?;
         if version >= f(1.1) {
             r.u8()?;
         }
         let mut name = String::from("Actor");
+        let mut no_gravity = false;
         if version >= f(1.2) {
             name = r.string()?;
-            r.skip(2)?;
+            r.u8()?;
+            no_gravity = r.u8()? != 0;
         }
+        let mut iterations = 4;
         if version >= f(1.3) {
-            r.i32()?;
+            iterations = r.i32()? as u32;
         }
         let mut bone = String::new();
+        let mut bone_slot = -1;
         let mut bone_frame = Frame { pos, rows: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]] };
         if version >= f(1.4) {
-            r.i32()?;
+            bone_slot = r.i32()?;
             bone = r.string()?;
             let p = r.v3()?;
             bone_frame = Frame { pos: p, rows: [r.v3()?, r.v3()?, r.v3()?] };
@@ -253,7 +297,22 @@ pub fn parse(b: &[u8]) -> io::Result<Phs> {
             models.push(offset(&mut r)?);
         }
         r.skip(extra * 0x7c)?;
-        actors.push(Actor { name, pos, damping: [lin, ang], density, bone, bone_frame, shapes: list, offsets: models });
+        actors.push(Actor {
+            name,
+            pos,
+            damping: [lin, ang],
+            density,
+            mass,
+            sleep,
+            iterations,
+            fixed,
+            no_gravity,
+            bone_slot,
+            bone,
+            bone_frame,
+            shapes: list,
+            offsets: models,
+        });
     }
     if version >= f(1.4) {
         for _ in 0..r.count()? {
@@ -271,15 +330,33 @@ pub fn parse(b: &[u8]) -> io::Result<Phs> {
         let kind = q.i32()?;
         q.o = 0x58;
         let (high, low, swing) = (q.f32()?, q.f32()?, q.f32()?);
+        q.o = 0x68;
+        let limited = q.u8()? != 0;
         q.o = 0x6c;
         let a = q.i32()?;
         let b2 = q.i32()?;
+        q.o = 0x7c;
+        let collide = q.u8()? != 0;
+        // the version 1.2 record's later fields (springs, projection)
+        let mut springs = [None; 3];
+        let mut projection = (0, 0.0, 0.0);
+        if size == 0x264 {
+            for (k, s) in springs.iter_mut().enumerate() {
+                q.o = 0x108 + 0x10 * k;
+                if q.u8()? != 0 {
+                    q.o += 3;
+                    *s = Some(Spring { target: q.f32()?, spring: q.f32()?, damper: q.f32()? });
+                }
+            }
+            q.o = 0xdc;
+            projection = (q.i32()?, q.f32()?, q.f32()?);
+        }
         let kind = match kind {
             1 => JointKind::Hinge,
             2 => JointKind::Ball,
             k => JointKind::Other(k),
         };
-        joints.push(Joint { frame: Frame { pos, rows }, kind, high, low, swing, actors: [a, b2] });
+        joints.push(Joint { frame: Frame { pos, rows }, kind, high, low, swing, actors: [a, b2], limited, collide, springs, projection });
     }
     // what follows: 0x38c-byte records, static shapes, the lights, 0x7c-byte records (the
     // older files end sooner)

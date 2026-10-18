@@ -18,7 +18,7 @@ fn main() {
             && let Some(w) = std::env::var("CENSUS_TRACE").ok().and_then(|v| v.parse::<usize>().ok())
         {
             let p = &sim.folk[w];
-            println!("t {:.0} {w} at {:?} speed {:.1} queue {:?}", sim.t, p.mover.position_units().map(|v| v as i32), p.speed, p.ai.queue.iter().map(|s| (s.task, s.target)).collect::<Vec<_>>());
+            println!("t {:.0} {w} at {:?} town {:?} inside {:?} home {:?} speed {:.1} queue {:?}", sim.t, p.mover.position_units().map(|v| v as i32), p.town.map(|t| sim.towns[t].name.clone()), p.inside.map(|b| sim.data.get(&sim.placed[b].building).map_or(sim.placed[b].building.clone(), |r| r.name.clone())), p.home.map(|b| (b, sim.data.get(&sim.placed[b].building).map_or(sim.placed[b].building.clone(), |r| r.name.clone()))), p.speed, p.ai.queue.iter().map(|s| (s.task, s.target)).collect::<Vec<_>>());
         }
         if sim.tick.is_multiple_of(60) {
             for p in &sim.folk {

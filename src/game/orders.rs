@@ -680,9 +680,8 @@ impl Sim {
 /// enemies, ...), its follow-up (+0x10) added after it, the JOBS toggle turned on; any other
 /// order is just given. A kind whose definition's +0x08 is clear is kept once, whatever its
 /// target. Its target is the clicked thing as the right click names it: a person, furniture
-/// (`production::FURN_TARGET` + index) or a building (`base::BUILDING_OWNER` + index).
-/// (stand-in) Each job is carried out as the order it stands for, when the character is idle
-/// (`do_job`), not planned; Attacking enemies is the goal the hold stance also gives.
+/// (`production::FURN_TARGET` + index) or a building (`base::BUILDING_OWNER` + index). The
+/// job list is the AI's goals list, ranked in its order and planned (crate::jobs).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Job {
     /// The AI_TASK the job runs (0 in saves from before: taken from the target).
@@ -723,8 +722,8 @@ pub enum StanceOrder {
 
 impl Sim {
     /// The order a quick right click on `target` gives one of the player's people (its AI_TASK):
-    /// someone standing attacked, someone down lifted (68), training equipment trained on, a
-    /// building built (repaired when damaged) or used.
+    /// someone standing attacked, someone down lifted (68), training equipment (a town's or the
+    /// player's) trained on, a building built (repaired when damaged) or used.
     pub fn order_task_of(&self, target: usize) -> Option<u16> {
         if let Some(f) = target.checked_sub(crate::production::FURN_TARGET) {
             return self.furn.get(f).is_some_and(|k| k.function == crate::production::FUNCTION_TRAINING).then_some(TRAINING);
@@ -738,6 +737,8 @@ impl Sim {
                 Some(BUILDING)
             } else if self.needs_repair(b) {
                 Some(REPAIRING)
+            } else if self.training(b).is_some() {
+                Some(TRAINING)
             } else if self.is_operated(b) {
                 Some(OPERATING_MACHINE)
             } else {
@@ -824,74 +825,6 @@ impl Sim {
                 }
             }
         }
-    }
-
-    /// The order a job gives one of the player's people, when it can still be done: Engineer
-    /// builds its building, else repairs it, else (assumption: its finder not ported) the
-    /// nearest of the player's buildings unfinished or damaged; Operating machine uses its
-    /// building; Training trains on its equipment. Attacking enemies is a goal of the AI's
-    /// (`sim`), not an order. A job from before (no task) is taken as its target's order.
-    pub fn do_job(&mut self, id: usize, job: &Job) -> bool {
-        let me = [id];
-        let target = job.target;
-        let task = if job.task != 0 { job.task } else { match self.order_task_of(target).and_then(job_form) { Some((t, _)) => t, None => return false } };
-        match task {
-            ENGINEER => {
-                let at = self.folk[id].mover.position_units();
-                let own = target.checked_sub(crate::base::BUILDING_OWNER).filter(|&b| self.buildings.get(b).is_some_and(|pb| !pb.done || self.needs_repair(b)));
-                let b = own.or_else(|| {
-                    (0..self.buildings.len())
-                        .filter(|&b| self.buildings[b].confirmed && (!self.buildings[b].done || self.needs_repair(b)))
-                        .min_by(|&x, &y| {
-                            let d = |b: usize| (self.buildings[b].at[0] - at[0]).hypot(self.buildings[b].at[2] - at[2]);
-                            d(x).total_cmp(&d(y))
-                        })
-                });
-                let Some(b) = b else { return false };
-                if self.buildings[b].done {
-                    self.order_repair(&me, b);
-                } else {
-                    self.order_build(&me, b);
-                }
-                true
-            }
-            OPERATING_MACHINE => {
-                let Some(b) = target.checked_sub(crate::base::BUILDING_OWNER) else { return false };
-                if !self.buildings.get(b).is_some_and(|pb| pb.done) || !self.is_operated(b) {
-                    return false;
-                }
-                self.order_operate(&me, b);
-                true
-            }
-            TRAINING => {
-                let Some(f) = target.checked_sub(crate::production::FURN_TARGET) else { return false };
-                if !self.furn.get(f).is_some_and(|k| k.function == crate::production::FUNCTION_TRAINING) {
-                    return false;
-                }
-                self.order_train_at(&me, f);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Whether one of the player's people is free for its jobs: JOBS on, a job, up and out of
-    /// the fight, no order and nothing planned but standing about.
-    pub fn free_for_jobs(&self, id: usize) -> bool {
-        let Some(p) = self.folk.get(id) else { return false };
-        p.player
-            && p.jobs_on
-            && !p.jobs.is_empty()
-            && !p.down
-            && !p.dead
-            && p.carrying.is_none()
-            && !self.arena.f[id].active
-            && p.ai.orders.is_empty()
-            && p.operating.is_none()
-            && p.fetch.is_none()
-            && p.haul.is_none()
-            && p.pickup.is_none()
-            && p.ai.current.as_ref().is_none_or(|c| c.task == kenshi_ai::task_system::IDLE)
     }
 
     pub fn has_stance(&self, id: usize, which: StanceOrder) -> bool {

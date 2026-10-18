@@ -41,6 +41,9 @@ pub struct Item {
     pub model: Option<String>,
     /// Branded as a faction's uniform (CHARACTER "wears uniform"): that faction.
     pub uniform: Option<String>,
+    /// Its owners (Item +0x140, the original owner's handle): a faction; none for one's own.
+    /// An item whose owners are not its holder's faction is loot (F044581).
+    pub owner: Option<String>,
     /// A backpack's storage (CONTAINER "storage size width / height": its own grid) and what
     /// its contents weigh against their own weight ("encumbrance effect", F043920 +0x23c).
     /// (assumption) the contents' weight is the effect times theirs.
@@ -95,6 +98,7 @@ impl Item {
             maker: None,
             model: None,
             uniform: None,
+            owner: None,
             contents: (kind == Some(ItemType::Container)).then(|| int("storage size width").zip(int("storage size height"))).flatten().filter(|&(w, h)| w > 0 && h > 0).map(|(w, h)| Inventory {
                 sections: vec![Section::new("main", w as u32, h as u32, ANY)],
             }),
@@ -427,11 +431,24 @@ impl Inventory {
         self.sections.iter().filter(|s| s.is_equipment()).flat_map(|s| s.items.iter().map(|p| &p.item))
     }
 
-    /// A CHARACTER template's starting kit: its "clothing" (worn), "weapons" (equipped) and
-    /// "inventory" items, each entry (count, chance %) rolled with `roll` (0..100).
+    /// Put `item` in the first free place of section `s` (one that takes it), else back.
+    #[allow(clippy::result_large_err)]
+    pub fn add_to(&mut self, s: usize, item: Item) -> Result<(), Item> {
+        match self.sections.get(s).filter(|sec| sec.takes(&item)).and_then(|sec| sec.first_fit(&item)) {
+            Some((x, y)) => self.put(s, item, x, y),
+            None => Err(item),
+        }
+    }
+
+    /// A CHARACTER template's starting kit: its "clothing" (worn) and "inventory" items, each
+    /// entry (count, chance %) rolled with `roll` (0..100), and its weapons (`template_weapons`).
     pub fn from_template(data: &GameDataContainer, character: &GameData, roll: &mut impl FnMut() -> f32) -> Inventory {
         let mut inv = Inventory::character();
         for (cat, equip) in [("clothing", true), ("weapons", true), ("inventory", false)] {
+            if cat == "weapons" {
+                inv.template_weapons(data, character, roll);
+                continue;
+            }
             // (assumption) a template's clothing is tried in random order, so of those for a slot
             // that pass their chance a random one is worn (Kenshi's own choice, F030256's
             // catalogue by slot and class, is not ported); in list order every character of a
@@ -462,6 +479,61 @@ impl Inventory {
             }
         }
         inv
+    }
+
+    /// @fn F040052
+    ///
+    /// A CHARACTER template's "weapons": of the entries whose first value is above 0, those
+    /// whose second is 0 are the hip's and the rest the back's, each weighing its third value
+    /// (0 counts 100). For each list (the hip's first) a roll of 0 .. 100 under the list's total
+    /// weight takes the entry whose running total first passes it; the weapon made (by a maker
+    /// of the "weapon level" list, `make_one`) goes in its section ("hip", "back"), else
+    /// the inventory takes it (its add, equipping: vtable 0x10 with 1).
+    fn template_weapons(&mut self, data: &GameDataContainer, character: &GameData, roll: &mut impl FnMut() -> f32) {
+        let mut lists: [Vec<(&str, f32)>; 2] = [Vec::new(), Vec::new()];
+        for (sid, v) in character.refs("weapons") {
+            if v.first().copied().unwrap_or(0) <= 0 {
+                continue;
+            }
+            let w = match v.get(2).copied().unwrap_or(0) {
+                0 => 100.0,
+                w => w as f32,
+            };
+            if w <= 0.0 {
+                continue;
+            }
+            let back = v.get(1).copied().unwrap_or(0) != 0;
+            lists[back as usize].push((sid.as_str(), w));
+        }
+        let mut picks: Vec<(&str, &str)> = Vec::new();
+        for (list, section) in lists.iter().zip(["hip", "back"]) {
+            if list.is_empty() {
+                continue;
+            }
+            let total: f32 = list.iter().map(|e| e.1).sum();
+            let r = roll();
+            if r >= total {
+                continue;
+            }
+            let mut acc = 0.0;
+            if let Some((sid, _)) = list.iter().find(|e| {
+                acc += e.1;
+                r < acc
+            }) {
+                picks.push((sid, section));
+            }
+        }
+        for (sid, section) in picks {
+            let Some(r) = data.get(sid) else { continue };
+            let item = make_one(data, character, r, roll);
+            let placed = match self.section(section) {
+                Some(s) => self.add_to(s, item),
+                None => Err(item),
+            };
+            if let Err(item) = placed {
+                self.add(item, true);
+            }
+        }
     }
 }
 
@@ -506,6 +578,7 @@ mod tests {
             maker: None,
             model: None,
             uniform: None,
+            owner: None,
             icon: None,
             food: None,
             medkit: None,

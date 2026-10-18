@@ -245,23 +245,13 @@ impl Sim {
             .map(|(k, _)| k)
     }
 
-    /// The "Training" order on town training equipment `f` (Task_UseTrainingDummy): each walks
-    /// up to it (within its "use range") and trains there until given another order.
-    /// (assumption) Townsfolk using it do not keep the player off it.
+    /// The "Training" order on town training equipment `f` (97, Task_UseTrainingDummy): an
+    /// order on the task system's list for each of `ids`, planned (crate::jobs): walked up to,
+    /// trained on until given another order (its operator slot taken).
     pub fn order_train_at(&mut self, ids: &[usize], f: usize) {
-        let Some(furn) = self.furn.get(f) else { return };
-        let (at, reach) = (furn.position, furn.use_range.max(10.0) * 0.6);
-        for &id in ids {
-            if self.folk.get(id).is_none_or(|p| p.down || p.dead) {
-                continue;
-            }
-            let me = self.folk[id].mover.position_units();
-            let (dx, dz) = (me[0] - at[0], me[2] - at[2]);
-            let d = dx.hypot(dz).max(1e-3);
-            self.order_move(&[id], [at[0] + dx / d * reach, at[1], at[2] + dz / d * reach]);
-            self.trainees.retain(|(o, ..)| *o != id);
-            self.trainees.push((id, f, 0.0));
-        }
+        let Some(at) = self.furn.get(f).map(|k| k.position) else { return };
+        let ids: Vec<usize> = ids.iter().copied().filter(|&id| self.folk.get(id).is_some_and(|p| !p.down && !p.dead)).collect();
+        self.order_task(&ids, crate::jobs::TRAINING, crate::sim::Target::Furniture(f), at);
     }
 
     /// @fn F029286
@@ -346,23 +336,16 @@ impl Sim {
         (0..self.buildings.len()).filter(|&b| self.buildings[b].done && !self.crafts(b).is_empty()).collect()
     }
 
-    /// Order characters to operate building `b` (Task_OperateMachine): each walks to it and
-    /// works it.
+    /// "Operate" (order 87, Operating machine: Task_OperateMachine) on building `b`: an order on
+    /// the task system's list for each of `ids`, planned (crate::jobs): walked to and worked.
     pub fn order_operate(&mut self, ids: &[usize], b: usize) {
         let Some(site) = self.buildings.get(b) else { return };
         if !self.is_operated(b) {
             return;
         }
-        let (at, r) = (site.at, site.radius);
-        for &id in ids {
-            if self.folk.get(id).is_some_and(|p| !p.down) {
-                let me = self.folk[id].mover.position_units();
-                let (dx, dz) = (me[0] - at[0], me[2] - at[2]);
-                let d = dx.hypot(dz).max(1e-3);
-                self.order_move(&[id], [at[0] + dx / d * r, at[1], at[2] + dz / d * r]);
-                self.folk[id].operate = Some(b);
-            }
-        }
+        let at = site.at;
+        let ids: Vec<usize> = ids.iter().copied().filter(|&id| self.folk.get(id).is_some_and(|p| !p.down)).collect();
+        self.order_task(&ids, crate::jobs::OPERATING_MACHINE, crate::sim::Target::Building(b), at);
     }
 
     /// Whether character `id` is at building `b` (within its radius + 40).

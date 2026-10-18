@@ -41,3 +41,28 @@ pub const TUTORIALS: &[(&str, &str, u64, &[u64])] = &[
     ("Tutorial_Prospecting", "F050213", 0x1416bc7e0, &[0x141740d90, 0x141740c30]),
     ("Tutorial_MissingLimb", "F050216", 0x1417410b8, &[0x141740ff0, 0x141740ea0]),
 ];
+
+/// Each tutorial's pages' GUI pointers, for those with any: the case its step's onStart (its
+/// vtable's slot 0) gives TutorialGUI's setPointer (F049763; F049757 the cases), 0 none. Made by
+/// the session's tutptr.py from the step constructors (the callers of F049748).
+pub const POINTERS: &[(&str, &[u8])] = &[
+    ("Tutorial_BasicControls", &[0, 1, 0, 0, 0]),
+    ("Tutorial_GUIOverview", &[0, 2, 6, 16, 17, 18, 20, 24]),
+    ("Tutorial_Injured_Intro", &[6, 0]),
+    ("Tutorial_Injured_FirstAid", &[0, 29, 0, 8, 9, 10, 0]),
+    ("Tutorial_UnderAttack", &[0, 0, 0, 25]),
+    ("Tutorial_HiredRecruit", &[0, 22, 0, 21]),
+    ("Tutorial_KOdWithNonUnconsciousPC", &[0, 0, 30]),
+    ("Tutorial_HowToBounties", &[19, 0, 0, 0]),
+    ("Tutorial_PlayingDead", &[7, 0]),
+    ("Tutorial_PermaJobs", &[26, 0, 0, 27]),
+    ("Tutorial_BeignSlave", &[0, 28, 0, 0]),
+    ("Tutorial_Disguises", &[0, 7, 0]),
+    ("Tutorial_MachineFull", &[7, 0]),
+    ("Tutorial_BuildingForSale", &[3, 0]),
+    ("Tutorial_ProductionBuilding", &[0, 0, 3, 0, 0, 0, 0, 0]),
+    ("Tutorial_HowToCraft", &[23, 31, 0, 32, 0, 0, 0]),
+    ("Tutorial_HowToCraft_NoCraftingBench", &[18, 0, 0]),
+    ("Tutorial_Research_Benches", &[18, 0]),
+    ("Tutorial_Research_Built", &[0, 0, 23, 0]),
+];

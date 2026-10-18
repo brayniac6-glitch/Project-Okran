@@ -15,8 +15,11 @@
 //! PULSE sin(4 T) x 0.5 + 0.5 (not drawn at 0), SHIMMER sin(30 T) x sin(17 T) x 0.05 + 0.95,
 //! anything else (FLICKER too) 1; T is the sky's game hours (day x 24 + hour, Sky +0xa0) x 60,
 //! the same for every light. A light's variance is drawn from -variance to +variance.
-//! Not ported: the parameter's x (F045912's third argument, from the building's town handle,
-//! F037795) keeps a light dark by day (daylight over 0.1, F040781).
+//! The parameter's x (F045912's third argument cleared: F037795 passes whether the light's
+//! building stands inside another and is not "outside") marks a light out of doors: the light
+//! pass draws such a light only while the daylight (F040781) is 0.1 or less, so it is dark by
+//! day; an indoor one ([`IndoorLight`]) is lit day and night and shown with its building's
+//! interior (F037794 makes it hidden; the interior's opening shows it).
 use bevy::prelude::*;
 use kenshi_data::{GameData, GameDataContainer};
 
@@ -31,6 +34,14 @@ pub struct LocalLight {
     pub colour: Vec3,
     pub power: f32,
     pub effect: i32,
+}
+
+/// A light of furniture inside a building (F037795): its zone and building (placement index);
+/// lit day and night, shown while the building's interior is open.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct IndoorLight {
+    pub zone: (i32, i32),
+    pub building: usize,
 }
 
 /// The sky's game hours (Sky +0xa0: day x 24 + hour) the light effects run on; the game sets it

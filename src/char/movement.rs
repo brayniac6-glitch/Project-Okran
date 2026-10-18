@@ -77,6 +77,54 @@ pub struct Mover {
     pub max_speed: f32,
     /// Reached the goal on the last step (+0x80).
     pub arrived: bool,
+    /// The deepest neighbour's push found last tick (F024363): the normal away from it and the
+    /// depth (m), which the next steer bends the velocity by. (assumption) Kenshi finds it inside
+    /// steer; here the crowd / arena pass after the step sets it for the next one.
+    pub avoid: Option<([f32; 3], f32)>,
+}
+
+/// A neighbour as the push test sees it: position and radius (m).
+#[derive(Debug, Clone, Copy)]
+pub struct Neighbour {
+    pub position: [f32; 3],
+    pub radius: f32,
+}
+
+/// @fn F024363
+///
+/// The push a mover at `me` (radius `radius`, m) gets from its neighbours, if any: the deepest
+/// overlap on the ground plane (the other's position taken at its height) of their radii
+/// together R, its depth (R - d) x (0.5 + (R_other - R_me) / R) so the smaller one gives way
+/// more, along the line from it; in combat mode (Character +0xe0) a fiftieth of that. Exactly on
+/// another (within 0.001): a random direction (Kenshi's (r - 0.5, r - 0.5, r x 0.5), the
+/// height dropped here) as deep as max(own radius m, the other's in units) x 0.1, at once.
+/// `rand` gives numbers in 0..1. Returns the normal and depth; None under 0.001.
+/// (not ported) A path-following mover whose goal the other stands on (within its radius) has
+/// its path state +0x88 set to 1; the rewrite's path state has no traced equivalent.
+pub fn neighbour_push(me: [f32; 3], radius: f32, others: &[Neighbour], combat: bool, mut rand: impl FnMut() -> f32) -> Option<([f32; 3], f32)> {
+    let mut best: Option<([f32; 3], f32)> = None;
+    for o in others {
+        let (dx, dz) = (me[0] - o.position[0], me[2] - o.position[2]);
+        if dx.abs() <= 0.001 && dz.abs() <= 0.001 {
+            let (r1, r2, r3) = (rand(), rand(), rand());
+            let _ = r2;
+            let n = [r3 - 0.5, 0.0, r1 * 0.5];
+            let depth = radius.max(o.radius * 10.0) * 0.1;
+            return Some((n, depth));
+        }
+        let sum = radius + o.radius;
+        let d2 = dx * dx + dz * dz;
+        if d2 >= sum * sum {
+            continue;
+        }
+        let d = d2.sqrt();
+        let depth = ((sum - d) * ((o.radius - radius) / sum + 0.5)).max(0.0);
+        if best.is_none_or(|b| depth > b.1) {
+            best = Some(([dx / d, 0.0, dz / d], depth));
+        }
+    }
+    let (n, depth) = best.filter(|b| b.1 >= 0.001)?;
+    Some((n, if combat { depth * 0.02 } else { depth }))
 }
 
 impl Mover {
@@ -92,6 +140,7 @@ impl Mover {
             acceleration,
             max_speed: 0.0,
             arrived: false,
+            avoid: None,
         }
     }
 
@@ -141,10 +190,28 @@ impl Mover {
     /// @fn F024364
     ///
     /// Turn the velocity toward `direction` (unit length, or zero to stop) at full speed, changing
-    /// it by at most acceleration * dt. (Havok's local avoidance, which bends the desired velocity
-    /// around nearby characters first, is the replacement's job.)
+    /// it by at most acceleration * dt, the desired velocity first bent by the neighbour push in
+    /// `avoid` (F024363, Kenshi's own, not Havok's). (not ported) Kenshi also moves the position
+    /// by the push here; the crowd / arena pass does that instead.
     pub fn steer(&mut self, direction: [f32; 3], dt: f32) {
-        let desired = direction.map(|d| d * self.max_speed);
+        let mut desired = direction.map(|d| d * self.max_speed);
+        // pushed by a neighbour (F024363): heading within ~37 degrees of straight into it, half
+        // the heading turned aside is added (toward the side it already leans); then the push
+        // normal times max(depth, 0.01)
+        if let Some((n, depth)) = self.avoid.take() {
+            let dot = desired[0] * n[0] + desired[1] * n[1] + desired[2] * n[2];
+            let len = length(desired);
+            if dot < 0.0 && len > 0.0 && dot / len < -0.8 {
+                let k = if desired[2] * n[0] - desired[0] * n[2] < 0.0 { -0.5 } else { 0.5 };
+                let side = [desired[2], 0.0, -desired[0]];
+                for (v, s) in desired.iter_mut().zip(side) {
+                    *v += k * s;
+                }
+            }
+            for (v, c) in desired.iter_mut().zip(n) {
+                *v += depth.max(0.01) * c;
+            }
+        }
         let mut dv: [f32; 3] = std::array::from_fn(|k| desired[k] - self.velocity[k]);
         let len = length(dv);
         let limit = dt * self.acceleration;

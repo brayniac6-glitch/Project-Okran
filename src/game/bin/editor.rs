@@ -413,38 +413,45 @@ fn texts(commands: &mut Commands, ed: &Editor, game: &Game) {
     }
 }
 
-/// The race stats panel's rows (F039457): "Hit Points:" and the character's health, "No
-/// bleeding" for a race that does not bleed, then each skill the race is good or bad at with its
-/// change ("{1,num}%").
-/// (assumption) Kenshi's race skill multipliers are taken as "stats good" / "stats bad" at 1.2
-/// and 0.8 (the +20% its editor shows), listed in the record's order, good then bad; the health
-/// is the most a body part of the character takes.
-fn race_stats(r: &kenshi_data::GameData, medical: Option<&kenshi_char::medical::Medical>) -> Vec<(String, String, Color)> {
+/// @fn F039457
+///
+/// The race stats panel's rows: "Hit Points:" and the character's health (+ 0.01, in
+/// #afa68b), "+No bleeding" in #a8b774 for a race bleeding under 0.1, then the race's skill
+/// multipliers (RaceData +0xa0, F033689: 1.2 its "stats good", 0.8 its "stats bad"), first
+/// those over 1 ("+{1,num}%" of (mult - 1) x 100 in #a8b774), then those under ((mult - 0.999)
+/// x 100, rounded, "{1,num}%" in #bf4834), each named in #afa68b. (stand-in) Kenshi walks its
+/// hash map of them; here the record's order. The health is the most a body part of the
+/// character takes.
+fn race_stats(r: &kenshi_data::GameData, medical: Option<&kenshi_char::medical::Medical>) -> Vec<(String, Color, String, Color)> {
     let hp = medical.map_or(100.0, |m| m.parts.iter().map(|p| p.max_health()).fold(0.0, f32::max));
-    let mut rows = vec![("Hit Points:".to_string(), format!("{}", (hp + 0.5) as i32), STAT_TEXT)];
-    if r.floats.get("bleed rate").copied().unwrap_or(1.0) <= 0.0 {
-        rows.push(("No bleeding".to_string(), String::new(), STAT_GOOD));
+    let mut rows = vec![("Hit Points:".to_string(), STAT_TEXT, format!("{}", (hp + 0.01) as i32), STAT_TEXT)];
+    if r.floats.get("bleed rate").copied().unwrap_or(1.0) < 0.1 {
+        rows.push(("+No bleeding".to_string(), STAT_GOOD, String::new(), STAT_TEXT));
     }
     for (key, mult) in [("stats good", 1.2f32), ("stats bad", 0.8)] {
         for k in 0..8 {
             let Some(&id) = r.ints.get(&format!("{key}{k}")) else { break };
             let Some(n) = super::stats_ui::stat_name(id) else { continue };
-            let pct = ((mult - 1.0) * 100.0).round() as i32;
-            let (v, c) = if pct > 0 { (format!("+{pct}%"), STAT_GOOD) } else { (format!("{pct}%"), STAT_BAD) };
-            rows.push((format!("{n}"), v, c));
+            let (v, c) = if mult > 1.0 {
+                (format!("+{}%", ((mult - 1.0) * 100.0).round() as i32), STAT_GOOD)
+            } else {
+                (format!("{}%", ((mult - 0.999) * 100.0).round() as i32), STAT_BAD)
+            };
+            rows.push((format!("{n}"), STAT_TEXT, v, c));
         }
     }
     rows
 }
 
-/// The stats panel's colours (assumption: Kenshi's colour globals are not read yet).
-const STAT_TEXT: Color = Color::srgb(0.78, 0.73, 0.62);
-const STAT_GOOD: Color = Color::srgb(0.62, 0.78, 0.52);
-const STAT_BAD: Color = Color::srgb(0.85, 0.42, 0.36);
+/// The stats panel's colours, the game's colour strings (`hud_ui::tag`): 0x141f49248
+/// "#afa68b", 0x141f49310 "#a8b774", 0x141f492e8 "#bf4834".
+const STAT_TEXT: Color = super::hud_ui::TAN;
+const STAT_GOOD: Color = super::hud_ui::GREEN;
+const STAT_BAD: Color = super::hud_ui::tag(0xbf4834);
 
 /// A plain panel's rows: a label at its left and a value in a column at its right (made again
 /// each time).
-struct SetRows(Entity, Vec<(String, String, Color)>);
+struct SetRows(Entity, Vec<(String, Color, String, Color)>);
 
 impl Command for SetRows {
     type Out = ();
@@ -471,8 +478,8 @@ impl Command for SetRows {
                 ..default()
             })
             .id();
-        for (label, value, colour) in self.1 {
-            let a = world.spawn((Node { width: Val::Percent(68.0), ..default() }, Text::new(label), tf(), TextColor(STAT_TEXT))).id();
+        for (label, label_colour, value, colour) in self.1 {
+            let a = world.spawn((Node { width: Val::Percent(68.0), ..default() }, Text::new(label), tf(), TextColor(label_colour))).id();
             let b = world.spawn((Node { width: Val::Percent(32.0), ..default() }, Text::new(value), tf(), TextColor(colour))).id();
             let row = world.spawn(Node { flex_direction: FlexDirection::Row, width: Val::Percent(100.0), ..default() }).add_children(&[a, b]).id();
             world.entity_mut(col).add_child(row);

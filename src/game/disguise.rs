@@ -553,14 +553,18 @@ impl Sim {
     /// (noticed). Seen (the visibility F046498 above 0), awake and alert, the meter is set to
     /// fill in lerp(visibility, 5 x time, time) x lerp(alertness, 4, 1) seconds; not seen, it
     /// stops filling.
+    /// With the line of sight blocked (F046499) the entry is dropped: the meter starts over.
     /// (not ported) The meter also fills for an observer with no alertness while its state
-    /// object's +0xb4 is set (unknown); the line of sight (F046499, a physics ray from the
-    /// observer's eyes, the entry dropped when blocked) is not cast: `visibility` alone decides.
+    /// object's +0xb4 is set (unknown).
     fn notice_meter(&mut self, observer: usize, t: usize, time: f32, _dt: f32) -> bool {
         let alert = self.alertness(observer);
         let vis = self.visibility(observer, t);
         let entry = self.recognition.notice.get(&(observer, t)).copied();
         if alert <= 0.0 || vis <= 0.0 {
+            return false;
+        }
+        if !self.line_of_sight(observer, t) {
+            self.recognition.notice.remove(&(observer, t));
             return false;
         }
         let rate = (5.0 * time + (time - 5.0 * time) * vis) * (4.0 - 3.0 * alert);

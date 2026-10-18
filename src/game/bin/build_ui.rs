@@ -361,6 +361,7 @@ pub fn toggle(
     assets: Res<AssetServer>,
     windows: Query<&Window>,
     hud: Option<Res<hud_ui::Hud>>,
+    shown: Option<Res<super::OpenBuildings>>,
 ) {
     let mut toggled = act.just("toggle_build");
     for c in clicks.read() {
@@ -407,7 +408,16 @@ pub fn toggle(
         commands.queue(SetCaption(e, String::new()));
     }
     if let Some(e) = ui.get("FloorText") {
-        commands.queue(SetCaption(e, "Floor 1".to_string()));
+        // F036258: "Floor {1,num}", the floor shown
+        commands.queue(SetCaption(e, format!("Floor {}", shown.as_ref().map_or(0, |o| o.floor))));
+    }
+    // F036258: the floor arrows' tips (the game's tooltip)
+    for (name, key) in [("FloorArrowDown", "Page Down"), ("FloorArrowUp", "Page Up")] {
+        if let Some(e) = ui.get(name) {
+            commands.entity(e).insert(super::inventory_ui::ItemTip(format!(
+                "Change the selected floor, use to move to a certain floor of a building, 0 is ground floor (also: {key} key)"
+            )));
+        }
     }
     let font = |name: &str| gui.0.fonts.get(name).map_or((Handle::default(), 14.0), |f| (assets.load(f.file.clone()), f.screen_px()));
     let mut categories: Vec<String> = Vec::new();

@@ -28,9 +28,14 @@ struct Open {
 #[derive(Component)]
 pub struct Reply(usize);
 
-/// (assumption, by eye from Kenshi) a reply's colour, and hovered.
-const REPLY: Color = Color::srgb(0.86, 0.8, 0.62);
-const REPLY_HOVER: Color = Color::srgb(1.0, 0.95, 0.8);
+/// A reply's colour, and under the mouse: kenshi_colours.xml's "DialogueTextOption" (#b3b3b3)
+/// and "DialogueTextOptionHover" (#00ff00), the window's (F043043) and set on its replies each
+/// frame (F043060).
+const REPLY: Color = Color::srgb(0xb3 as f32 / 255.0, 0xb3 as f32 / 255.0, 0xb3 as f32 / 255.0);
+const REPLY_HOVER: Color = Color::srgb(0.0, 1.0, 0.0);
+/// The NPC's line: NpcDialog's (Kenshi_EditBoxStrechEmpty) client, Kenshi_TextboxStandardText's
+/// "TextColour" (the window sets none).
+const NPC_LINE: Color = Color::srgb(0.0784314, 0.0313726, 0.0235294);
 
 /// How near (units) to talk.
 const TALK_REACH: f32 = 60.0;
@@ -64,9 +69,10 @@ fn fill(commands: &mut Commands, o: &mut Open, game: &Game) {
     if let Some(panel) = o.ui.get("NpcDialog") {
         let t = commands
             .spawn((
-                Text::new(o.conv.npc_text.clone()),
+                // (F040907: "Language censorship")
+                Text::new(super::options_ui::censor(&o.conv.npc_text)),
                 tf(px),
-                TextColor(Color::srgb(0.93, 0.9, 0.82)),
+                TextColor(NPC_LINE),
                 Node { margin: UiRect::all(Val::Px(4.0)), ..default() },
             ))
             .id();
@@ -96,7 +102,7 @@ fn fill(commands: &mut Commands, o: &mut Open, game: &Game) {
                 Reply(k),
             ))
             .with_child((
-                Text::new(format!("{}. {text}", k + 1)),
+                Text::new(format!("{}. {}", k + 1, super::options_ui::censor(text))),
                 tf(px),
                 TextColor(REPLY),
             ))
@@ -193,7 +199,7 @@ pub fn update(
             }
             match game.sim.talk(npc, me) {
                 Some(conv) => {
-                    let line = format!("{}: {}", name_of(&game, conv.npc), conv.npc_text);
+                    let line = format!("{}: {}", name_of(&game, conv.npc), super::options_ui::censor(&conv.npc_text));
                     super::log(&mut game.log, line);
                     let o = open(&mut commands, &gui.0, &assets, &game, conv, size);
                     win.open = Some(o);
@@ -219,7 +225,7 @@ pub fn update(
         if conv.choices.is_empty() {
             return;
         }
-        let line = format!("{}: {}", name_of(&game, conv.npc), conv.npc_text);
+        let line = format!("{}: {}", name_of(&game, conv.npc), super::options_ui::censor(&conv.npc_text));
         super::log(&mut game.log, line);
         let o = open(&mut commands, &gui.0, &assets, &game, conv, size);
         win.open = Some(o);
@@ -249,7 +255,8 @@ pub fn update(
     for (i, kids) in buttons.iter_mut() {
         for k in kids.iter() {
             if let Ok(mut c) = colours.get_mut(k) {
-                c.0 = if *i == Interaction::Hovered { REPLY_HOVER } else { REPLY };
+                // (the mouse over it, held down too)
+                c.0 = if *i != Interaction::None { REPLY_HOVER } else { REPLY };
             }
         }
     }

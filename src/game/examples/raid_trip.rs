@@ -33,7 +33,9 @@ fn main() {
         sim.step();
         // (testing) the player's people go down once raiders are near: the victory plays out
         // (RAID_NO_KO: they stay up, to see the raiders' announcement)
-        if !knocked && std::env::var("RAID_NO_KO").is_err() && sim.tick.is_multiple_of(60) {
+        // (RAID_KO_AFTER: only once a campaign is past its approach, its announcement made)
+        let assault = std::env::var("RAID_KO_AFTER").is_err() || sim.world.phases.values().any(|p| p.phase >= 1);
+        if !knocked && assault && std::env::var("RAID_NO_KO").is_err() && sim.tick.is_multiple_of(60) {
             let near = sim.folk.iter().any(|p| {
                 p.world_squad.is_some() && !p.away && players.iter().any(|&i| {
                     let (a, b) = (p.mover.position_units(), sim.folk[i].mover.position_units());
@@ -51,12 +53,13 @@ fn main() {
         }
         // RAID_SQUADS: each campaign squad's place, route left and people every 30 s
         if std::env::var("RAID_SQUADS").is_ok() && sim.tick.is_multiple_of(1800) {
-            for (k, q) in sim.world.squads.iter().enumerate().filter(|(_, q)| q.alive && matches!(q.goal, kenshi_game::world::Goal::Campaign { .. })) {
+            for (k, q) in sim.world.squads.iter().enumerate().filter(|(_, q)| q.alive && matches!(q.goal, kenshi_game::world::Goal::Campaign { .. } | kenshi_game::world::Goal::Home { .. }) && !q.members.is_empty()) {
                 let people: Vec<String> = q.members.iter().map(|&m| {
                     let p = &sim.folk[m];
                     format!("{m}@{:?} {:?} q{:?}", p.mover.position_units().map(|v| v as i32), p.ai.current.as_ref().map(|c| c.task), p.ai.queue.iter().map(|s| s.task).collect::<Vec<_>>())
                 }).collect();
-                println!("squad {k} t {:.0}: at {:?} route {} won {:?} people {}", sim.t, q.pos.map(|v| v as i32), q.route.len(), q.won, people.join(", "));
+                let home = matches!(q.goal, kenshi_game::world::Goal::Home { .. });
+                println!("squad {k} t {:.0}: {}at {:?} route {} won {:?} active {} people {}", sim.t, if home { "going home, " } else { "" }, q.pos.map(|v| v as i32), q.route.len(), q.won, q.active, people.join(", "));
             }
         }
         // RAID_DOWN: each one who goes down, and why it might be

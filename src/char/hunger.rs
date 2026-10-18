@@ -23,9 +23,14 @@ pub enum Activity {
     Normal,
 }
 
+/// CharStats +0x178, the "Current work:" line of the hunger rate's tooltip: (assumption) 1,
+/// its writer not traced.
+pub const CURRENT_WORK_RATE: f32 = 1.0;
+
 /// @fn F047009
 ///
-/// `activity_factor` is the character state's multiplier (+0x70), `base` the stats' rate (+0x178).
+/// `activity_factor` is the race's "hunger rate" (the race data +0x70, Character vtable +0xd0),
+/// multiplying every case; `base` the stats' rate (CharStats +0x178, `CURRENT_WORK_RATE`).
 pub fn hunger_rate(
     activity: Activity,
     activity_factor: f32,

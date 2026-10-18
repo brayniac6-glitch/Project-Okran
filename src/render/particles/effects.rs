@@ -958,6 +958,8 @@ pub struct Effects {
     oneshots: Vec<EffectInstance>,
     /// Effects on buildings (F037795), running while their zone is loaded.
     attached: Vec<EffectInstance>,
+    /// Each attached effect's building (zone, placement) and its EFFECT (index).
+    attached_of: Vec<(Option<((i32, i32), usize)>, usize)>,
     /// Per BIOMES record: its "ground effects" by terrain layer (effect, min speed,
     /// probability) and its "water effects" (effect, min depth, min speed) (F051626).
     ground_effects: HashMap<String, [GroundSlot; 5]>,
@@ -1017,6 +1019,7 @@ impl Effects {
             dead_draws: Vec::new(),
             oneshots: Vec::new(),
             attached: Vec::new(),
+            attached_of: Vec::new(),
             ground_effects,
             water_effects,
         }
@@ -1089,15 +1092,36 @@ impl Effects {
     /// An effect on a building at world position `at`, turned `rot`.
     /// Kenshi attaches it unstarted; a building's effects run while it is complete, switched
     /// on (a UseableStuff's setOn, F029284; the caller leaves out those of one stored off) and
-    /// in view (F037702 / F037859). (stand-in) Here it starts at once and runs while its zone is
-    /// loaded: the building's view state and its switching at play are not followed.
+    /// in view (F037702: the building's +0x19d, each effect started or stopped by it).
     pub fn attach(&mut self, effect: usize, at: Vec3, rot: bevy::math::Quat) {
+        self.attach_to(effect, at, rot, None);
+    }
+
+    /// `attach`, the effect following building `building`'s view (`follow_views`).
+    pub fn attach_to(&mut self, effect: usize, at: Vec3, rot: bevy::math::Quat, building: Option<((i32, i32), usize)>) {
         let seed = (self.rng.unit() * 32767.0) as u32;
         let mut i = EffectInstance::new(&self.defs[effect], seed, &self.ground);
         i.fx.system.position = at;
         i.fx.system.orientation = Quat { w: rot.w, x: rot.x, y: rot.y, z: rot.z };
         i.start();
         self.attached.push(i);
+        self.attached_of.push((building, effect));
+    }
+
+    /// @fn F037702
+    ///
+    /// The buildings' effects following their buildings' view: one whose building came into
+    /// view started, one whose building left it stopped (its particles fade out).
+    pub fn follow_views(&mut self, in_view: &dyn Fn(((i32, i32), usize)) -> bool) {
+        for (i, (key, def)) in self.attached.iter_mut().zip(&self.attached_of) {
+            let Some(key) = *key else { continue };
+            let want = in_view(key);
+            if want && !i.is_running() {
+                i.start();
+            } else if !want && i.is_running() {
+                i.stop(&self.defs[*def]);
+            }
+        }
     }
 
     /// The index of an EFFECT record.

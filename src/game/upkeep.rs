@@ -27,24 +27,18 @@ impl Sim {
         pb.done && (pb.progress < pb.total() as f32 - 1e-3 || self.door_states.iter().any(|d| d.player_building == Some(b) && !d.gone && d.health < d.full - 1e-3))
     }
 
-    /// Order characters to repair building `b` (Task_Build on a damaged building).
+    /// "Repair" (order 95, Repairing: Task_Build on a damaged building): an order on the task
+    /// system's list for each of `ids`, planned (crate::jobs).
     pub fn order_repair(&mut self, ids: &[usize], b: usize) {
         if !self.needs_repair(b) {
             return;
         }
-        let (at, r) = (self.buildings[b].at, self.buildings[b].radius);
-        for &id in ids {
-            if self.folk.get(id).is_some_and(|p| !p.down) {
-                let me = self.folk[id].mover.position_units();
-                let (dx, dz) = (me[0] - at[0], me[2] - at[2]);
-                let d = dx.hypot(dz).max(1e-3);
-                self.order_move(&[id], [at[0] + dx / d * r, at[1], at[2] + dz / d * r]);
-                self.folk[id].build = Some(b);
-            }
-        }
+        let at = self.buildings[b].at;
+        let ids: Vec<usize> = ids.iter().copied().filter(|&id| self.folk.get(id).is_some_and(|p| !p.down)).collect();
+        self.order_task(&ids, crate::jobs::REPAIRING, crate::sim::Target::Building(b), at);
     }
 
-    /// One repairer's work on building `b` this tick (`build_tick` for a built building): its
+    /// One repairer's work on building `b` this tick (Task_Build's on a built building): its
     /// doors first, then its construction. Whether it is whole again.
     pub(crate) fn repair_work(&mut self, id: usize, b: usize, dt: f32) -> bool {
         let hour = self.hour_secs as f32;
@@ -211,6 +205,7 @@ impl Sim {
             fix(&mut p.operate);
             fix(&mut p.dismantle);
         }
+        self.jobs_building_gone(b);
         for d in &mut self.door_states {
             if d.player_building == Some(b) {
                 d.gone = true;

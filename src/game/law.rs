@@ -163,6 +163,29 @@ pub struct LawState {
     /// last seen (crate::intruders `locked_up_tick`).
     pub locked_up: std::collections::HashMap<usize, bool>,
     pub door_phase: Vec<i32>,
+    /// The seconds (Task_CloseDoor) or the lock's turn (Task_LockDoor) of each one at a door
+    /// task (crate::intruders `door_tasks_tick`).
+    pub door_time: std::collections::HashMap<usize, f32>,
+    /// Each town's alarms (TownBase vtable +0x2e8, the AlarmManager: by town), when the last
+    /// "Alarm raised" was told (sim seconds), who has an alarm in its vicinity now (condition
+    /// 130) and the seconds left of each one looking at an alarm (Task_InvestigateAlarms +0x7c).
+    pub alarms: std::collections::HashMap<usize, Vec<Alarm>>,
+    pub alarm_message_at: Option<f32>,
+    pub alarm_near: Vec<bool>,
+    pub investigating: std::collections::HashMap<usize, f32>,
+    /// What the AI's view reads of the law (crate::sim View `law`) and the seconds each one
+    /// has spent at its law task in hand.
+    pub view: LawView,
+    pub task_time: std::collections::HashMap<usize, f32>,
+    /// The weather on each one (WeatherAffecting and strength, F039251: its region's outdoors,
+    /// none indoors, for an animal or a race immune to it), for its noise (`Noise::weather`).
+    pub weather: Vec<(i32, f32)>,
+    /// Kidnappings ordered and not yet begun (kidnapper, victim): Task_Kidnapping::start
+    /// (`kidnap_start`) runs as the victim is lifted.
+    pub kidnaps: Vec<(usize, usize)>,
+    /// Those being kidnapped (the state object's +0xe9, "kidn": set by Task_Kidnapping F031325,
+    /// cleared by F046493; `kidnapped_tick`).
+    pub kidnapped: std::collections::HashSet<usize>,
 }
 
 /// A new slave being processed by `taker` for `faction` (Task_ProcessNewSlave), seconds left.
@@ -210,40 +233,147 @@ pub struct Arrest {
     pub to: Option<String>,
 }
 
-/// What a character's noise reads (F046538 / F046476): sneaking, fighting, its speed (units /
-/// s), its stealth level (0 .. 1) and the building it is in.
-#[derive(Debug, Clone, Copy)]
+/// What the sensor reads of a character for its sight and its noise (F046539 / F046538 /
+/// F046476): its stealth mode (CharMovement +0x24), whether it is in a fight (F033833), its
+/// measured and its own speed (CharMovement +0xb8 / +0xb4, units / s), its stealth level
+/// (F047035, 0 .. 1), the building it is in, the weather on it (its noise's +0x198 type and
+/// +0x1a0 strength, set by F039251: WeatherAffecting and strength), whether it is the
+/// player's (F046535), whether the sight test casts a line to it (`marked`, F046539's list)
+/// and whether it is held in a cage (Character +0x2f8).
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Noise {
     pub sneaking: bool,
     pub fighting: bool,
     pub speed: f32,
+    pub own_speed: f32,
     pub stealth: f32,
     pub inside: Option<usize>,
+    pub weather: (i32, f32),
+    pub player: bool,
+    pub marked: bool,
+    pub caged: bool,
 }
 
-/// The noise roll of `Sim::heard` for observer `seer` (awake, in building `inside`) and target
-/// `seen` at squared distance `d2`, at sim time `t` (seconds).
-pub fn hear_roll(seer: usize, seen: usize, t: f32, walk: f32, inside: Option<usize>, d2: f32, n: &Noise) -> bool {
-    const NOISE: f32 = 400.0;
-    if seer == seen || (!n.sneaking && !n.fighting) || inside != n.inside {
+/// WeatherAffecting WA_RAIN (crate::hazards has 1 .. 4).
+pub const WA_RAIN: i32 = 5;
+
+/// The buildings' solids a sight line is cast against (`kenshi_combat::arena::Arena::obstacles`,
+/// world frame less the origin given).
+pub type Obstacles = Option<(std::sync::Arc<kenshi_physics::world::StaticWorld>, [f32; 3])>;
+
+/// F050479.
+fn lerp(t: f32, a: f32, b: f32) -> f32 {
+    (b - a) * t + a
+}
+
+impl Noise {
+    /// F039177: sneaking, out of a fight. (Its stance 1 / 2, F040664: none crouch or crawl
+    /// here.)
+    pub fn sneaks(&self) -> bool {
+        self.sneaking && !self.fighting
+    }
+
+    /// @fn F046476
+    ///
+    /// The radius it is heard within (units): none unless in stealth mode or fighting. Its
+    /// weather muffles it: m = lerp(the weather's strength, 1, 0.25 in a dust storm, 0.75 in
+    /// rain or acid rain, else 1). Sneaking: lerp(its stealth level, 450 m, 80); else
+    /// lerp(its speed / its own speed, 350 m, 600 m).
+    pub fn radius(&self) -> f32 {
+        if !self.sneaking && !self.fighting {
+            return 0.0;
+        }
+        let w = match self.weather.0 {
+            crate::hazards::WA_DUST => 0.25,
+            WA_RAIN | crate::hazards::WA_ACID => 0.75,
+            _ => 1.0,
+        };
+        let m = lerp(self.weather.1, 1.0, w);
+        if self.sneaks() {
+            lerp(self.stealth, 450.0 * m, 80.0)
+        } else {
+            let frac = if self.own_speed > 0.0 { self.speed / self.own_speed } else { 0.0 };
+            lerp(frac, 350.0 * m, 600.0 * m)
+        }
+    }
+}
+
+/// What the sensor reads of person `p` (its fighter `f`) under weather `weather`
+/// (`LawState::weather`).
+/// (assumption) Chained (Character +0x320): a slave; down (F039148's state not 0): knocked
+/// out; disguised (state +0x100 above 0): wearing a disguise. (not ported) Character +0x1a9.
+pub fn noise(p: &crate::sim::Person, f: &kenshi_combat::arena::Fighter, weather: (i32, f32)) -> Noise {
+    let sneaks = p.sneaking && !f.active;
+    Noise {
+        sneaking: p.sneaking,
+        fighting: f.active,
+        speed: p.speed,
+        own_speed: p.own_speed,
+        stealth: stealth_level(p, f),
+        inside: p.inside,
+        weather,
+        player: p.player,
+        marked: p.down || sneaks || p.disguised.is_some() || p.escaped.is_some() || p.slave.as_ref().is_some_and(|s| s.state == crate::slavery::IS_SLAVE),
+        caged: p.prison.as_ref().is_some_and(|c| !c.out),
+    }
+}
+
+/// F047035 (with its buffs): the stealth level x 0.75 carrying someone (Character +0x348),
+/// x 0.01, within 0 .. 1 (x 2 crawling: none crawl here).
+/// (not ported) Its load, medical +0xb4, CharStats +0x3c and activity-0x10 fitness factors.
+pub fn stealth_level(p: &crate::sim::Person, f: &kenshi_combat::arena::Fighter) -> f32 {
+    (f.level(StatsEnumerated::StatStealth) * if p.carrying.is_some() { 0.75 } else { 1.0 } * 0.01).clamp(0.0, 1.0)
+}
+
+/// @fn F046538
+///
+/// Whether observer `seer` (`o`) hears `seen` (`n`) at squared distance `d2` (units), at sim
+/// time `t` (seconds); `open` is F037712 (whether a building is open). Two of the player's
+/// hear each other within 1000 units. Else one neither in stealth mode nor fighting is not
+/// heard; one in another building only while fighting with one of the two outdoors. The
+/// radius (F046476) is halved for an awake observer, and in another building halved again,
+/// and again when that building (the target's, else the observer's) is shut. The chance is
+/// (1 - d2 / radius^2) x k, k = 0.05 x (1 - its stealth level) while it sneaks, else 0.75;
+/// doubled for one noticed on the last roll; one fighting in the same building is heard at
+/// once. The roll is fresh every 2 s for each pair (the sensor's per-target timer: game hours
+/// x 3600 / 33 x 0.5).
+/// (assumption) "Noticed" (the sensor record's +0x3c above 0): heard on the last roll.
+/// (not ported) The floors (Character vtable +0x60: another floor only while fighting, at most
+/// one apart, not in a building with +0xc2 set): one floor here. A sleeping observer (the
+/// whole radius, k 0.1, "almost woke up", EV 47, for a sneaker heard): sleepers hear nothing
+/// here. The stealth name tag's report (F00578b).
+pub fn hear_roll(seer: usize, seen: usize, t: f32, o: &Noise, d2: f32, n: &Noise, open: impl Fn(usize) -> bool) -> bool {
+    if seer == seen {
         return false;
     }
-    let mode = if n.speed > walk * 1.1 {
-        0.25
-    } else if n.speed > 1.0 {
-        0.75
-    } else {
-        1.0
-    };
-    let mut r = (1.0 + (mode - 1.0) * NOISE).abs() * 0.5;
-    if inside.is_some() {
+    if o.player && n.player {
+        return d2 < 1_000_000.0;
+    }
+    if !n.sneaking && !n.fighting {
+        return false;
+    }
+    let apart = o.inside != n.inside;
+    if apart && (!n.fighting || (o.inside.is_some() && n.inside.is_some())) {
+        return false;
+    }
+    let mut r = n.radius() * 0.5;
+    if apart {
         r *= 0.5;
+        if let Some(b) = n.inside.or(o.inside)
+            && !open(b)
+        {
+            r *= 0.5;
+        }
     }
-    let near = 1.0 - d2 / (r * r);
-    if near <= 0.0 {
+    let k = if n.sneaks() { 0.05 * (1.0 - n.stealth) } else { 0.75 };
+    let near = (d2 - r * r) / (0.0 - r * r);
+    let chance = near * k;
+    if !(chance > 0.0) {
         return false;
     }
-    let k = if n.sneaking && !n.fighting { 0.05 * (1.0 - n.stealth) } else { 0.75 };
+    if n.fighting && !apart {
+        return true;
+    }
     let window = (t / 2.0).max(0.0) as u64;
     let roll = |w: u64| {
         // splitmix64 of the pair and the window: the same roll for the whole window
@@ -253,11 +383,66 @@ pub fn hear_roll(seer: usize, seen: usize, t: f32, walk: f32, inside: Option<usi
         z ^= z >> 31;
         (z >> 40) as f32 / (1u64 << 24) as f32
     };
-    let mut chance = near * k;
+    let mut chance = chance;
     if window > 0 && roll(window - 1) < chance {
         chance *= 2.0;
     }
     roll(window) < chance
+}
+
+/// The eye's height over a character's position (F046499's offset, units); the line ends at
+/// half of it on the target, and a hit within the last 2 units of the two's distance does not
+/// block it.
+const EYE_HEIGHT: f32 = 18.0;
+const SIGHT_SLACK: f32 = 2.0;
+/// (assumption) A hit this near a caged target (units, across) is its cage.
+const CAGE_REACH: f32 = 25.0;
+
+/// @fn F046499
+///
+/// The line of sight from a character at `from` to one at `at` (positions, world units): a ray
+/// from the eye (18 units up) toward the target's middle (9 units up) against the buildings'
+/// solids (the physics query, mask 0x87f9e04 outdoors / 0x87fde44 inside); blocked by a hit
+/// nearer than the two's distance less 2, unless what it hits is the cage the target is held
+/// in (Character +0x2f8 / +0x300). Clear with no solids loaded (headless).
+/// (assumption) The cage: a hit within 25 units across of a caged target.
+/// (not ported) An observer with its Character +0x258 handle set (+0x260 not NULL_ITEM): none
+/// within 40 units seen, the eye along its CharMovement +0xd0 x 40.
+pub fn sight_line(obstacles: &Obstacles, from: [f32; 3], at: [f32; 3], caged: bool) -> bool {
+    let eye = [from[0], from[1] + EYE_HEIGHT, from[2]];
+    let to = [at[0], at[1] + EYE_HEIGHT / SIGHT_SLACK, at[2]];
+    let d = [to[0] - eye[0], to[1] - eye[1], to[2] - eye[2]];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let reach = ((at[0] - from[0]).powi(2) + (at[1] - from[1]).powi(2) + (at[2] - from[2]).powi(2)).sqrt() - SIGHT_SLACK;
+    if len < 1e-3 || reach <= 0.0 {
+        return true;
+    }
+    let dir = [d[0] / len, d[1] / len, d[2] / len];
+    let Some(hit) = kenshi_combat::arena::wall_hit(obstacles, eye, dir, reach) else {
+        return true;
+    };
+    caged && (eye[0] + dir[0] * hit - at[0]).hypot(eye[2] + dir[2] * hit - at[2]) < CAGE_REACH
+}
+
+/// F046539's last test: whether the sight test casts the line of sight (F046499) from `o` to
+/// `n`: never between two of the player's; else for a target of the player's, an observer of
+/// the player's (F046535), or a `marked` target. The others are seen without it.
+/// (not ported) Its exception before (F044452 / F028552 of each, unidentified).
+pub fn sight_cast(o: &Noise, n: &Noise) -> bool {
+    !(o.player && n.player) && (n.player || o.player || n.marked)
+}
+
+/// Whether the sight test's line from `o` at `from` to `n` at `at` is clear (F046539's tail:
+/// `sight_cast`, then `sight_line`).
+pub fn in_sight(obstacles: &Obstacles, o: &Noise, from: [f32; 3], n: &Noise, at: [f32; 3]) -> bool {
+    !sight_cast(o, n) || sight_line(obstacles, from, at, n.caged)
+}
+
+/// F037712 over `doors`: whether building `b` is open (no doors, or one broken, open or
+/// opening).
+pub fn building_open_in(doors: &[crate::sim::DoorState], b: usize) -> bool {
+    let mut doors = doors.iter().filter(|d| d.door.placement == b && !d.gone).peekable();
+    doors.peek().is_none() || doors.any(|d| d.broken || d.phase == crate::sim::DOOR_OPEN || d.phase == crate::sim::DOOR_OPENING)
 }
 
 impl Sim {
@@ -543,9 +728,46 @@ impl Sim {
     }
 
     /// Whether `seer` sees `seen` now (the sensor's test, F046539, with `seen`'s sneaking and
-    /// stealth).
+    /// stealth, and the line of sight for those it is cast to, `in_sight`), or hears it.
     pub fn can_see(&self, seer: usize, seen: usize) -> bool {
-        self.visibility(seer, seen) > kenshi_ai::perception::SEEN_THRESHOLD || self.heard(seer, seen)
+        (self.visibility(seer, seen) > kenshi_ai::perception::SEEN_THRESHOLD
+            && in_sight(&self.arena.obstacles, &self.noise_of(seer), self.folk[seer].mover.position_units(), &self.noise_of(seen), self.folk[seen].mover.position_units()))
+            || self.heard(seer, seen)
+    }
+
+    /// @fn F046500
+    ///
+    /// `visibility` (F046498) when at least 0.01 and the line of sight is clear (F046499),
+    /// else 0.
+    pub fn sight(&self, seer: usize, seen: usize) -> f32 {
+        let v = self.visibility(seer, seen);
+        if v >= 0.01 && self.line_of_sight(seer, seen) { v } else { 0.0 }
+    }
+
+    /// F046499 from `seer` to `seen` (`sight_line`).
+    pub fn line_of_sight(&self, seer: usize, seen: usize) -> bool {
+        let caged = self.folk[seen].prison.as_ref().is_some_and(|c| !c.out);
+        sight_line(&self.arena.obstacles, self.folk[seer].mover.position_units(), self.folk[seen].mover.position_units(), caged)
+    }
+
+    /// The weather on each one (`LawState::weather`), once a second.
+    fn weather_tick(&mut self) {
+        let n = self.folk.len();
+        if !self.tick.is_multiple_of(60) && self.law_state.weather.len() == n {
+            return;
+        }
+        let weather = (0..n)
+            .map(|id| {
+                let p = &self.folk[id];
+                if p.dead || p.away || p.race.is_some() || p.inside.is_some() {
+                    return (0, 0.0);
+                }
+                let q = p.mover.position_units();
+                let c = self.climate.get(&kenshi_world::zone_of(q[0], q[2])).copied().unwrap_or_default();
+                if c.affect == 0 || self.immune(id, c.affect) { (0, 0.0) } else { (c.affect, c.strength) }
+            })
+            .collect();
+        self.law_state.weather = weather;
     }
 
     /// F046498: how visible `seen` is to `seer` now, 0 .. 1 (0: not seen).
@@ -575,20 +797,7 @@ impl Sim {
         kenshi_ai::perception::visibility(&observer, &target, dl)
     }
 
-    /// @fn F046538
-    ///
-    /// Whether `seer` notices `seen` by its noise: a sneaking or fighting character, moving,
-    /// is heard within its noise radius on a roll, fresh every 2 s for each pair (the sensor's
-    /// per-target timer: game hours x 3600 / 33 x 0.5, about 2 real seconds); the chance is
-    /// (1 - distance^2 / radius^2) x 0.05 x (1 - its stealth level) while it sneaks, x 0.75
-    /// while it fights, doubled for one already noticed (the last roll's). The radius (F046476)
-    /// is lerp(the noise, 1, 0.25 running / 0.75 walking / 1 still), halved for an awake observer
-    /// and again inside a building; nobody hears through a building's walls.
-    /// (stand-in) The noise (Character +0x448's +0x1a0 and mode +0x198, F039135 / F039134) is
-    /// set by the movement-sound update (F039251 -> F037128: a footstep sound's radius from the
-    /// ground's sound data), not ported: 400 units, running past the walk speed, walking above
-    /// 1 unit/s. A sleeper (state
-    /// 1: chance 0.1, woken by it) hears nothing here.
+    /// Whether `seer` hears `seen` now (`hear_roll`, F046538): awake, neither down nor away.
     pub fn heard(&self, seer: usize, seen: usize) -> bool {
         let (p, q) = (&self.folk[seer], &self.folk[seen]);
         if seer == seen || p.down || p.dead || p.bed.is_some() || q.dead || p.away || q.away {
@@ -596,19 +805,12 @@ impl Sim {
         }
         let (a, b) = (p.mover.position_units(), q.mover.position_units());
         let d2 = (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
-        hear_roll(seer, seen, self.t, self.walk, p.inside, d2, &self.noise_of(seen))
+        hear_roll(seer, seen, self.t, &self.noise_of(seer), d2, &self.noise_of(seen), |b| self.building_open(b))
     }
 
-    /// What `hear_roll` reads of person `id`.
+    /// What the sensor reads of person `id` (`noise`).
     pub fn noise_of(&self, id: usize) -> Noise {
-        let q = &self.folk[id];
-        Noise {
-            sneaking: q.sneaking,
-            fighting: self.arena.f[id].active,
-            speed: q.speed,
-            stealth: (self.arena.f[id].level(StatsEnumerated::StatStealth) * 0.01).clamp(0.0, 1.0),
-            inside: q.inside,
-        }
+        noise(&self.folk[id], &self.arena.f[id], self.law_state.weather.get(id).copied().unwrap_or_default())
     }
 
     /// F042119's name tag eye (its state +0x24): 0 not sneaking (no eye); 1 hidden (no one
@@ -675,13 +877,6 @@ impl Sim {
     pub fn light_on(&self, _id: usize) -> f32 {
         let hour = ((self.start_hour + self.hours_gone()).rem_euclid(24.0)) as f32;
         daylight(hour, self.sunrise, self.sunset).clamp(0.0, 1.0)
-    }
-
-    /// Whether person `id` is a guard of their faction: armed, not a shopkeeper, not the
-    /// player's.
-    pub(crate) fn is_guard(&self, id: usize) -> bool {
-        let p = &self.folk[id];
-        !p.player && !p.down && !p.dead && p.faction.is_some() && p.shop.is_none() && p.inventory.equipped().any(|i| i.kind == Some(ItemType::Weapon))
     }
 
     /// The faction owning cage furniture `k`: the town round it.
@@ -1101,11 +1296,11 @@ impl Sim {
     /// faction's (Character::isPrisonerOf, F030709) `c` frees slaves (20 s, against `w`'s
     /// faction); else, `w` of the player's or an "anti slavery" faction, a friend of the slave
     /// and not in a town of a faction it is no ally of, `c` kidnaps it (20 s, against the
-    /// slave's faction). One carried who is no slave, `w` not its enemy: unless `w` is its
-    /// friend, only in a town, of a real faction, with no bounty with `w`'s faction; then
-    /// kidnapping it (F046495, its time 20 s, `c`'s disguise blown).
-    /// (assumption) One carried as a lawful prisoner (F044460: no bounty, not a bandit, its
-    /// state +0xe9) is not told apart here: anyone carried who is no slave counts.
+    /// slave's faction). One carried who is being kidnapped (F044460: no bounty, no bandit, no
+    /// slave, carried, its state +0xe9 set by Task_Kidnapping), `w` not its enemy: unless `w`
+    /// is its friend, only in a town, of a real faction, with no bounty with `w`'s faction;
+    /// then kidnapping it (F046495, its time 20 s, `c`'s disguise blown). Anyone else carried
+    /// (picked up, a squad mate carried off) is no crime.
     fn witness_carrying(&mut self, w: usize, c: usize) {
         let Some(k) = self.folk[c].carrying else { return };
         if self.folk[k].dead {
@@ -1130,7 +1325,7 @@ impl Sim {
             self.commit_crime_for(c, CrimeEnum::CrimeKidnapping, kf.as_deref(), Some(k), CRIME_SECONDS);
             return;
         }
-        if self.takes_for_enemy(w, k, true) {
+        if !self.being_kidnapped(k) || self.takes_for_enemy(w, k, true) {
             return;
         }
         if !self.takes_for_friend(w, k, true) {
@@ -1147,6 +1342,54 @@ impl Sim {
             && let Some(cr) = self.folk[c].crime.as_mut()
         {
             cr.left = CRIME_SECONDS;
+        }
+    }
+
+    /// @fn F044460
+    ///
+    /// Whether `k` is being kidnapped: no bounty with anyone, no bandit (NPC class 8), no slave,
+    /// carried, and its state's +0xe9 set (Task_Kidnapping).
+    pub fn being_kidnapped(&self, k: usize) -> bool {
+        let p = &self.folk[k];
+        !p.bounties.iter().any(|b| b.amount > 0) && self.npc_class(k) != 8 && self.slave_state(k) == 0 && p.carried_by.is_some() && self.law_state.kidnapped.contains(&k)
+    }
+
+    /// @fn F046493
+    ///
+    /// Each second, the kidnapped flags: one carried by someone it takes for a friend (F044470)
+    /// or that its squad remembers as its lifesaver or freer (F038591: long-term tags 2 / 3) is
+    /// no longer being kidnapped; carried by anyone else it tags the carrier a temporary enemy
+    /// (F040863). One put down is no longer once in a bed (Character +0x2f8 1) in its home town.
+    /// (assumption) The dead are let go.
+    fn kidnapped_tick(&mut self) {
+        if !self.tick.is_multiple_of(60) || self.law_state.kidnapped.is_empty() {
+            return;
+        }
+        let list: Vec<usize> = self.law_state.kidnapped.iter().copied().collect();
+        for k in list {
+            let Some(p) = self.folk.get(k) else {
+                self.law_state.kidnapped.remove(&k);
+                continue;
+            };
+            if p.dead {
+                self.law_state.kidnapped.remove(&k);
+                continue;
+            }
+            match p.carried_by {
+                Some(c) => {
+                    let saved = self.dialog_memory.tags.get(&(k, c)).is_some_and(|t| t & ((1 << crate::dialogue::LT_MY_LIFESAVER) | (1 << crate::dialogue::LT_FREED_ME)) != 0);
+                    if self.takes_for_friend(k, c, true) || saved {
+                        self.law_state.kidnapped.remove(&k);
+                    } else {
+                        self.tag_short(k, c, kenshi_ai::PerceptionShortTerm::StTemporaryEnemy);
+                    }
+                }
+                None => {
+                    if p.bed.is_some() && p.town.is_some() && p.town == self.home_town(k) {
+                        self.law_state.kidnapped.remove(&k);
+                    }
+                }
+            }
         }
     }
 
@@ -1274,51 +1517,18 @@ impl Sim {
             }
         }
         self.fight_crimes();
+        self.weather_tick();
+        self.kidnaps_tick();
+        self.alarms_tick(dt);
+        self.investigate_tick(dt);
+        self.law_tasks_tick(dt);
+        self.law_view_tick();
+        self.door_tasks_tick(dt);
         self.locked_up_tick();
+        self.kidnapped_tick();
         self.witness_tick();
-        // guards take on the wanted they see (once a second each): those whose squad's packages
-        // hold "Law enforcer" (Attacking trouble makers, 34: score 1) or "Arrest bounties"
-        // (Bounty hunting, 204: scored by F038567 only while a cage of their faction is free to
-        // put the arrested in, F047589 / F047588, a building of functionality 8, BF_CAGE). The
-        // targets as the tasks' finders take them: one not carried, held, an animal or of a
-        // faction "not real" with a bounty the guard sees (F046512: while its disguise is blown,
-        // or down and an enemy), or that its squad tagged ST_CRIMINAL; a bounty hunter (F050281)
-        // also any it takes for an enemy.
-        // (not ported) F050280's troublemakers (the state object +0xac, F038606, F050279) and
-        // its town rules: the law enforcers' targets here are the bounty hunters' less enemies.
-        use crate::sim::{DUTY_ARRESTS, DUTY_ENFORCES};
-        let guards: Vec<usize> = (0..self.folk.len())
-            .filter(|&g| tick % 60 == (g as u64 * 13) % 60 && self.folk[g].arrest.is_none() && self.folk[g].duties & (DUTY_ARRESTS | DUTY_ENFORCES) != 0 && self.is_guard(g))
-            .collect();
-        for g in guards {
-            let Some(f) = self.folk[g].faction.clone() else { continue };
-            let me = self.folk[g].mover.position_units();
-            if self.folk[g].duties & DUTY_ENFORCES == 0 && self.free_cage(&f, me, false).is_none() {
-                continue;
-            }
-            let hunter = self.folk[g].duties & DUTY_ARRESTS != 0;
-            let wanted = (0..self.folk.len()).find(|&c| {
-                let p = &self.folk[c];
-                if c == g || p.prison.is_some() || p.dead || p.carried_by.is_some() || p.race.is_some() || self.faction_id(c).is_some_and(|k| self.faction_not_real(&k)) {
-                    return false;
-                }
-                let q = p.mover.position_units();
-                if 1500.0 <= (q[0] - me[0]).hypot(q[2] - me[2]) || !(p.down || self.can_see(g, c)) {
-                    return false;
-                }
-                let target = 0 < self.bounty_seen_by(c, g) || self.has_short(g, c, kenshi_ai::PerceptionShortTerm::StCriminal) || (hunter && self.takes_for_enemy(g, c, true));
-                target && !self.folk.iter().any(|o| o.arrest.as_ref().is_some_and(|a| a.target == c))
-            });
-            if let Some(c) = wanted {
-                self.folk[g].arrest = Some(Arrest { target: c, slaver: false, to: None });
-                if !self.folk[c].down && !self.folk[c].surrendered {
-                    self.order_attack(&[g], c);
-                }
-                if std::env::var("KENSHI_LAW_DEBUG").is_ok() {
-                    eprintln!("law: guard {g} goes to arrest {c}");
-                }
-            }
-        }
+        // (the guards' goals, Law enforcer 34 and Bounty hunting 204, run on the planner:
+        // `LawView`, `law_tasks_tick`)
         // slavers carrying someone take them in
         for s in 0..self.folk.len() {
             let p = &self.folk[s];
@@ -1537,7 +1747,1086 @@ impl Sim {
                 self.messages.push(format!("{} knocked {} out.", self.display_name(id), self.display_name(t)));
             } else {
                 self.order_attack(&[t], id);
+                // Task_StealthKO (F031279): the target says EV_ASSASSINATION_FAILED at the assassin
+                self.assassination_failed(t, id);
                 self.messages.push(format!("{} failed to knock {} out!", self.display_name(id), self.display_name(t)));
+            }
+        }
+    }
+}
+
+/// An alarm a town keeps (AlarmManager::Alarm, 0x68 bytes): the crime (+0x20), its owner key
+/// (+0x28: the crime's faction), where (+0x30), the building it is in (+0x40) and the floor
+/// (+0x60), the seconds it stays (+0x24, 8 at first: refreshing it leaves them) and the
+/// one it is about (+0x8, a handle).
+#[derive(Debug, Clone)]
+pub struct Alarm {
+    pub crime: CrimeEnum,
+    pub owner: Option<String>,
+    pub position: [f32; 3],
+    pub building: Option<usize>,
+    pub floor: i32,
+    pub left: f32,
+    pub criminal: Option<usize>,
+}
+
+/// How long an alarm stays (seconds; F048892's +0x24, F048855).
+const ALARM_SECONDS: f32 = 8.0;
+/// How near an alarm is heard (units; 0x1416c1590, F038582 / F031313 / F038651).
+pub const ALARM_RANGE: f32 = 375.0;
+/// How near one investigating stands to look at the alarm (units; F031313: 10000 squared) and
+/// how far short of it it stops on its way (30).
+const INVESTIGATE_REACH: f32 = 100.0;
+const INVESTIGATE_SHORT: f32 = 30.0;
+/// How long one investigating looks before it calls the alarm off (seconds; F031313: 10).
+const INVESTIGATE_SECONDS: f32 = 10.0;
+/// The real seconds between two "Alarm raised" messages (F048892: 30).
+const ALARM_MESSAGE_GAP: f32 = 30.0;
+/// "Investigate alarms", "Investigate alarms- allies only" (Task_InvestigateAlarms).
+pub const INVESTIGATING: u16 = 209;
+pub const INVESTIGATING_ALLIES: u16 = 210;
+
+impl Sim {
+    /// F037712: whether building `b` is open (no doors, or one broken, open or opening).
+    pub(crate) fn building_open(&self, b: usize) -> bool {
+        building_open_in(&self.door_states, b)
+    }
+
+    /// @fn F048892
+    ///
+    /// Town `town`'s alarm for `crime` at `at` (AlarmManager::raise): an alarm of that crime with
+    /// the same owner key (`owner`, the crime's faction) still about is moved there (the
+    /// building and floor of the one raising it, else of the criminal), its time left as it
+    /// is; else a new one, for 8 s, about `criminal`, in its building (else the raiser's). A
+    /// new one about one of the player's people says so ("Alarm raised", once in 30 s).
+    /// (assumption) The floors (Character vtable +0x60) are all 0 here.
+    pub fn raise_alarm(&mut self, town: usize, crime: CrimeEnum, at: [f32; 3], criminal: Option<usize>, owner: Option<String>, raiser: usize) {
+        if crime == CrimeEnum::CrimeNone {
+            return;
+        }
+        let building = criminal.and_then(|c| self.folk[c].inside).or(self.folk[raiser].inside);
+        let alarms = self.law_state.alarms.entry(town).or_default();
+        if let Some(a) = alarms.iter_mut().find(|a| a.crime == crime && a.owner == owner && a.criminal.is_none_or(|c| c < self.folk.len() && !self.folk[c].dead)) {
+            a.position = at;
+            a.building = building;
+            return;
+        }
+        alarms.push(Alarm { crime, owner, position: at, building, floor: 0, left: ALARM_SECONDS, criminal });
+        if criminal.is_some_and(|c| self.folk[c].player) && self.law_state.alarm_message_at.is_none_or(|t| ALARM_MESSAGE_GAP < self.t - t) {
+            self.law_state.alarm_message_at = Some(self.t);
+            self.messages.push("Alarm raised".to_string());
+        }
+        if std::env::var("KENSHI_LAW_DEBUG").is_ok() {
+            eprintln!("law: alarm in town {town} for {crime:?} at {:?} (by {raiser})", at.map(|v| v as i32));
+        }
+    }
+
+    /// @fn F048840
+    ///
+    /// The nearest alarm of town `town` to `id` within `range` (squared distance, all three
+    /// axes), of the crimes in `mask` (bits by CrimeEnum; 0 any) and of owner key `owner` (none:
+    /// any). One in a building is heard at half the range, and in a building shut up only by
+    /// those inside it, at a quarter.
+    /// (not ported) The floors' test (another floor not heard when the building has its +0xc2
+    /// flag, or two or more floors apart).
+    pub fn nearest_alarm(&self, town: usize, id: usize, mask: u32, range: f32, owner: Option<&str>) -> Option<usize> {
+        let alarms = self.law_state.alarms.get(&town)?;
+        let at = self.folk[id].mover.position_units();
+        let mut best: Option<(usize, f32)> = None;
+        for (k, a) in alarms.iter().enumerate() {
+            if mask != 0 && mask & (1 << (a.crime as u32)) == 0 {
+                continue;
+            }
+            if owner.is_some_and(|o| a.owner.as_deref() != Some(o)) {
+                continue;
+            }
+            let mut r = range;
+            if let Some(b) = a.building {
+                r *= 0.5;
+                if !self.building_open(b) {
+                    if self.folk[id].inside != Some(b) {
+                        continue;
+                    }
+                    r *= 0.5;
+                }
+            }
+            let d2 = (a.position[0] - at[0]).powi(2) + (a.position[1] - at[1]).powi(2) + (a.position[2] - at[2]).powi(2);
+            if d2 < r * r && best.is_none_or(|(_, b)| d2 < b) {
+                best = Some((k, d2));
+            }
+        }
+        best.map(|(k, _)| k)
+    }
+
+    /// @fn F038582
+    ///
+    /// ALARMS_IN_THE_VICINITY (condition 130): an alarm of the town `id` is in within 375 units.
+    pub fn alarm_in_vicinity(&self, id: usize) -> bool {
+        self.folk[id].town.is_some_and(|t| self.nearest_alarm(t, id, 0, ALARM_RANGE, None).is_some())
+    }
+
+    /// @fn F048855
+    ///
+    /// Each tick, the towns' alarms run down and go (AlarmManager::update), and who has one in
+    /// its vicinity now (condition 130, for the AI's view).
+    pub fn alarms_tick(&mut self, dt: f32) {
+        for alarms in self.law_state.alarms.values_mut() {
+            alarms.iter_mut().for_each(|a| a.left -= dt);
+            alarms.retain(|a| a.left >= 0.0);
+        }
+        self.law_state.alarms.retain(|_, a| !a.is_empty());
+        let near: Vec<bool> = if self.law_state.alarms.is_empty() { vec![false; self.folk.len()] } else { (0..self.folk.len()).map(|id| self.alarm_in_vicinity(id)).collect() };
+        self.law_state.alarm_near = near;
+    }
+
+    /// @fn F040912
+    ///
+    /// DA_CRIME_ALARM (F040912 case 0x21), the crime alarm `npc` raises about `target`: its crime
+    /// seen (F046479) and, in a town with alarms whose faction `npc`'s is not at war with, an
+    /// alarm of the target's crime at the target (F048892; the owner key the crime's faction):
+    /// one with no crime inside `npc`'s private home is trespassing. Whether an alarm went up.
+    /// (not ported) F046543 on `npc`'s AI and the run its AI's +0x70 flag sends it on.
+    pub fn crime_alarm(&mut self, npc: usize, target: usize) -> bool {
+        self.crime_seen(target);
+        let Some(town) = self.folk[npc].town else { return false };
+        let theirs = self.towns.get(town).and_then(|t| t.faction.clone());
+        if let (Some(mine), Some(t)) = (self.folk[npc].faction.as_deref(), theirs.as_deref())
+            && self.at_war(mine, t)
+        {
+            return false;
+        }
+        if self.folk[target].crime.is_none()
+            && let Some(home) = self.folk[npc].home
+            && self.folk[target].inside == Some(home)
+            && !self.building_public(home)
+        {
+            let f = self.folk[npc].faction.clone();
+            self.folk[target].crime = Some(Crime { kind: CrimeEnum::CrimeTresspassing, faction: f.unwrap_or_default(), left: 3.0, caught: false, victim: Some(npc) });
+        }
+        let (kind, owner) = self.folk[target].crime.as_ref().map_or((CrimeEnum::CrimeNone, None), |c| (c.kind, Some(c.faction.clone()).filter(|f| !f.is_empty())));
+        let at = self.folk[target].mover.position_units();
+        self.raise_alarm(town, kind, at, Some(target), owner, npc);
+        kind != CrimeEnum::CrimeNone
+    }
+
+    /// The kidnappings under way: each begins (`kidnap_start`) once its kidnapper carries its
+    /// victim; one whose kidnapper has turned to something else is dropped.
+    fn kidnaps_tick(&mut self) {
+        let mut k = 0;
+        while k < self.law_state.kidnaps.len() {
+            let (a, v) = self.law_state.kidnaps[k];
+            let p = &self.folk[a];
+            if p.carrying == Some(v) {
+                self.law_state.kidnaps.remove(k);
+                self.kidnap_start(a, v);
+            } else if p.pickup != Some(v) || p.dead || p.down {
+                self.law_state.kidnaps.remove(k);
+            } else {
+                k += 1;
+            }
+        }
+    }
+
+    /// @fn F031292
+    /// @fn F047051
+    ///
+    /// Task_Kidnapping::start, `kidnapper` lifting `victim`: the victim tags it a temporary
+    /// enemy (F040863), the crime of kidnapping against the victim's faction (F046495, on the
+    /// victim), then the victim's notice: the kidnap's stealth chance (F047051: 100 on one
+    /// knocked out, else the stealth knockout chance F047050 x 100) under a roll of 0 .. 100 is
+    /// noticed: the victim's sensor told of the kidnapper (F046543) and `kidnap_alarm`.
+    /// (not ported) Character +0x278 (no sure 100 on the knocked out while set), the noticing
+    /// victim's own reactions (task 0x74 while its +0x2f8 is 1, F0319d0, F02ca98) and the
+    /// kidnapper's assassination training (F009769).
+    pub fn kidnap_start(&mut self, kidnapper: usize, victim: usize) {
+        // Task_Kidnapping (F031325): the victim is being kidnapped (+0xe9)
+        self.law_state.kidnapped.insert(victim);
+        self.tag_short(victim, kidnapper, kenshi_ai::PerceptionShortTerm::StTemporaryEnemy);
+        let faction = self.faction_id(victim);
+        self.commit_crime_on(kidnapper, CrimeEnum::CrimeKidnapping, faction.as_deref(), Some(victim));
+        let chance = if self.folk[victim].down {
+            100.0
+        } else {
+            stealth_ko_chance(self.arena.f[kidnapper].level(StatsEnumerated::StatAssassination), self.ko_guard(victim)) * 100.0
+        };
+        let roll = self.rng.uniform() * 100.0;
+        if chance < roll {
+            // F046543: the victim's sensor knows the kidnapper, where it is now
+            let (at, now) = (self.folk[kidnapper].mover.position_units(), self.t);
+            match self.folk[victim].sensed.iter_mut().find(|e| e.0 == kidnapper) {
+                Some(e) => {
+                    e.1 = at;
+                    e.2 = now;
+                }
+                None => self.folk[victim].sensed.push((kidnapper, at, now)),
+            }
+            self.kidnap_alarm(kidnapper, victim);
+        }
+    }
+
+    /// F031292's alarm (Task_Kidnapping::start): the victim's town is alarmed of a kidnapping
+    /// at the kidnapper (the owner key the victim's faction), the kidnapper's disguise blown.
+    pub fn kidnap_alarm(&mut self, kidnapper: usize, victim: usize) {
+        self.folk[kidnapper].disguise_blown = crate::disguise::BLOWN_SECONDS;
+        self.folk[kidnapper].disguised = None;
+        let Some(town) = self.folk[victim].town else { return };
+        let at = self.folk[kidnapper].mover.position_units();
+        let owner = self.faction_id(victim);
+        self.raise_alarm(town, CrimeEnum::CrimeKidnapping, at, Some(kidnapper), owner, victim);
+    }
+
+    /// @fn F031313
+    ///
+    /// Task_InvestigateAlarms (209; 210 "allies only": the alarms its faction owns), for whoever
+    /// has it in hand: done out of town or with no alarm within 375 units; else running to 30
+    /// units short of the nearest, sizing up the criminals about (one with a crime against an
+    /// ally of its faction tagged a temporary enemy and attacked); there (within 100 units) it
+    /// faces the alarm for 10 s, then calls it off (the alarm gone) and is done.
+    pub fn investigate_tick(&mut self, dt: f32) {
+        let ids: Vec<usize> = self.folk.iter().filter(|p| !p.dead && !p.down && p.ai.queue.first().is_some_and(|s| s.task == INVESTIGATING || s.task == INVESTIGATING_ALLIES)).map(|p| p.id).collect();
+        for id in ids {
+            let allies = self.folk[id].ai.queue.first().is_some_and(|s| s.task == INVESTIGATING_ALLIES);
+            let done = |sim: &mut Sim| {
+                sim.folk[id].ai.queue.remove(0);
+                sim.folk[id].started = false;
+                sim.law_state.investigating.remove(&id);
+            };
+            let Some(town) = self.folk[id].town else {
+                done(self);
+                continue;
+            };
+            let owner = if allies { self.folk[id].faction.clone() } else { None };
+            let Some(k) = self.nearest_alarm(town, id, 0, ALARM_RANGE, owner.as_deref()) else {
+                done(self);
+                continue;
+            };
+            let a = self.law_state.alarms[&town][k].clone();
+            let at = self.folk[id].mover.position_units();
+            let d2 = (a.position[0] - at[0]).powi(2) + (a.position[1] - at[1]).powi(2) + (a.position[2] - at[2]).powi(2);
+            if d2 <= INVESTIGATE_REACH * INVESTIGATE_REACH {
+                let (dx, dz) = (a.position[0] - at[0], a.position[2] - at[2]);
+                let l = dx.hypot(dz);
+                if l > 0.1 {
+                    self.folk[id].facing = [dx / l, 0.0, dz / l];
+                }
+                let left = self.law_state.investigating.get(&id).copied().unwrap_or(INVESTIGATE_SECONDS) - dt;
+                if left < 0.0 {
+                    if let Some(list) = self.law_state.alarms.get_mut(&town) {
+                        list.remove(k);
+                    }
+                    done(self);
+                } else {
+                    self.law_state.investigating.insert(id, left);
+                }
+                continue;
+            }
+            self.law_state.investigating.insert(id, INVESTIGATE_SECONDS);
+            // on its way: 30 units short of the alarm, at a run
+            let l = d2.sqrt().max(1e-3);
+            let goal = [a.position[0] + (at[0] - a.position[0]) / l * INVESTIGATE_SHORT, a.position[1], a.position[2] + (at[2] - a.position[2]) / l * INVESTIGATE_SHORT];
+            if self.tick.is_multiple_of(60) || !self.folk[id].started {
+                self.folk[id].started = true;
+                let Sim { folk, manager, .. } = self;
+                let p = &mut folk[id];
+                p.mover.set_max_speed(kenshi_char::movement::speed_limit(p.own_speed, kenshi_char::movement::MoveSpeed::Run.cap(15.0).unwrap(), None));
+                p.pathing.go_to(p.id, &p.mover, goal, false, manager);
+            }
+            // the criminals about of a crime against its faction's allies
+            if self.tick.is_multiple_of(60)
+                && let Some(mine) = self.folk[id].faction.clone()
+            {
+                let c = (0..self.folk.len()).find(|&c| {
+                    let q = &self.folk[c];
+                    let r = q.mover.position_units();
+                    c != id && !q.dead && (r[0] - at[0]).hypot(r[2] - at[2]) < 1500.0 && q.crime.as_ref().is_some_and(|cr| !cr.faction.is_empty() && self.allied(&mine, &cr.faction)) && self.can_see(id, c)
+                });
+                if let Some(c) = c {
+                    self.tag_short(id, c, kenshi_ai::PerceptionShortTerm::StTemporaryEnemy);
+                    self.order_attack(&[id], c);
+                }
+            }
+        }
+    }
+}
+
+/// The law's and the slavers' AI tasks (AI_TASK enums) the planner runs with crate::law's
+/// conditions, scores, finders and handlers.
+pub const LAW_ENFORCER: u16 = 34;
+pub const BOUNTY_HUNTING: u16 = 204;
+pub const WATCHING_SLAVES: u16 = 183;
+pub const FIND_CAGE_FOR_CARRIED: u16 = 112;
+pub const PUT_CARRIED_DEAD_IN_CAGES: u16 = 281;
+pub const STRIPPING_WEAPONS: u16 = 181;
+pub const LIFTING: u16 = 68;
+pub const PUTTING_DOWN: u16 = 69;
+pub const PUT_IN_PRISON: u16 = 108;
+pub const RESTRAINING: u16 = 166;
+pub const PROCESSING_SLAVE: u16 = 182;
+pub const STAND_STILL_DAMMIT: u16 = 64;
+pub const LIFTING_SNATCHING: u16 = 213;
+pub const CAPTURE_TARGET: u16 = 240;
+/// The runnable ones (their handlers are `law_tasks_tick`'s).
+/// "Remove Home Intruder" (223, the residents' "pickup intruder": lift the knocked out found
+/// in the home) and "Intruder out" (224, Task_TakeIntruderOutside: carry them out).
+pub const REMOVE_HOME_INTRUDER: u16 = 223;
+pub const INTRUDER_OUT: u16 = 224;
+/// "Medic" (58, the packages' goal) and "First aid" (25, Task_FirstAid): the medic's patient by
+/// F050304, treated by `Sim::first_aid_tick`.
+pub const MEDIC: u16 = 58;
+pub const FIRST_AID: u16 = 25;
+pub const LAW_RUNNABLE: [u16; 11] = [STRIPPING_WEAPONS, LIFTING, PUTTING_DOWN, PUT_IN_PRISON, RESTRAINING, PROCESSING_SLAVE, STAND_STILL_DAMMIT, LIFTING_SNATCHING, CAPTURE_TARGET, INTRUDER_OUT, FIRST_AID];
+/// Task_TakeIntruderOutside: the way out runs to the home's door's outside point and 1.1 of
+/// the door's depth beyond it (F030841 -> F029254); the task gives up (the carried put down)
+/// after 5 game minutes (F030843).
+const INTRUDER_OUT_BEYOND: f32 = 1.1;
+const INTRUDER_OUT_MINUTES: f64 = 5.0;
+/// Task_StripWeapons's time (F031285: 0.8 s) and Task_CuffTarget's (F031266: 0.99 s).
+const STRIP_SECONDS: f32 = 0.8;
+const CUFF_SECONDS: f32 = 0.99;
+
+/// What the AI's view (crate::sim View) reads of the law each tick: each one's flags for the
+/// law's conditions and each NPC's targets the law's finders found (the planner's hooks).
+#[derive(Debug, Clone, Default)]
+pub struct LawView {
+    /// Each one's first aid need (F040427, flesh and robotic) and each medic's patient
+    /// (F050304), once a second.
+    pub aid_need: Vec<f32>,
+    pub medic: std::collections::HashMap<usize, usize>,
+    pub caged: Vec<bool>,
+    pub dead: Vec<bool>,
+    pub carried_by: Vec<Option<usize>>,
+    pub carrying: Vec<Option<usize>>,
+    pub armed: Vec<bool>,
+    pub chained: Vec<bool>,
+    pub shackled: Vec<bool>,
+    pub escaping: Vec<bool>,
+    pub looks_slave: Vec<bool>,
+    pub standing_still: Vec<bool>,
+    pub crouching: Vec<bool>,
+    pub in_town: Vec<bool>,
+    pub has_home_town: Vec<bool>,
+    pub at_home_town: Vec<bool>,
+    pub arms_lost: Vec<bool>,
+    /// Inside a building; whom each carrier carries and takes for a friend (F044470); each
+    /// one's INTRUDER_IS_OUTSIDE of whom it carries (F038580).
+    pub in_building: Vec<bool>,
+    pub friends: std::collections::HashSet<(usize, usize)>,
+    pub intruder_out: Vec<bool>,
+    pub faction: Vec<Option<String>>,
+    /// (person, finder's task) -> the character found.
+    pub targets: std::collections::HashMap<(usize, u16), usize>,
+    /// person -> the cage F047589 found (furniture).
+    pub cages: std::collections::HashMap<usize, usize>,
+}
+
+impl LawView {
+    fn person(t: &crate::sim::Target) -> Option<usize> {
+        match t {
+            crate::sim::Target::Person(x) => Some(*x),
+            _ => None,
+        }
+    }
+
+    /// The law's conditions (F039867's checks) for `me` on `t`; `None` for the others.
+    pub fn check(&self, me: usize, c: u16, t: &crate::sim::Target) -> Option<bool> {
+        let x = Self::person(t);
+        let at = |v: &Vec<bool>, i: usize| v.get(i).copied().unwrap_or(false);
+        Some(match c {
+            // TARGET_IS_ARRESTED (F038613): caged, or carried by one of another faction; a
+            // target that is no character: whether I carry it
+            129 => match x {
+                Some(x) => at(&self.caged, x) || self.carried_by.get(x).copied().flatten().is_some_and(|k| self.faction.get(k) != self.faction.get(x)),
+                None => false,
+            },
+            // IS_CARRYING_TARGET (F038612: Character +0x348 and the carried handle valid, never
+            // compared with the target; crate::sim answers it first), IS_CARRYING_SOMETHING
+            // (F038574, Character +0x348)
+            48 | 47 => self.carrying.get(me).copied().flatten().is_some(),
+            // TARGET_IS_UNARMED (F038666): no weapon in hand or worn; anything not a character is
+            118 => x.is_none_or(|x| !at(&self.armed, x)),
+            // targetAtATown (F036823), isAtHomeTown (F050236)
+            113 => x.is_some_and(|x| at(&self.in_town, x)),
+            95 => at(&self.at_home_town, me),
+            // "My arm is messed up too badly to lift anything." (F039107, the medical +0x166; the
+            // name is what the player is told when it fails): the arms fit to lift,
+            // (assumption) not both arms lost
+            80 => !at(&self.arms_lost, me),
+            // isCarriedDudeDead (F038657)
+            99 => self.carrying.get(me).copied().flatten().is_some_and(|k| at(&self.dead, k)),
+            // FINAL_FOUND_AND_PUT_CARRIED_IN_A_CAGE (Character +0x380's handle empty),
+            // CARRIED_DUDE_NOW_IN_CAGE (F039855): (assumption) carrying no one
+            154 | 81 => self.carrying.get(me).copied().flatten().is_none(),
+            // TARGET_LOOKS_LIKE_A_SLAVE (F038711), isChained (F038662, Character +0x320),
+            // targetStandingStill (F044567), isTargetEscapee (F038664),
+            // isWearingShackles_locked (F038663)
+            120 => x.is_some_and(|x| at(&self.looks_slave, x)),
+            134 => x.is_some_and(|x| at(&self.chained, x)),
+            42 => x.is_some_and(|x| at(&self.standing_still, x)),
+            124 => x.is_some_and(|x| at(&self.escaping, x)),
+            114 => x.is_some_and(|x| at(&self.shackled, x)),
+            // INTRUDER_IS_OUTSIDE (F038580): the target, else the one carried: none, a friend,
+            // or out of every building and no longer carried by me
+            // "I need a medkit." (F050288): the target needs first aid (F03ded3 over 0.01).
+            // (not ported) Its Character +0x2e0 +0x7c test
+            22 => x.is_some_and(|x| 0.01 < self.aid_need.get(x).copied().unwrap_or(0.0)),
+            137 => match x {
+                Some(x) => !at(&self.in_building, x) && self.carrying.get(me).copied().flatten() != Some(x) || self.friends.contains(&(me, x)),
+                None => at(&self.intruder_out, me),
+            },
+            _ => return None,
+        })
+    }
+
+    /// The law's scores (AI methods by vtable slot, functions by address).
+    pub fn score(&self, me: usize, d: &kenshi_ai::task_def::TaskDef, t: &crate::sim::Target) -> f32 {
+        use kenshi_ai::task_def::Score;
+        let carrying = self.carrying.get(me).copied().flatten();
+        match d.score {
+            // Arresting (F038566): none out of town for a squad with a home town
+            Score::Method(32) => {
+                if !self.in_town.get(me).copied().unwrap_or(false) && self.has_home_town.get(me).copied().unwrap_or(false) { 0.0 } else { 1.0 }
+            }
+            // Bounty hunting (F038567): 1 while a cage is to be had (F047589)
+            Score::Method(33) => {
+                if self.cages.contains_key(&me) { 1.0 } else { 0.0 }
+            }
+            // Lifting (F038637): none carrying; 1 for a character not carried by me, 0.5 for
+            // anything else
+            Score::Method(59) => match (carrying, Self::person(t)) {
+                (Some(_), _) => 0.0,
+                (None, Some(x)) => {
+                    if self.carried_by.get(x).copied().flatten() == Some(me) { 0.0 } else { 1.0 }
+                }
+                (None, None) => 0.5,
+            },
+            // Watching slaves, Capturing slave (F038543): with no target 1 while carrying no one
+            // and standing; (assumption) 1 with one (the AI's +0x1d8 score not ported)
+            Score::Method(61) => match t {
+                crate::sim::Target::None => {
+                    if carrying.is_none() && !self.crouching.get(me).copied().unwrap_or(false) { 1.0 } else { 0.0 }
+                }
+                _ => 1.0,
+            },
+            // Find and put in cage (F038654): none carrying no one, 0.1 out of town, else 1
+            // ((not ported) its tests of the town's cages held by the AI's +0x48)
+            // First aid (F050293): (assumption) the target's need (F050304 weighs it by
+            // nearness and relation in finding the patient)
+            Score::Function(0x14099e0a0) => Self::person(t).map_or(0.0, |x| self.aid_need.get(x).copied().unwrap_or(0.0)),
+            // Intruder out (F038656): 2 carrying someone it takes for no friend, else none
+            Score::Function(0x1405a13a0) => match carrying {
+                Some(c) if !self.friends.contains(&(me, c)) => 2.0,
+                _ => 0.0,
+            },
+            Score::Function(0x1405a1140) => match carrying {
+                None => 0.0,
+                Some(_) => {
+                    if self.in_town.get(me).copied().unwrap_or(false) { 1.0 } else { 0.1 }
+                }
+            },
+            _ => 0.0,
+        }
+    }
+
+    /// The law's target finders (the +0x160 hooks).
+    pub fn find_target(&self, me: usize, task: u16) -> Option<crate::sim::Target> {
+        match task {
+            LAW_ENFORCER | BOUNTY_HUNTING | WATCHING_SLAVES | REMOVE_HOME_INTRUDER => self.targets.get(&(me, task)).map(|&x| crate::sim::Target::Person(x)),
+            MEDIC => self.medic.get(&me).map(|&x| crate::sim::Target::Person(x)),
+            FIND_CAGE_FOR_CARRIED | PUT_CARRIED_DEAD_IN_CAGES => self.cages.get(&me).map(|&k| crate::sim::Target::Furniture(k)),
+            _ => None,
+        }
+    }
+}
+
+impl Sim {
+    /// Whether `id` has goal `task` among its jobs.
+    fn has_goal(&self, id: usize, task: u16) -> bool {
+        self.folk[id].ai.jobs.iter().flatten().any(|g| g.task == task)
+    }
+
+    /// @fn F050281
+    ///
+    /// Bounty hunting's target finder: the first one `me` senses that is not carried, of a real
+    /// faction, not an animal, not held in a cage, with a bounty `me` sees (F046512), or tagged
+    /// ST_CRIMINAL by its squad, or that it takes for an enemy (F044572).
+    /// (assumption) The sensed: within 1500 units and seen (`can_see`).
+    fn bounty_hunter_target(&self, me: usize) -> Option<usize> {
+        let at = self.folk[me].mover.position_units();
+        (0..self.folk.len()).find(|&c| {
+            let p = &self.folk[c];
+            if c == me || p.dead || p.carried_by.is_some() || p.race.is_some() || p.prison.as_ref().is_some_and(|pr| !pr.out) || self.faction_id(c).is_some_and(|f| self.faction_not_real(&f)) {
+                return false;
+            }
+            let q = p.mover.position_units();
+            (q[0] - at[0]).hypot(q[2] - at[2]) < 1500.0
+                && (0 < self.bounty_seen_by(c, me) || self.has_short(me, c, kenshi_ai::PerceptionShortTerm::StCriminal) || self.takes_for_enemy(me, c, true))
+                && (p.down || self.can_see(me, c))
+        })
+    }
+
+    /// @fn F050280
+    ///
+    /// Law enforcer's target finder (Attacking trouble makers, 34): in its town, over what its
+    /// sensor knows (its knowledge entries, F046505) of that town and standing (not flagged 8,
+    /// down): the enemies (flag 4) making trouble (the state object +0xac above 0, or tagged
+    /// ST_AGGRESSOR by its squad, F040885 bit 2) and the neutrals (flag 2) `troublemaker`
+    /// takes (none of law enforcement, traders or diplomats; military only from another town
+    /// and of a faction the town does not keep, its +0xf0 map); the best of them its squad's
+    /// target scoring picks (F038638).
+    /// (assumption) The state object +0xac above 0: a crime under way. The town's +0xf0 map:
+    /// the town's own faction. F038638's pick: the nearest. F038606 holds for one of its town.
+    fn law_enforcer_target(&self, me: usize) -> Option<usize> {
+        let town = self.folk[me].town?;
+        let at = self.folk[me].mover.position_units();
+        let town_faction = self.towns.get(town).and_then(|t| t.faction.clone());
+        let mut list: Vec<usize> = Vec::new();
+        for &(c, _, _) in &self.folk[me].sensed {
+            let Some(q) = self.folk.get(c) else { continue };
+            if c == me || q.dead || q.down || q.away || q.town != Some(town) {
+                continue;
+            }
+            if self.takes_for_enemy(me, c, true) {
+                if q.crime.is_some() || self.has_short(me, c, kenshi_ai::PerceptionShortTerm::StAggressor) {
+                    list.push(c);
+                }
+                continue;
+            }
+            if self.takes_for_friend(me, c, true) {
+                continue;
+            }
+            match self.npc_class(c) {
+                1 | 3 | 5 => continue,
+                2 if self.home_town(c) == Some(town) || self.faction_id(c).is_some_and(|f| town_faction.as_deref() == Some(f.as_str())) => continue,
+                _ => {}
+            }
+            if self.troublemaker(me, c) {
+                list.push(c);
+            }
+        }
+        list.into_iter().min_by(|&a, &b| {
+            let d = |k: usize| {
+                let q = self.folk[k].mover.position_units();
+                (q[0] - at[0]).powi(2) + (q[2] - at[2]).powi(2)
+            };
+            d(a).total_cmp(&d(b))
+        })
+    }
+
+    /// @fn F050279
+    ///
+    /// Whether law enforcer `me` takes neutral `c` for a troublemaker: never a slaver (NPC
+    /// class 7); one with no trouble under way (the state object +0xac) and not tagged
+    /// ST_AGGRESSOR only with a prison sentence (+0xa0, F046518) and as a bandit (class 8);
+    /// then the one it wrongs (the state object's +0x68 handle) must be a character it goes for
+    /// (F039200): one `me` takes for a friend (F044470), or, that one no slaver, no bandit,
+    /// with no bounty with `me`'s faction (F046513) and no crime of its own: when `c`'s faction
+    /// is "not real" or of "fundamental type" 8, or that one takes `me` for no enemy (F044572)
+    /// and is no slave.
+    /// (assumption) +0xac above 0: a crime under way; +0x68: its crime's victim; F039200: in a
+    /// fight with it; a prison sentence: held or an escaped prisoner. Character vtable +0x248
+    /// (F039356) is none for people.
+    fn troublemaker(&self, me: usize, c: usize) -> bool {
+        if self.npc_class(c) == 7 {
+            return false;
+        }
+        let q = &self.folk[c];
+        if q.crime.is_none() && !self.has_short(me, c, kenshi_ai::PerceptionShortTerm::StAggressor) {
+            let sentenced = q.prison.is_some() || q.escaped.is_some();
+            if !sentenced || self.npc_class(c) != 8 {
+                return false;
+            }
+        }
+        let Some(v) = q.crime.as_ref().and_then(|cr| cr.victim).filter(|&v| v < self.folk.len() && v != c) else { return false };
+        let f = &self.arena.f[c];
+        if !(f.active && f.focus.or(f.combat.target) == Some(v)) {
+            return false;
+        }
+        if self.takes_for_friend(me, v, true) {
+            return true;
+        }
+        let vc = self.npc_class(v);
+        if vc == 7 {
+            return false;
+        }
+        let mine = self.faction_id(me);
+        if mine.as_deref().is_some_and(|f| 0 < self.bounty_with(v, f)) || vc == 8 || self.folk[v].crime.is_some() {
+            return false;
+        }
+        let cf = self.faction_id(c);
+        if cf.as_deref().is_some_and(|f| self.faction_not_real(f) || self.fundamental_type(f) == 8) {
+            return true;
+        }
+        !self.takes_for_enemy(v, me, true) && vc != 6
+    }
+
+    /// @fn F050304
+    ///
+    /// Medic's target finder: each person in reach not an enemy scores its first aid need
+    /// (F040427) x how near (F050251: 1 - distance^2 / 3397390, so 1843 units' reach) x, outside
+    /// the medic's squad, 0.8 for an ally else the relation / 100, at least 0.05 (F050239); x
+    /// 0.05 when someone else treats them already. Its own need, unscaled, wins when greater.
+    /// (assumption) A stranger needs a score of 0.1 to be treated (F050304's threshold
+    /// constant is not read; its "already treated" test is its squad's job list, here
+    /// anyone's). One of the player's treats the player's people, and allies' only with the AI
+    /// option Heal Allies (crate::routines' reading of it).
+    fn medic_patient(&self, id: usize, need: &[f32]) -> Option<usize> {
+        const REACH2: f32 = 3_397_390.0;
+        let p = &self.folk[id];
+        if p.dead || p.down || p.carrying.is_some() || p.prison.is_some() || p.carried_by.is_some() || p.race.is_some() {
+            return None;
+        }
+        let me = p.mover.position_units();
+        let rel = p.faction.as_ref().and_then(|f| self.relations.get(f));
+        let mut best: Option<(usize, f32)> = None;
+        for (k, q) in self.folk.iter().enumerate() {
+            if k == id || q.dead || q.carried_by.is_some() || q.race.is_some() {
+                continue;
+            }
+            let at = q.mover.position_units();
+            let d2 = (at[0] - me[0]).powi(2) + (at[2] - me[2]).powi(2);
+            if REACH2 <= d2 || rel.is_some_and(|r| r.is_enemy(q.faction.as_deref())) {
+                continue;
+            }
+            if p.player && !q.player && !(self.ai_options.heal_allies && rel.is_some_and(|r| r.is_ally(q.faction.as_deref()))) {
+                continue;
+            }
+            let mut score = need.get(k).copied().unwrap_or(0.0);
+            if score <= 0.0 {
+                continue;
+            }
+            let same_squad = p.platoon.is_some() && p.platoon == q.platoon;
+            if !same_squad {
+                let f = match (rel, q.faction.as_deref()) {
+                    (Some(r), Some(o)) if r.is_ally(Some(o)) => 0.8,
+                    (Some(r), Some(o)) => r.relation(o) / 100.0,
+                    _ => 0.0,
+                };
+                score *= if f < 0.0 { 0.05 } else { f.max(0.05) };
+            }
+            score *= (1.0 - d2 / REACH2).clamp(0.0, 1.0);
+            if self.folk.iter().any(|m| m.id != id && m.first_aid == Some(k)) {
+                score *= 0.05;
+            }
+            if !same_squad && score < 0.1 {
+                continue;
+            }
+            if best.is_none_or(|(_, b)| b < score) {
+                best = Some((k, score));
+            }
+        }
+        let own = need.get(id).copied().unwrap_or(0.0);
+        match best {
+            Some((_, b)) if b < own => Some(id),
+            Some((k, _)) => Some(k),
+            None if 0.0 < own => Some(id),
+            None => None,
+        }
+    }
+
+    /// @fn F050282
+    ///
+    /// Remove Home Intruder's target finder: of those its sensor knows as neutral, enemy, down
+    /// or lying low (flags 1 / 2 / 3 / 14, none a friend or caged, flags 0 / 9), the first not
+    /// carried, inside `me`'s home and down, in no bed or cage (Character +0x2f8 0).
+    fn intruder_target(&self, me: usize) -> Option<usize> {
+        let home = self.folk[me].home?;
+        self.folk[me].sensed.iter().map(|e| e.0).find(|&c| {
+            let Some(q) = self.folk.get(c) else { return false };
+            c != me
+                && !q.dead
+                && q.down
+                && q.carried_by.is_none()
+                && q.inside == Some(home)
+                && q.bed.is_none()
+                && q.prison.as_ref().is_none_or(|pr| pr.out)
+                && !self.takes_for_friend(me, c, true)
+        })
+    }
+
+    /// @fn F047571
+    /// @fn F047535
+    ///
+    /// Watching slaves' target finder: none while `me` is held; the first slave (any state) it
+    /// senses still to be processed (F047535: with an owner of a faction allied to `me`'s, not
+    /// carried, not an animal; not one already shaved and a slave (state 1)); else one held in a
+    /// cage in the building `me` is in, within 180 units, still to be processed.
+    /// (assumption) The sensed: within 1500 units and seen; (not ported) F047535's
+    /// reservation count (F052a3b) and F03a355.
+    fn slave_watch_target(&self, me: usize) -> Option<usize> {
+        if self.folk[me].prison.is_some() {
+            return None;
+        }
+        let mine = self.folk[me].faction.clone()?;
+        let at = self.folk[me].mover.position_units();
+        let to_process = |c: usize| {
+            let p = &self.folk[c];
+            let Some(s) = p.slave.as_ref() else { return false };
+            if p.carried_by.is_some() || p.race.is_some() || p.dead || !self.allied(&mine, &s.faction) {
+                return false;
+            }
+            !(s.state == crate::slavery::IS_SLAVE && p.shaved)
+        };
+        let sensed = (0..self.folk.len()).find(|&c| {
+            let q = self.folk[c].mover.position_units();
+            c != me && self.folk[c].slave.is_some() && (q[0] - at[0]).hypot(q[2] - at[2]) < 1500.0 && to_process(c) && self.can_see(me, c)
+        });
+        sensed.or_else(|| {
+            let inside = self.folk[me].inside?;
+            (0..self.folk.len()).find(|&c| {
+                let p = &self.folk[c];
+                let q = p.mover.position_units();
+                c != me && p.prison.as_ref().is_some_and(|pr| !pr.out) && p.inside == Some(inside) && (q[0] - at[0]).powi(2) + (q[1] - at[1]).powi(2) + (q[2] - at[2]).powi(2) <= 32400.0 && to_process(c)
+            })
+        })
+    }
+
+    /// F038711: whether `x` looks like a slave to `me`'s faction: no animal, no diplomat or law
+    /// enforcer; unless the faction "allow slaves weapons" no weapon in hand or worn; its body
+    /// armour and trousers none or slave things ("stigma" 6) and locked shackles worn.
+    /// (assumption) The rest of F038711's tests (the faction's "slave clothing" list
+    /// otherwise) are not ported.
+    fn looks_slave_to(&self, me: usize, x: usize) -> bool {
+        let p = &self.folk[x];
+        if p.race.is_some() || matches!(self.npc_class(x), 1 | 5) {
+            return false;
+        }
+        let allowed = self.folk[me].faction.as_deref().and_then(|f| self.data.get(f)).is_some_and(|f| f.bools.get("allow slaves weapons").copied().unwrap_or(false));
+        if !allowed && self.armed(x) {
+            return false;
+        }
+        let worn = |slot: i32| p.inventory.sections.iter().find(|s| s.slot == slot && s.is_equipment()).and_then(|s| s.items.first()).map(|pl| pl.item.record.clone());
+        let slave_thing = |r: &String| self.data.get(r).and_then(|d| d.ints.get("stigma").copied()) == Some(6);
+        worn(5).is_none_or(|r| slave_thing(&r)) && worn(6).is_none_or(|r| slave_thing(&r)) && self.shackles_lock(x).is_some()
+    }
+
+    /// Whether `id` has a weapon in hand or worn (F038666's test).
+    fn armed(&self, id: usize) -> bool {
+        self.folk[id].inventory.equipped().any(|i| matches!(i.kind, Some(ItemType::Weapon) | Some(ItemType::Crossbow)))
+    }
+
+    /// The law's view for the AI (see `LawView`): every tick the flags, once a second the
+    /// finders' targets for those with the law's goals.
+    pub fn law_view_tick(&mut self) {
+        let n = self.folk.len();
+        let mut v = std::mem::take(&mut self.law_state.view);
+        v.caged = self.folk.iter().map(|p| p.prison.as_ref().is_some_and(|pr| !pr.out)).collect();
+        v.dead = self.folk.iter().map(|p| p.dead).collect();
+        v.carried_by = self.folk.iter().map(|p| p.carried_by).collect();
+        v.carrying = self.folk.iter().map(|p| p.carrying).collect();
+        v.armed = (0..n).map(|i| self.armed(i)).collect();
+        v.chained = (0..n).map(|i| self.slave_state(i) == crate::slavery::IS_SLAVE).collect();
+        v.shackled = (0..n).map(|i| self.shackles_lock(i).is_some()).collect();
+        v.escaping = (0..n).map(|i| self.slave_state(i) == crate::slavery::ESCAPING_SLAVE).collect();
+        v.standing_still = self.folk.iter().map(|p| p.speed < 1.0).collect();
+        v.crouching = self.folk.iter().map(|p| p.down || p.sneaking).collect();
+        v.in_town = self.folk.iter().map(|p| p.town.is_some()).collect();
+        v.has_home_town = (0..n).map(|i| self.home_town(i).is_some()).collect();
+        v.at_home_town = (0..n).map(|i| self.folk[i].town.is_some() && self.home_town(i) == self.folk[i].town).collect();
+        v.arms_lost = (0..n).map(|i| self.limb_lost(i, 0) && self.limb_lost(i, 1)).collect();
+        v.faction = (0..n).map(|i| self.faction_id(i)).collect();
+        v.in_building = self.folk.iter().map(|p| p.inside.is_some()).collect();
+        // the carriers' take on whom they carry (F044470), and F038580 of it
+        v.friends.clear();
+        v.intruder_out = vec![true; n];
+        for me in 0..n {
+            if let Some(c) = self.folk[me].carrying {
+                let friend = self.takes_for_friend(me, c, true);
+                if friend {
+                    v.friends.insert((me, c));
+                }
+                v.intruder_out[me] = friend;
+            }
+        }
+        if self.tick.is_multiple_of(60) || v.looks_slave.len() != n {
+            v.targets.clear();
+            v.cages.clear();
+            v.medic.clear();
+            v.aid_need = (0..n).map(|i| {
+                let a = self.arena.f[i].medical.aid_need(false);
+                if self.folk[i].dead { 0.0 } else { a.flesh + a.robotic }
+            }).collect();
+            v.looks_slave = vec![false; n];
+            for me in 0..n {
+                let p = &self.folk[me];
+                // the player's people's Medic job (the Medic button; crate::jobs' goals list)
+                if p.player && !p.dead && !p.down && !p.away && p.jobs.iter().any(|j| j.task == MEDIC) && !self.arena.f[me].active && let Some(t) = self.medic_patient(me, &v.aid_need) {
+                    v.medic.insert(me, t);
+                }
+                if p.player || p.dead || p.down || p.away {
+                    continue;
+                }
+                if self.has_goal(me, BOUNTY_HUNTING) && let Some(t) = self.bounty_hunter_target(me) {
+                    v.targets.insert((me, BOUNTY_HUNTING), t);
+                }
+                if self.has_goal(me, LAW_ENFORCER) && let Some(t) = self.law_enforcer_target(me) {
+                    v.targets.insert((me, LAW_ENFORCER), t);
+                }
+                if self.has_goal(me, MEDIC) && !self.arena.f[me].active && let Some(t) = self.medic_patient(me, &v.aid_need) {
+                    v.medic.insert(me, t);
+                }
+                if self.has_goal(me, REMOVE_HOME_INTRUDER) && let Some(t) = self.intruder_target(me) {
+                    v.targets.insert((me, REMOVE_HOME_INTRUDER), t);
+                }
+                if self.has_goal(me, WATCHING_SLAVES) && let Some(t) = self.slave_watch_target(me) {
+                    v.targets.insert((me, WATCHING_SLAVES), t);
+                    v.looks_slave[t] = self.looks_slave_to(me, t);
+                }
+                let cages_wanted = self.has_goal(me, BOUNTY_HUNTING) || self.has_goal(me, FIND_CAGE_FOR_CARRIED) || self.has_goal(me, PUT_CARRIED_DEAD_IN_CAGES);
+                if cages_wanted && let Some(f) = p.faction.clone() {
+                    let at = p.mover.position_units();
+                    if let Some(k) = self.free_cage(&f, at, false) {
+                        v.cages.insert(me, k);
+                    }
+                }
+            }
+        }
+        if std::env::var("KENSHI_LAW_DEBUG").is_ok() && self.tick.is_multiple_of(600) {
+            let with = |t: u16| (0..n).filter(|&i| self.has_goal(i, t)).count();
+            eprintln!("law view: goals 34 {} / 204 {} / 183 {} / 281 {}; targets {:?}; cages {}", with(LAW_ENFORCER), with(BOUNTY_HUNTING), with(WATCHING_SLAVES), with(PUT_CARRIED_DEAD_IN_CAGES), v.targets, v.cages.len());
+        }
+        self.law_state.view = v;
+    }
+
+    /// The clip a law or slavery task of `id`'s plays while it is at it (the game's task clips
+    /// ask this): "medic" for Task_StripWeapons (181, F031285: every update until done),
+    /// Task_CuffTarget (166, F031266: under 0.99 s) and Task_ProcessNewSlave (182, F031348: its
+    /// first 3 s, after which it stops "squat T" and "medic").
+    pub fn law_task_clip(&self, id: usize) -> Option<&'static str> {
+        if self.law_state.processing.iter().any(|e| e.taker == id) {
+            return Some("medic");
+        }
+        let time = self.law_state.task_time.get(&id).copied()?;
+        match self.folk.get(id)?.ai.queue.first()?.task {
+            STRIPPING_WEAPONS => Some("medic"),
+            RESTRAINING if time < CUFF_SECONDS => Some("medic"),
+            _ => None,
+        }
+    }
+
+    /// The law's runnable tasks for whoever has one in hand (the planner's steps; crate::sim
+    /// leaves them to this):
+    /// - Stripping weapons (181, Task_StripWeapons F031285): after 0.8 s the target's weapons
+    ///   taken into one's own inventory (left on the ground when there is no room), the target
+    ///   tagged ST_HAS_BEEN_LOOTED;
+    /// - Lifting (68, 213, 240, Task_LiftSomething): the target picked up; done once carried;
+    /// - Putting down (69, Task_PutDownObject): the carried put down;
+    /// - Put in prison (108, Task_PutInSomething F031342): the carried put in the cage: a slave
+    ///   of one's faction (or by one who takes captives) as a slave, else a prisoner;
+    /// - Restraining (166, Task_CuffTarget F031266): after 0.99 s the target enslaved by one's
+    ///   squad (F030712, the crime of enslaving where it is one, F031266);
+    /// - Processing slave (182, Task_ProcessNewSlave): `begin_processing`, done once processed;
+    /// - Stand still dammit! (64, Task_MakeTargetStandStill): the target stops.
+    ///
+    /// A step whose target is gone (dead, or carried by another) is given up.
+    pub fn law_tasks_tick(&mut self, dt: f32) {
+        use crate::sim::Target;
+        let ids: Vec<usize> = self.folk.iter().filter(|p| !p.dead && !p.down && p.ai.queue.first().is_some_and(|s| LAW_RUNNABLE.contains(&s.task))).map(|p| p.id).collect();
+        for me in ids {
+            let Some(step) = self.folk[me].ai.queue.first().cloned() else { continue };
+            if std::env::var("KENSHI_LAW_DEBUG").is_ok() && !self.law_state.task_time.contains_key(&me) {
+                eprintln!("law: {me} takes up task {} on {:?}", step.task, step.target);
+            }
+            let done = |sim: &mut Sim| {
+                // the step may already be gone (the plan cleared while it ran)
+                if !sim.folk[me].ai.queue.is_empty() {
+                    sim.folk[me].ai.queue.remove(0);
+                }
+                sim.folk[me].started = false;
+                sim.law_state.task_time.remove(&me);
+            };
+            let give_up = |sim: &mut Sim| {
+                sim.folk[me].ai.queue.clear();
+                sim.folk[me].started = false;
+                sim.law_state.task_time.remove(&me);
+            };
+            let target = match step.target {
+                Target::Person(x) => Some(x),
+                _ => None,
+            };
+            let time = self.law_state.task_time.get(&me).copied().unwrap_or(0.0) + dt;
+            self.law_state.task_time.insert(me, time);
+            match step.task {
+                STRIPPING_WEAPONS => {
+                    let Some(t) = target.filter(|&t| !self.folk[t].dead) else {
+                        give_up(self);
+                        continue;
+                    };
+                    if time <= STRIP_SECONDS {
+                        continue;
+                    }
+                    let mut taken = Vec::new();
+                    for s in self.folk[t].inventory.sections.iter_mut().filter(|s| s.is_equipment()) {
+                        let mut k = 0;
+                        while k < s.items.len() {
+                            if matches!(s.items[k].item.kind, Some(ItemType::Weapon) | Some(ItemType::Crossbow)) {
+                                taken.push(s.items.remove(k).item);
+                            } else {
+                                k += 1;
+                            }
+                        }
+                    }
+                    for item in taken {
+                        if !self.folk[me].inventory.add(item.clone(), false) {
+                            self.drop_item(t, item);
+                        }
+                    }
+                    self.tag_short(me, t, kenshi_ai::PerceptionShortTerm::StHasBeenLooted);
+                    done(self);
+                }
+                LIFTING | LIFTING_SNATCHING | CAPTURE_TARGET => {
+                    // (Task_LiftSomething lifts the dead too: Find corpses' bodies, crate::sim)
+                    let Some(t) = target.filter(|&t| (step.task == LIFTING || !self.folk[t].dead) && self.folk[t].carried_by.is_none_or(|c| c == me)) else {
+                        give_up(self);
+                        continue;
+                    };
+                    if self.folk[me].carrying == Some(t) {
+                        done(self);
+                    } else if self.folk[me].pickup != Some(t) && self.folk[t].down {
+                        // (at it: the lift within reach is crate::sim's)
+                        self.folk[me].pickup = Some(t);
+                    }
+                }
+                PUTTING_DOWN => {
+                    if self.folk[me].carrying.is_some() {
+                        self.order_drop(&[me]);
+                    }
+                    done(self);
+                }
+                PUT_IN_PRISON => {
+                    let (Target::Furniture(cage), Some(c)) = (step.target, self.folk[me].carrying) else {
+                        give_up(self);
+                        continue;
+                    };
+                    let Some(f) = self.folk[me].faction.clone() else {
+                        give_up(self);
+                        continue;
+                    };
+                    self.folk[me].carrying = None;
+                    self.folk[c].carried_by = None;
+                    let theirs = self.folk[c].slave.as_ref().is_some_and(|s| s.faction == f);
+                    if theirs || self.folk[me].captures {
+                        let owner = self.folk[me].platoon;
+                        if self.folk[c].slave.is_none() {
+                            self.make_slave(c, owner, &f);
+                        }
+                        self.imprison(c, cage, &f, true);
+                    } else {
+                        self.imprison(c, cage, &f, false);
+                    }
+                    self.remember(c, me, crate::dialogue::LT_MY_CAPTOR);
+                    done(self);
+                }
+                RESTRAINING => {
+                    let Some(t) = target.filter(|&t| !self.folk[t].dead) else {
+                        give_up(self);
+                        continue;
+                    };
+                    if time <= CUFF_SECONDS {
+                        continue;
+                    }
+                    self.cuffing_crime(me, t);
+                    let Some(f) = self.folk[me].faction.clone() else {
+                        give_up(self);
+                        continue;
+                    };
+                    if self.folk[t].slave.is_none() {
+                        let owner = self.folk[me].platoon;
+                        self.folk[t].slave = Some(crate::slavery::Slavery::new(owner, &f));
+                    } else {
+                        self.set_slave_state(t, crate::slavery::IS_SLAVE);
+                    }
+                    self.put_on_shackles(t);
+                    done(self);
+                }
+                PROCESSING_SLAVE => {
+                    let Some(t) = target.filter(|&t| !self.folk[t].dead) else {
+                        give_up(self);
+                        continue;
+                    };
+                    let queued = self.law_state.processing.iter().any(|e| e.slave == t);
+                    if !self.folk[me].started {
+                        self.folk[me].started = true;
+                        if !queued {
+                            let f = self.folk[t].slave.as_ref().map(|s| s.faction.clone()).or_else(|| self.folk[me].faction.clone()).unwrap_or_default();
+                            self.begin_processing(t, &f, me);
+                        }
+                    } else if !queued {
+                        done(self);
+                    }
+                }
+                // Task_TakeIntruderOutside (F030842 start, F030843 update, F031060 arrival): out
+                // of its home's door (the door nearest) to beyond its outside point; there, or
+                // already out of every building, the carried is put down and ignored for 20 s
+                // (F044546); stuck, or after 5 game minutes, put down where it is
+                INTRUDER_OUT => {
+                    let Some(c) = self.folk[me].carrying else {
+                        give_up(self);
+                        continue;
+                    };
+                    let Some(home) = self.folk[me].home else {
+                        give_up(self);
+                        continue;
+                    };
+                    let put_down = |sim: &mut Sim, ignore: bool| {
+                        sim.order_drop(&[me]);
+                        if ignore {
+                            let p = &mut sim.folk[me];
+                            match p.ignored.iter_mut().find(|i| i.0 == c) {
+                                Some(i) => i.1 = crate::sim::IGNORE_SECONDS,
+                                None => p.ignored.push((c, crate::sim::IGNORE_SECONDS)),
+                            }
+                        }
+                    };
+                    if self.folk[me].inside.is_none() && !self.folk[me].started {
+                        put_down(self, true);
+                        done(self);
+                        continue;
+                    }
+                    let at = self.folk[me].mover.position_units();
+                    let door = self.door_states.iter().filter(|d| d.door.placement == home && !d.gone).min_by(|x, y| {
+                        let l = |p: [f32; 3]| (p[0] - at[0]).hypot(p[2] - at[2]);
+                        l(x.door.position).total_cmp(&l(y.door.position))
+                    });
+                    let Some(door) = door else {
+                        give_up(self);
+                        continue;
+                    };
+                    let (p0, q0) = (door.door.position, door.inside);
+                    let out = [p0[0] + (p0[0] - q0[0]) * INTRUDER_OUT_BEYOND, p0[1], p0[2] + (p0[2] - q0[2]) * INTRUDER_OUT_BEYOND];
+                    let minutes = time as f64 / self.hour_secs * 60.0;
+                    if !self.folk[me].started {
+                        self.folk[me].started = true;
+                        let Sim { folk, manager, .. } = self;
+                        let p = &mut folk[me];
+                        p.pathing.go_to(p.id, &p.mover, out, false, manager);
+                        continue;
+                    }
+                    let arrived = (at[0] - out[0]).hypot(at[2] - out[2]) < 20.0;
+                    let p = &self.folk[me];
+                    let stuck = !arrived && !p.pathing.pending && p.pathing.follow.is_none();
+                    if arrived || (stuck && p.inside.is_none()) {
+                        put_down(self, true);
+                        done(self);
+                    } else if stuck || (!p.sneaking && INTRUDER_OUT_MINUTES <= minutes) {
+                        put_down(self, false);
+                        done(self);
+                    }
+                }
+                // Task_FirstAid (25): the patient treated (`Sim::first_aid_tick` walks there and
+                // treats until done)
+                FIRST_AID => {
+                    if let Some(t) = target.filter(|&t| !self.folk[t].dead) {
+                        self.folk[me].first_aid = Some(t);
+                    }
+                    done(self);
+                }
+                STAND_STILL_DAMMIT => {
+                    if let Some(t) = target {
+                        self.order_stop(&[t]);
+                    }
+                    done(self);
+                }
+                _ => {}
             }
         }
     }
@@ -1596,17 +2885,54 @@ mod tests {
 
     #[test]
     fn noise() {
-        let n = |speed: f32, stealth: f32| Noise { sneaking: true, fighting: false, speed, stealth, inside: None };
-        let heard = |n: &Noise, d: f32| (0..2000).filter(|&w| hear_roll(1, 2, w as f32 * 2.0, 15.0, None, d * d, n)).count();
-        // standing still: no noise; walking: within 50 units; running: within 150
-        assert_eq!(heard(&n(0.0, 0.0), 10.0), 0);
-        assert!(heard(&n(10.0, 0.0), 10.0) > 0);
-        assert_eq!(heard(&n(10.0, 0.0), 60.0), 0);
-        assert!(heard(&n(30.0, 0.0), 100.0) > 0);
+        let n = |speed: f32, stealth: f32| Noise { sneaking: true, speed, own_speed: 30.0, stealth, ..Default::default() };
+        let me = Noise::default();
+        let heard = |n: &Noise, d: f32| (0..2000).filter(|&w| hear_roll(1, 2, w as f32 * 2.0, &me, d * d, n, |_| true)).count();
+        // sneaking: lerp(stealth, 450, 80), halved for the awake: 225 at no stealth
+        assert_eq!(n(0.0, 0.0).radius(), 450.0);
+        assert!(heard(&n(0.0, 0.0), 200.0) > 0);
+        assert_eq!(heard(&n(0.0, 0.0), 230.0), 0);
         // the stealthier, the less
         assert!(heard(&n(30.0, 0.8), 20.0) < heard(&n(30.0, 0.0), 20.0));
         assert_eq!(heard(&n(30.0, 1.0), 20.0), 0);
-        // not sneaking or fighting: not by noise
+        // a dust storm at full strength: a quarter
+        assert_eq!(Noise { weather: (crate::hazards::WA_DUST, 1.0), ..n(0.0, 0.0) }.radius(), 112.5);
+        // fighting: lerp(speed / own speed, 350, 600), heard at once in the same building
+        let f = Noise { fighting: true, ..n(15.0, 0.0) };
+        assert_eq!(f.radius(), 475.0);
+        assert_eq!(heard(&f, 230.0), 2000);
+        assert_eq!(heard(&f, 240.0), 0);
+        // in another building: only fighting, one of the two outdoors, a quarter (shut: an eighth)
+        let inside = Noise { inside: Some(3), ..f };
+        let roll = |shut: bool, d: f32| (0..200).filter(|&w| hear_roll(1, 2, w as f32 * 2.0, &me, d * d, &inside, |_| !shut)).count();
+        assert!(roll(false, 100.0) > 0);
+        assert_eq!(roll(false, 120.0), 0);
+        assert_eq!(roll(true, 60.0), 0);
+        assert_eq!(hear_roll(1, 2, 0.0, &Noise { inside: Some(4), ..me }, 1.0, &inside, |_| true), false);
+        // neither sneaking nor fighting: not by noise; two of the player's: within 1000
         assert_eq!(heard(&Noise { sneaking: false, ..n(30.0, 0.0) }, 20.0), 0);
+        let pl = Noise { player: true, ..Default::default() };
+        assert!(hear_roll(1, 2, 0.0, &pl, 999.0 * 999.0, &pl, |_| true));
+        // the line of sight: clear with no solids
+        assert!(sight_line(&None, [0.0; 3], [100.0, 0.0, 0.0], false));
+        assert!(!sight_cast(&me, &Noise::default()));
+        assert!(sight_cast(&me, &pl));
+    }
+
+    #[test]
+    fn sight_lines() {
+        use kenshi_io::nxu::{Pose, Shape, ShapeKind};
+        // a wall 4 units thick at x 50 (origin 1000 off)
+        let s = kenshi_physics::world::Solids::new(&[Shape { pose: Pose { rows: Pose::IDENTITY.rows, pos: [50.0, 0.0, 0.0] }, kind: ShapeKind::Box([2.0, 100.0, 100.0]) }]);
+        let w = kenshi_physics::world::StaticWorld::new([(bevy::math::Affine3A::IDENTITY, &s)]);
+        let o = [1000.0, 0.0, 0.0];
+        let obs: Obstacles = Some((std::sync::Arc::new(w), o));
+        let at = |x: f32| [x + 1000.0, 0.0, 0.0];
+        assert!(sight_line(&obs, at(0.0), at(40.0), false));
+        assert!(!sight_line(&obs, at(0.0), at(100.0), false));
+        // the hit within 2 of the target does not block; nor the cage of a caged one
+        assert!(sight_line(&obs, at(0.0), at(49.0), false));
+        assert!(sight_line(&obs, at(0.0), at(60.0), true));
+        assert!(!sight_line(&obs, at(0.0), at(100.0), true));
     }
 }

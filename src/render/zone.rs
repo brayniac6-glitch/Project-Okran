@@ -52,6 +52,8 @@ pub struct BuildingView {
     pub interior: kenshi_world::interior::Interior,
     pub to_local: Mat4,
     pub levels: Vec<(i32, f32)>,
+    /// A ruin: its interior never opens (F045556 skips a building whose +0x1a1 is set).
+    pub destroyed: bool,
 }
 
 impl BuildingView {
@@ -92,6 +94,8 @@ pub struct Piece {
     pub swivel: Option<Swivel>,
     /// One of the building's doors (its place in the "doors" list), moved as it opens.
     pub door: Option<usize>,
+    /// Shown only while its building's interior is open ([`InteriorContent`]).
+    pub content: bool,
 }
 
 pub struct ZoneScene {
@@ -109,11 +113,15 @@ pub struct ZoneScene {
     pub pieces: Vec<Piece>,
     pub meshes: HashMap<String, Vec<Mesh>>,
     /// The EFFECT records placed on its buildings and their parts (F037795): effect, scene
-    /// position and orientation.
+    /// position and orientation; and each one's building (placement index).
     pub effects: Vec<(String, Vec3, Quat)>,
+    pub effects_of: Vec<usize>,
     /// The LIGHT records placed on its buildings, their parts and their furniture
     /// (`placed_lights`): light, scene position and orientation.
     pub lights: Vec<(String, Vec3, Quat)>,
+    /// Per light: the building (placement index) it is inside of, for a light of its interior's
+    /// furniture (`placed_lights_inside`); None for one out of doors.
+    pub lights_inside: Vec<Option<usize>>,
     /// Grass pages: (mesh, sprite, range, centre in scene coordinates).
     pub grass: Vec<(Mesh, String, FoliageRange, Vec3)>,
     /// Keep-out discs (centre, radius) of placed parts, in scene coordinates.
@@ -348,6 +356,17 @@ pub struct DoorPiece {
     pub rest: Transform,
 }
 
+/// What a building's interior holds while it is open (F037852 / F037853 / F037736): its
+/// "interior" parts (floors, inner walls, stairs; F037852 makes them as the interior opens, F037736
+/// removes them as it closes) and the furniture of its interior layout that is not "outside" (its
+/// state record's flags, F037789; F038257 makes it hidden, F037728 / F037736 hide it while the
+/// interior is closed). The game shows them while the building is open and for 10 s after
+/// (`hide_roofs`). (assumption: furniture of the exterior layout and the building record's own
+/// instances are outside; a ruin's interior parts are drawn as its parts, F037849, so they are
+/// not marked)
+#[derive(Component, Clone, Copy, Debug)]
+pub struct InteriorContent;
+
 /// A building part that moves: a turret's head (swivelling nodes, posed by [`TurretAims`]) or
 /// a part that spins by itself (`spins`: fans, machines, wind generators); its building's place
 /// (world units) and its node chain, posed each frame (`pose_swivels`).
@@ -506,9 +525,9 @@ pub fn mesh_floors<'a>(data: &'a GameDataContainer, b: &'a GameData) -> HashMap<
 /// furniture of its interior and exterior layouts (interiors.level, chosen by the placement's
 /// state record, `kenshi_world::nodes::Layouts`). Nodes (invisible) are left out.
 /// A mesh of a building's interior parts, doors and furniture: mesh, material, place in the
-/// building, whether an interior part, and for a turret's swivelling part its instance's place
-/// and node chain.
-pub type InteriorMesh<'a> = (&'a str, Option<&'a GameData>, Transform, bool, Option<(Transform, Vec<(Vec3, Option<i32>)>, Vec<SpinDef>)>, Option<usize>);
+/// building, whether an interior part, for a turret's swivelling part its instance's place
+/// and node chain, its door, and whether it is interior content ([`InteriorContent`]).
+pub type InteriorMesh<'a> = (&'a str, Option<&'a GameData>, Transform, bool, Option<(Transform, Vec<(Vec3, Option<i32>)>, Vec<SpinDef>)>, Option<usize>, bool);
 
 pub fn interior_meshes<'a>(
     data: &'a GameDataContainer,
@@ -521,18 +540,18 @@ pub fn interior_meshes<'a>(
     for (sid, _) in b.refs("interior") {
         if let Some(r) = data.get(sid) {
             for (m, mat) in record_meshes_of(data, r, p.destroyed) {
-                out.push((m, mat, Transform::IDENTITY, true, None, None));
+                out.push((m, mat, Transform::IDENTITY, true, None, None, !p.destroyed));
             }
         }
     }
     for (n, (sid, _)) in b.refs("doors").iter().enumerate().filter(|_| !p.destroyed) {
         if let Some(r) = data.get(sid) {
             for (m, mat) in record_meshes(data, r) {
-                out.push((m, mat, Transform::IDENTITY, false, None, Some(n)));
+                out.push((m, mat, Transform::IDENTITY, false, None, Some(n), false));
             }
         }
     }
-    let place = |i: &'a kenshi_io::fcs::Instance, out: &mut Vec<InteriorMesh<'a>>| {
+    let place = |i: &'a kenshi_io::fcs::Instance, content: bool, out: &mut Vec<InteriorMesh<'a>>| {
         let Some(t) = data.get(&i.target) else { return };
         if t.bools.get("is node").copied().unwrap_or(false) {
             return;
@@ -542,22 +561,31 @@ pub fn interior_meshes<'a>(
             .with_rotation(Quat::from_xyzw(x, y, z, w).normalize());
         for part in part_meshes_placed(data, t, false) {
             let chain = part.swivels().then(|| (part.chain.clone(), part.spins.clone()));
-            out.push((part.mesh, part.material, local * part.local, false, chain.map(|(c, sp)| (local, c, sp)), None));
+            out.push((part.mesh, part.material, local * part.local, false, chain.map(|(c, sp)| (local, c, sp)), None, content));
         }
         for (sid, _) in t.refs("interior") {
             if let Some(r) = data.get(sid) {
                 for (m, mat) in record_meshes(data, r) {
-                    out.push((m, mat, local, false, None, None));
+                    out.push((m, mat, local, false, None, None, content));
                 }
             }
         }
     };
     for i in &b.instances {
-        place(i, &mut out);
+        place(i, false, &mut out);
     }
-    for name in p.interior.iter().chain(&p.exterior) {
+    // the interior layout's furniture not "outside" (its state record's flags, F037789) is the
+    // interior's; (assumption) the exterior layout's is outside (F038257 marks one outside by its
+    // layout entry), and a layout named as both is taken as the exterior one
+    for name in p.interior.iter().filter(|n| p.exterior.as_ref() != Some(*n)) {
+        let outside = layouts.outside(data, &p.building, name);
+        for (k, i) in layouts.for_building(data, &p.building, name).iter().enumerate() {
+            place(i, !outside.get(k).copied().unwrap_or(false), &mut out);
+        }
+    }
+    if let Some(name) = &p.exterior {
         for i in layouts.for_building(data, &p.building, name) {
-            place(i, &mut out);
+            place(i, false, &mut out);
         }
     }
     out
@@ -602,6 +630,21 @@ pub fn placed_lights(
     b: &GameData,
     layouts: Option<(&kenshi_world::nodes::Layouts, &kenshi_world::Placement)>,
 ) -> Vec<(String, Vec3, Quat)> {
+    lights_of(data, b, layouts, true).into_iter().map(|(l, at, rot, _)| (l, at, rot)).collect()
+}
+
+/// @fn F037795
+///
+/// `placed_lights`, each with whether it is indoors: a light of furniture inside the building
+/// (its interior layout's, not "outside", `Layouts::outside`; F037795 passes a building inside
+/// another and not outside to F037794 -> F045912, whose custom parameter x it clears: lit day
+/// and night, shown with the interior). The building's own lights and the rest are out of doors
+/// (dark by day, F030155).
+pub fn placed_lights_inside(
+    data: &GameDataContainer,
+    b: &GameData,
+    layouts: Option<(&kenshi_world::nodes::Layouts, &kenshi_world::Placement)>,
+) -> Vec<(String, Vec3, Quat, bool)> {
     lights_of(data, b, layouts, true)
 }
 
@@ -611,7 +654,7 @@ fn lights_of(
     b: &GameData,
     layouts: Option<(&kenshi_world::nodes::Layouts, &kenshi_world::Placement)>,
     furniture: bool,
-) -> Vec<(String, Vec3, Quat)> {
+) -> Vec<(String, Vec3, Quat, bool)> {
     fn walk(data: &GameDataContainer, node: &GameData, at: Transform, depth: u32, furniture: bool, out: &mut Vec<(String, Vec3, Quat)>) {
         if depth > 8 {
             return;
@@ -632,15 +675,23 @@ fn lights_of(
             walk(data, part, at * Transform::from_translation(Vec3::new(f("offset X"), f("offset Y"), f("offset Z"))), depth + 1, furniture, out);
         }
     }
-    let mut out = Vec::new();
-    walk(data, b, Transform::IDENTITY, 0, furniture, &mut out);
+    let mut own = Vec::new();
+    walk(data, b, Transform::IDENTITY, 0, furniture, &mut own);
+    let mut out: Vec<(String, Vec3, Quat, bool)> = own.into_iter().map(|(l, at, rot)| (l, at, rot, false)).collect();
     if let Some((layouts, p)) = layouts {
         for name in p.interior.iter().chain(&p.exterior) {
-            for i in layouts.for_building(data, &p.building, name) {
+            // the interior layout's furniture not outside is indoors (a layout named as both is
+            // the exterior one)
+            let interior = p.interior.as_ref() == Some(name) && p.exterior.as_ref() != Some(name);
+            let outside = layouts.outside(data, &p.building, name);
+            for (k, i) in layouts.for_building(data, &p.building, name).iter().enumerate() {
                 let Some(t) = data.get(&i.target) else { continue };
                 let [w, x, y, z] = i.rotation;
                 let local = Transform::from_translation(Vec3::from(i.position)).with_rotation(Quat::from_xyzw(x, y, z, w).normalize());
-                walk(data, t, local, 1, furniture, &mut out);
+                let mut found = Vec::new();
+                walk(data, t, local, 1, furniture, &mut found);
+                let inside = interior && !outside.get(k).copied().unwrap_or(false);
+                out.extend(found.into_iter().map(|(l, at, rot)| (l, at, rot, inside)));
             }
         }
     }
@@ -650,7 +701,7 @@ fn lights_of(
 /// The LIGHT instances of a building itself and its parts (not of the furniture it places), as
 /// `placed_lights` gives them: what its setLightsOn switches (F029364).
 pub fn own_lights(data: &GameDataContainer, b: &GameData) -> Vec<(String, Vec3, Quat)> {
-    lights_of(data, b, None, false)
+    lights_of(data, b, None, false).into_iter().map(|(l, at, rot, _)| (l, at, rot)).collect()
 }
 
 /// Load zone (X, Y) with `margin` units of terrain around it.
@@ -737,15 +788,21 @@ fn load_zone_at(
     let interiors = kenshi_world::interior::interiors(data, res, &placed);
     let mut to_local: HashMap<usize, Mat4> = HashMap::new();
     let mut records: HashMap<usize, String> = HashMap::new();
+    let mut ruins: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut pieces = Vec::new();
     let mut effects = Vec::new();
     let mut lights = Vec::new();
+    let mut lights_inside = Vec::new();
+    let mut effects_of = Vec::new();
     let placed_names: Vec<String> = placed.iter().map(|p| data.get(&p.building).map_or(p.building.clone(), |r| r.name.clone())).collect();
     for (bi, p) in placed.into_iter().enumerate() {
         let Some(b) = data.get(&p.building) else {
             continue;
         };
         records.insert(bi, p.building.clone());
+        if p.destroyed {
+            ruins.insert(bi);
+        }
         // (testing) KENSHI_HIDE_BUILDINGS=a|b: buildings whose name holds any of those not drawn
         if let Ok(h) = std::env::var("KENSHI_HIDE_BUILDINGS")
             && h.split('|').any(|w| !w.is_empty() && b.name.contains(w))
@@ -775,15 +832,17 @@ fn load_zone_at(
         if !off {
             for (effect, at, rot) in placed_effects(data, b) {
                 effects.push((effect, transform.transform_point(at), transform.rotation * rot));
+                effects_of.push(bi);
             }
         }
         let mut own = if off { own_lights(data, b) } else { Vec::new() };
-        for (light, at, rot) in placed_lights(data, b, Some((layouts(root), &p))) {
+        for (light, at, rot, inside) in placed_lights_inside(data, b, Some((layouts(root), &p))) {
             if let Some(k) = own.iter().position(|o| o.0 == light && o.1 == at) {
                 own.swap_remove(k);
                 continue;
             }
             lights.push((light, transform.transform_point(at), transform.rotation * rot));
+            lights_inside.push(inside.then_some(bi));
         }
         // each part where its offsets put it; a turret's swivelling parts also keep their chain
         for part in part_meshes_placed(data, b, p.destroyed) {
@@ -800,10 +859,11 @@ fn load_zone_at(
                     interior: false,
                     swivel,
                     door: None,
+                    content: false,
                 });
             }
         }
-        for (m, mat, local, interior, swivel, door) in interior_meshes(data, b, layouts(root), &p) {
+        for (m, mat, local, interior, swivel, door, content) in interior_meshes(data, b, layouts(root), &p) {
             if let Some(mesh) = res.find(m) {
                 let swivel = swivel.map(|(inst, chain, spins)| {
                     let base = transform * inst;
@@ -822,6 +882,7 @@ fn load_zone_at(
                     interior,
                     swivel,
                     door,
+                    content,
                 });
             }
         }
@@ -858,6 +919,7 @@ fn load_zone_at(
                 interior: false,
                 swivel: None,
                 door: None,
+                content: false,
             });
         }
     }
@@ -970,6 +1032,7 @@ fn load_zone_at(
             record: records.get(&i.placement).cloned().unwrap_or_default(),
             to_local: to_local.get(&i.placement).copied().unwrap_or(Mat4::IDENTITY),
             levels: levels.get(&i.placement).cloned().unwrap_or_default(),
+            destroyed: ruins.contains(&i.placement),
             interior: i,
         })
         .collect();
@@ -1001,7 +1064,9 @@ fn load_zone_at(
         meshes,
         occupied,
         effects,
+        effects_of,
         lights,
+        lights_inside,
         grass: Vec::new(),
         zone,
         buildings,
@@ -1466,6 +1531,7 @@ impl ZoneScene {
                     interior: false,
                     swivel: None,
                     door: None,
+                    content: false,
                 });
             }
             let (Some(mesh), mut look) = world.looks[p.mesh].clone() else { continue };
@@ -1495,6 +1561,7 @@ impl ZoneScene {
                 interior: false,
                 swivel: None,
                 door: None,
+                content: false,
             });
         }
     }
@@ -1734,6 +1801,9 @@ impl ZoneScene {
                 }
                 if let (Some(building), Some(index)) = (piece.building, piece.door) {
                     e.insert(DoorPiece { zone: self.zone, building, index, rest: piece.transform });
+                }
+                if piece.content && piece.building.is_some() {
+                    e.insert(InteriorContent);
                 }
             }
         }

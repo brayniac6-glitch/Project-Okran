@@ -12,8 +12,9 @@
 //! (F029386: each blow takes min(max(2 blunt, 20), 60) x 0.015 off the gate's "health";
 //! broken, it stands open and takes no lock, "Break").
 //!
-//! (assumption) Kenshi opens a door for a path that crosses it; here someone walking within
-//! `DOOR_OPEN_REACH` of a closed door opens it. A locked door is opened only by those who live
+//! (assumption) Kenshi opens a door for a path that crosses it; here someone walking toward a
+//! closed door within `DOOR_OPEN_REACH` of it opens it (one walking away, as from a door just
+//! locked, does not). A locked door is opened only by those who live
 //! behind it (taken to hold its key), and a gate also by its owner's people. A blow lands every
 //! `BASH_EVERY` seconds (Kenshi lands one per attack animation); unarmed, a quarter of it.
 use crate::sim::{DOOR_CLOSED, DOOR_OPEN_REACH, PLAYER_FACTION, Sim};
@@ -221,13 +222,13 @@ impl Sim {
         for (p, &n) in self.folk.iter_mut().zip(&numbers) {
             p.pathing.pass = Pass { faction: if p.player { player } else { n }, player: p.player, ignore: false };
         }
-        // who is walking where (people standing still open nothing)
-        let walkers: Vec<([f32; 3], Option<usize>, u32, bool)> = self
+        // who is walking where (people standing still open nothing), and which way
+        let walkers: Vec<([f32; 3], Option<usize>, u32, bool, [f32; 3])> = self
             .folk
             .iter()
             .zip(&numbers)
             .filter(|(p, _)| !p.dead && !p.down && !p.away && p.speed > 0.1)
-            .map(|(p, &n)| (p.mover.position_units(), p.home, if p.player { player } else { n }, p.player))
+            .map(|(p, &n)| (p.mover.position_units(), p.home, if p.player { player } else { n }, p.player, p.mover.velocity))
             .collect();
         let reach2 = DOOR_OPEN_REACH * DOOR_OPEN_REACH;
         for d in 0..self.door_states.len() {
@@ -238,9 +239,13 @@ impl Sim {
             }
             let at = s.door.position;
             let locked = s.locked && s.level >= 1;
-            let opener = walkers.iter().find(|(p, home, f, is_player)| {
+            let opener = walkers.iter().find(|(p, home, f, is_player, v)| {
                 let (dx, dz) = (p[0] - at[0], p[2] - at[2]);
                 if dx * dx + dz * dz >= reach2 || (p[1] - at[1]).abs() > 120.0 {
+                    return false;
+                }
+                // heading for the door
+                if v[0] * -dx + v[2] * -dz <= 0.0 {
                     return false;
                 }
                 let own = *home == Some(s.door.placement) || gate == Some(*f);

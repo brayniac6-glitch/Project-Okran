@@ -8,12 +8,49 @@
 //! The lines are kept as text (`tooltip_ui`'s format): "label\tvalue\tcolour" each, the first
 //! the title (colour t, the game's #492620: F044593 writes the name in it), then the lines (v: a
 //! label in #140806 and its value in #afa68b; c: a class line in #afa68b; g / r: a value in the
-//! bonus #a8b774 / penalty #59231a); a line with no tab is a paragraph. The damage against robots, humans, animals
+//! bonus #a8b774 / penalty #59231a; #rrggbb: both in that colour, the grade line in the item's,
+//! `item_colour`); a line with no tab is a paragraph. The damage against robots, humans, animals
 //! and races (F044624 shows their labels by a helper not traced) read "{n}x", shown when not 1;
 //! armour penetration reads "{n}%".
 use super::Game;
 use kenshi_char::inventory::Item;
 use kenshi_data::{GameData, ItemType};
+
+/// @fn F024535
+/// @fn F024537
+///
+/// An item's colour (kenshi_colours.xml's ratings, read at start by F024546), as 0xrrggbb: a
+/// weapon, armour, crossbow, limb, bag, nest item, map item or plain item by its kind (others
+/// "DropItemLabelBackDefault", #ffffff); a plain item (ITEM) "ItemArtifact" (#0dfceb) when its
+/// record is an "artifact", else "ItemStandard" (#e0cccc); the rest by their quality level (a
+/// bag's, nest item's and map item's 0): under 16 "ItemGrade0" (#666666), under 36 "ItemGrade1"
+/// (#d9ccbf), under 51 "ItemGrade2" (#4099b3), under 66 "ItemGrade3" (#66fc80), to 80
+/// "ItemGrade4" (#fceb0d), over that "ItemGrade5" (not in the xml: the game's own (0.99, 0.92,
+/// 0.05), F162738). The tooltips write their grade lines in it (getHex), the ground's item labels
+/// take it (F024557).
+pub(super) fn item_colour(data: &kenshi_data::GameDataContainer, item: &Item) -> u32 {
+    match item.kind {
+        Some(ItemType::Item) => {
+            if data.get(&item.record).is_some_and(|r| r.bools.get("artifact").copied().unwrap_or(false)) {
+                0x0dfceb
+            } else {
+                0xe0cccc
+            }
+        }
+        Some(ItemType::Weapon | ItemType::Armour | ItemType::Crossbow | ItemType::LimbReplacement | ItemType::Container | ItemType::NestItem | ItemType::MapItem) => {
+            let level = if matches!(item.kind, Some(ItemType::Container | ItemType::NestItem | ItemType::MapItem)) { 0 } else { item.quality as i32 };
+            match level {
+                ..16 => 0x666666,
+                16..36 => 0xd9ccbf,
+                36..51 => 0x4099b3,
+                51..66 => 0x66fc80,
+                66..=80 => 0xfceb0d,
+                _ => 0xfcea0c,
+            }
+        }
+        _ => 0xffffff,
+    }
+}
 
 fn num(r: &GameData, k: &str) -> f32 {
     r.floats.get(k).copied().or_else(|| r.ints.get(k).map(|v| *v as f32)).unwrap_or(0.0)
@@ -197,7 +234,8 @@ fn armour(l: &mut Lines, game: &Game, item: &Item, r: &GameData) {
     }
     let graded = kenshi_char::quality::graded(data, &item.record);
     if graded && 0.0 < item.quality && item.quality < 100.0 {
-        l.line(&format!("{} Grade", kenshi_char::quality::grade_name(item.quality)), "", "c");
+        // in the item's colour (F044593: getHex of F024535's)
+        l.line(&format!("{} Grade", kenshi_char::quality::grade_name(item.quality)), "", &format!("#{:06x}", item_colour(data, item)));
     }
     if graded {
         let class = match num(r, "class") as i32 {

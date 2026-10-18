@@ -775,13 +775,13 @@ fn info_rows(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<super::hud_ui::Row> 
     let o = sim.outfit(id);
     let mut total = o.disguise * 100.0;
     let disguise_tip = if total > 0.0 {
-        let mut lines = vec![format!("Clothing disguise:	{}	", total as i32)];
+        let mut lines = vec![format!("Clothing disguise:\t{}\t", total as i32)];
         let recent = sim.recognition.recent.get(&id).copied().unwrap_or([0.0; 3]);
         if p.inside.is_some() && p.town.and_then(|t| sim.towns.get(t)).is_some_and(|t| !t.public) {
             total *= 0.75;
-            lines.push("In secure location:	-25%	".into());
+            lines.push("In secure location:\t-25%\t".into());
         }
-        for (k, (mult, line)) in [(0.6, "Same faction:	-40%	"), (0.5, "Slave owner recognition:	-50%	"), (0.2, "Someone knows me personally:	-80%	")].into_iter().enumerate() {
+        for (k, (mult, line)) in [(0.6, "Same faction:\t-40%\t"), (0.5, "Slave owner recognition:\t-50%\t"), (0.2, "Someone knows me personally:\t-80%\t")].into_iter().enumerate() {
             if recent[k] > 0.0 {
                 total *= mult;
                 lines.push(line.into());
@@ -790,9 +790,9 @@ fn info_rows(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<super::hud_ui::Row> 
         if p.disguise_blown > 0.0 {
             total = 0.0;
             let n = p.disguise_blown as i32;
-            lines.push(format!("Disguise blown:	{n} {}	", if n == 1 { "sec" } else { "secs" }));
+            lines.push(format!("Disguise blown:\t{n} {}\t", if n == 1 { "sec" } else { "secs" }));
         }
-        lines.push(format!("Total:	{}	", total as i32));
+        lines.push(format!("Total:\t{}\t", total as i32));
         lines.join("\n")
     } else {
         "Not currently in disguise.".to_string()
@@ -813,16 +813,16 @@ fn info_rows(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<super::hud_ui::Row> 
         Some(s) => {
             rows.push(tipped("Slave of:", name(&s.faction), LIGHT, "The faction that owns you."));
             let clothing = 100 - (o.clothing * 100.0) as i32;
-            let mut lines = vec![format!("Clothing:	-{}	", clothing.abs())];
+            let mut lines = vec![format!("Clothing:\t-{}\t", clothing.abs())];
             if state == kenshi_game::slavery::ESCAPING_SLAVE {
-                lines.push("Clothing:	x2	".into());
+                lines.push("Clothing:\tx2\t".into());
                 if o.minimum > 0 {
-                    lines.push(format!("Minimum (Escaping):	+{}	", o.minimum));
+                    lines.push(format!("Minimum (Escaping):\t+{}\t", o.minimum));
                 }
             } else if state == kenshi_game::slavery::EX_SLAVE && o.minimum > 0 {
-                lines.push(format!("Minimum (Ex-Slave):	+{}	", o.minimum));
+                lines.push(format!("Minimum (Ex-Slave):\t+{}\t", o.minimum));
             }
-            lines.push(format!("Total:	{looks}%	"));
+            lines.push(format!("Total:\t{looks}%\t"));
             lines.push("How much you look like an escaped slave. Based on how you are dressed/undressed. Wearing shackles and rags is a big giveaway. Try to avoid hanging around too long near people who may recognise you.".into());
             rows.push(tipped("Looks like slave:", format!("{looks}"), if looks > 0 { PENALTY } else { LIGHT }, &lines.join("\n")));
         }

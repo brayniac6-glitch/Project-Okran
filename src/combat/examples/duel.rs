@@ -88,6 +88,12 @@ fn main() {
         }
         eprintln!("{} prone: {}", x.name, x.prone());
     }
+    // (testing) DUEL_CARRY: the last fighter carries someone (its clips the carrying ones:
+    // "sword ready (carry)" its combat idle); its base clips printed now and then
+    let carry = std::env::var("DUEL_CARRY").is_ok();
+    if carry && let Some(x) = f.last_mut() {
+        x.carrying = true;
+    }
     for x in &f {
         eprintln!(
             "{}: skill {}, attack speed {:.2}, defence speed {:.2}, run {:.0}",
@@ -115,6 +121,11 @@ fn main() {
         if (t * 10.0).fract() < dt * 10.0 {
             let xs: Vec<String> = f.iter().map(|x| x.pos()[0].to_string()).collect();
             println!("pos,{t},{}", xs.join(","));
+        }
+        if carry && (t * 2.0).fract() < dt * 2.0 {
+            let k = f.len() - 1;
+            let names: Vec<String> = arena.layers[k].0.iter().flat_map(|l| l.active.iter().map(|c| c.name.clone())).collect();
+            println!("carrier {} at {t:.1}: {}", f[k].name, names.join(", "));
         }
         let standing = |team: u16| f.iter().any(|x| x.team == team && !x.down);
         if !standing(0) || !standing(1) {

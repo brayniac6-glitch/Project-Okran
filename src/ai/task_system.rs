@@ -86,7 +86,33 @@ pub trait Mind: Agent {
     fn repertoire(&self) -> Repertoire {
         Repertoire::Human
     }
+    /// The built-in goals the goal ranking adds for the player's own people (F036915).
+    fn idle_goals(&mut self) -> IdleGoals {
+        IdleGoals::default()
+    }
 }
+
+/// F036915's built-in goals, each allowed or not: for one of the player's faction with free
+/// will (+0x35) and not sneaking (F039177), by the player's AI options (+0x110.., F035130):
+/// Ditching resources (242, "Ditch items", +0x117, (assumption) the task system's +0x60 taken
+/// as clear); Getting out of bed and Going to bed (257 / 153, "Sleep when injured", +0x116) and
+/// Sitting around (275, "Sit when idle", +0x118), neither on hold (F029593) nor carrying
+/// someone (Character +0x348) nor while F045533 answers (the player object's +0x208 list,
+/// (not ported) taken as not).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct IdleGoals {
+    pub ditch: bool,
+    pub bed: bool,
+    pub sit: bool,
+}
+
+/// The built-in goals' tasks.
+pub const DITCHING_RESOURCES: u16 = 242;
+pub const GETTING_OUT_OF_BED_INJURED: u16 = 257;
+pub const GOING_TO_BED: u16 = 153;
+pub const SITTING_AROUND: u16 = 275;
+/// Sitting around's priority (0x14167e8d8).
+const SITTING_PRIORITY: f32 = 0.5;
 
 /// AITaskSytem.
 #[derive(Debug, Clone)]
@@ -97,6 +123,9 @@ pub struct TaskSystem<T> {
     pub orders: Vec<Task<T>>,
     /// +0x118 + 0x18 * classification: the character's own jobs.
     pub jobs: [Vec<Task<T>>; 4],
+    /// +0xa0 + 0x18 * classification: goals added by classification (F036811: the hold
+    /// stance's Attacking enemies), ranked with the jobs of their classification (F036925).
+    pub classified: [Vec<Task<T>>; 5],
     /// +0x190
     pub default_goal: Task<T>,
     /// +0x1c0: the goal being followed, its key (+0x208) and classification (+0x20c).
@@ -128,6 +157,7 @@ impl<T: Clone + PartialEq + std::fmt::Debug> TaskSystem<T> {
             goals: vec![],
             orders: vec![],
             jobs: Default::default(),
+            classified: Default::default(),
             default_goal: Task {
                 task: IDLE,
                 classification: FLUFF,
@@ -164,7 +194,10 @@ impl<T: Clone + PartialEq + std::fmt::Debug> TaskSystem<T> {
     }
 
     /// F036915: the goals in list order, keys from count + 8 down; without free will only the
-    /// urgent goals; on the urgent pass only turret goals (definition +0x04 == 2).
+    /// urgent goals; on the urgent pass only turret goals (definition +0x04 == 2). On the other
+    /// pass, the built-in goals the character may have (`IdleGoals`) below them: Ditching
+    /// resources (class 2, priority 1), Getting out of bed (3, 1) and Going to bed (2, 1), one
+    /// key apart, and Sitting around (1, 0.5).
     /// @fn F036915
     fn rank_goals<M: Mind<Target = T>>(&self, m: &mut M, c: &mut Candidates<T>, urgent_pass: bool) {
         let mut key = self.goals.len() as f32 + GOAL_KEY_BASE;
@@ -182,6 +215,37 @@ impl<T: Clone + PartialEq + std::fmt::Debug> TaskSystem<T> {
             if goal_score(m, g) > 0.0 {
                 insert(c, key, g.clone());
             }
+        }
+        if urgent_pass || !m.free_will() {
+            return;
+        }
+        let idle = m.idle_goals();
+        let none = self.default_goal.target.clone();
+        let goal = |task: u16, classification: u8, priority: f32| Task {
+            task,
+            classification,
+            target: none.clone(),
+            target2: none.clone(),
+            priority,
+            pos: [0.0; 3],
+            hours: (0, 100),
+        };
+        let mut add = |m: &mut M, key: f32, g: Task<T>| {
+            if goal_score(m, &g) > 0.0 {
+                insert(c, key, g);
+            }
+        };
+        if idle.ditch {
+            key -= 1.0;
+            add(m, key, goal(DITCHING_RESOURCES, NON_URGENT, 1.0));
+        }
+        if idle.bed {
+            add(m, key - 1.0, goal(GETTING_OUT_OF_BED_INJURED, URGENT, 1.0));
+            key -= 2.0;
+            add(m, key, goal(GOING_TO_BED, NON_URGENT, 1.0));
+        }
+        if idle.sit {
+            add(m, key - 1.0, goal(SITTING_AROUND, FLUFF, SITTING_PRIORITY));
         }
     }
 
@@ -309,16 +373,60 @@ impl<T: Clone + PartialEq + std::fmt::Debug> TaskSystem<T> {
         self.start_best(m, vec![(1.0, idle)])
     }
 
-    /// F036925: the jobs of one classification.
+    /// F036925: the jobs of one classification (+0x118) and the goals added at it (+0xa0), ranked
+    /// together. (not ported) The job manager's list (+0x2e8, F041092).
     /// @fn F036925
     fn try_jobs<M: Mind<Target = T>>(&mut self, m: &mut M, class: u8) -> bool {
         let jobs = self.jobs[class as usize].clone();
-        if jobs.is_empty() {
+        let classified = self.classified[class as usize].clone();
+        if jobs.is_empty() && classified.is_empty() {
             return false;
         }
         let mut c = vec![];
         self.rank_list(m, &mut c, &jobs);
+        self.rank_list(m, &mut c, &classified);
         self.start_best(m, c)
+    }
+
+    /// @fn F036811
+    ///
+    /// A goal added by its classification: one of the same task already among the classified
+    /// lists, on the same target (with no target, for a definition that wants one (+0x48), at
+    /// the same place too), takes its priority; otherwise it goes on its classification's list.
+    pub fn add_classified(&mut self, t: Task<T>, no_target: &T) {
+        for list in self.classified.iter_mut() {
+            if let Some(g) = list.iter_mut().find(|g| {
+                g.task == t.task && g.target == t.target && (g.target != *no_target || g.def().f48 == 0 || g.pos == t.pos)
+            }) {
+                g.priority = t.priority;
+                return;
+            }
+        }
+        let c = (t.classification as usize).min(4);
+        self.classified[c].push(t);
+    }
+
+    /// @fn F036801
+    ///
+    /// The classified goals of a task taken away (each list walked once: of two in a row the
+    /// second stays, as the original's index moves on past the one shifted down).
+    pub fn remove_classified(&mut self, task: u16) {
+        for list in self.classified.iter_mut() {
+            let mut k = 0;
+            while k < list.len() {
+                if list[k].task == task {
+                    list.remove(k);
+                }
+                k += 1;
+            }
+        }
+    }
+
+    /// @fn F036802
+    ///
+    /// Whether a classified goal of the task is held.
+    pub fn has_classified(&self, task: u16) -> bool {
+        self.classified.iter().flatten().any(|g| g.task == task)
     }
 
     /// F036927: think: a goal whose time (+0x280) has run out is dropped (+0x1c0 and its
@@ -446,6 +554,25 @@ mod tests {
         s.goals = vec![goal(29, NON_URGENT), goal(24, NON_URGENT)];
         assert!(s.decide(&mut m, false));
         assert_eq!(s.current.as_ref().unwrap().task, 29);
+    }
+
+    #[test]
+    fn classified_goals_rank_with_their_jobs() {
+        let mut m = Toy {
+            conditions: HashMap::from([(1, false)]),
+            free: false,
+        };
+        let mut s = TaskSystem::new(0u32, [0.0; 3]);
+        s.add_classified(goal(29, URGENT), &0);
+        s.add_classified(goal(29, URGENT), &0);
+        assert_eq!(s.classified[URGENT as usize].len(), 1);
+        assert!(s.has_classified(29));
+        assert!(s.decide(&mut m, false));
+        assert_eq!(s.current.as_ref().unwrap().task, 29);
+        // two in a row: the second stays (F036801's walk)
+        s.classified[URGENT as usize].push(goal(29, URGENT));
+        s.remove_classified(29);
+        assert_eq!(s.classified[URGENT as usize].len(), 1);
     }
 
     #[test]

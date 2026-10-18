@@ -182,11 +182,31 @@ pub fn ui_scale() -> f32 {
     f32::from_bits(UI_SCALE.load(std::sync::atomic::Ordering::Relaxed))
 }
 
+/// The options' "Font Size" ("font size2", 3 by default): Kenshi sets every font it has loaded
+/// to its kenshi_fonts.xml size plus this (F032942, at the GUI's start, F042130, and as the
+/// options window closes). Kept as f32 bits.
+static FONT_SIZE2: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x4040_0000);
+
+/// Set the options' "font size2" (points added to every font's size).
+pub fn set_font_size2(points: f32) {
+    FONT_SIZE2.store(points.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn font_size2() -> f32 {
+    f32::from_bits(FONT_SIZE2.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 impl FontDef {
-    /// The glyph height on screen: FreeType's size in points at the fonts' "Resolution" (50
-    /// dpi, kenshi_fonts.xml), size * 50 / 72 pixels, at the UI scale ([`ui_scale`]).
+    /// The glyph height on screen: FreeType's size in points (the font's size plus the options'
+    /// "font size2", [`font_size2`]) at the fonts' "Resolution" (50 dpi, kenshi_fonts.xml),
+    /// size * 50 / 72 pixels, at the UI scale ([`ui_scale`]).
     pub fn screen_px(&self) -> f32 {
-        self.px * 50.0 / 72.0 * ui_scale()
+        self.screen_px_at(font_size2())
+    }
+
+    /// [`screen_px`] with `size2` points added.
+    pub fn screen_px_at(&self, size2: f32) -> f32 {
+        ((self.px + size2) * 50.0 / 72.0).max(1.0) * ui_scale()
     }
 }
 

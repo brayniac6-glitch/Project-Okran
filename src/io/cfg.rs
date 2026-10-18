@@ -88,16 +88,28 @@ pub fn text(install: &Path, name: &str) -> String {
     load(install, name).text()
 }
 
-/// Save the rewrite's copy of `name`.
+/// Save the rewrite's copy of `name`: written whole beside it, then put in its place, so a
+/// write cut short never leaves half a file.
 pub fn save(name: &str, cfg: &Cfg) -> std::io::Result<()> {
     let dir = user_dir();
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join(name), cfg.text())
+    let tmp = dir.join(format!("{name}.tmp"));
+    std::fs::write(&tmp, cfg.text())?;
+    std::fs::rename(&tmp, dir.join(name))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_skips_what_is_not_a_setting() {
+        // an old or hand-edited file: blank lines, comments, no "=", spaces round the parts
+        let c = Cfg::parse("\n# a comment\nnot a line\n view distance = 9000 \nfont size2=abc\n=5\n");
+        assert_eq!(c.get("view distance"), Some("9000"));
+        assert_eq!(c.f32("font size2", 3.0), 3.0);
+        assert_eq!(c.get("not a line"), None);
+    }
 
     #[test]
     fn overlay_keeps_order_and_repeats() {

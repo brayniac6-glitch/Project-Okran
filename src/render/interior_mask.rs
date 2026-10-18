@@ -13,8 +13,8 @@
 //! Harness: Bevy's two passes cannot share the depth buffer, so each channel keeps its nearest
 //! face by a min blend (cleared to `CLEAR`, no depth test) and the readers take a near side behind
 //! the far side as none (0), as Kenshi's depth test leaves it when the camera is inside a volume.
-//! The target is the window's size when it is made; the readers clip only in a view of its size
-//! (not the water reflection's). (Not ported: the clip on building parts, see
+//! The target follows the window's size; the readers clip only in a view of its size (not the
+//! water reflection's). (Not ported: the clip on building parts, see
 //! object_material.rs.) The masks are always drawn: F037793 keeps the mask
 //! entity's load request (Building +0x340) until the building goes (F037860), nothing hides it.
 
@@ -122,7 +122,7 @@ impl Plugin for InteriorMaskPlugin {
         bevy::asset::embedded_asset!(app, "kenshi_interior_mask.wgsl");
         app.add_plugins(MaterialPlugin::<InteriorMaskMaterial>::default());
         app.add_plugins(bevy::render::extract_component::ExtractComponentPlugin::<MaskCamera>::default());
-        app.add_systems(PostUpdate, (add_masks, follow_main_camera.before(bevy::transform::TransformSystems::Propagate)));
+        app.add_systems(PostUpdate, (add_masks, follow_window, follow_main_camera.before(bevy::transform::TransformSystems::Propagate)));
     }
 }
 
@@ -191,6 +191,24 @@ fn follow_main_camera(
         {
             m.0 = main.clone();
         }
+    }
+}
+
+/// rt_depth_range is a compositor texture the viewport's size (main.compositor), made again when
+/// the viewport changes: the target follows the window's size (a mask of another size than the
+/// view clips nothing, so a resized window lost the clip: the ground filled sunken buildings).
+fn follow_window(
+    mask: Option<Res<InteriorMask>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let (Some(mask), Ok(w)) = (mask, windows.single()) else { return };
+    let want = UVec2::new(w.physical_width().max(1), w.physical_height().max(1));
+    let Some(have) = images.get(&mask.image).map(|i| i.size()) else { return };
+    if have != want
+        && let Some(mut i) = images.get_mut(&mask.image)
+    {
+        i.resize(Extent3d { width: want.x, height: want.y, depth_or_array_layers: 1 });
     }
 }
 

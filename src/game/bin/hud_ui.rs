@@ -29,6 +29,8 @@ pub struct Hud {
     banner: Banner,
     /// What each datapanel shows now (rebuilt when it changes).
     rows: HashMap<Entity, Vec<Row>>,
+    /// The tips set on the medical bars' tooltip widgets (set again when they change).
+    tips: HashMap<Entity, String>,
     fonts: Fonts,
     /// The extending panel (MainBarGUI +0x1a0 ExtendingPanel, its button +0x198): folded away
     /// (+0x1bc) or not, how far slid (0 out .. 1 folded), and its layout top (+0x1a8).
@@ -39,6 +41,107 @@ pub struct Hud {
     hidden: bool,
     /// The jobs panel's rows (`jobs_panel`).
     jobs: Jobs,
+    /// The last portrait clicked: whom and when (a second click on it soon after is a double
+    /// click).
+    portrait_click: Option<(usize, f32)>,
+}
+
+/// What a tutorial page's pointer frames (`tutorial_ui::pointer`, F049757): the widget it
+/// follows (the box hidden while it is) and the widgets whose rects make the box.
+pub struct PointerTarget {
+    pub main: Entity,
+    pub rects: Vec<Entity>,
+    pub shape: PointerShape,
+}
+
+pub enum PointerShape {
+    /// The widget's rect.
+    One,
+    /// Its rect down to y 1080 (the screen's bottom at 1080p; its height 1080 less its top).
+    ToBottom,
+    /// The first's left, top and width, down to the last's bottom.
+    Span,
+    /// Round them all.
+    Union,
+}
+
+impl Hud {
+    /// The main panel hidden by "Toggle main gui" (toggle_bar).
+    pub fn is_hidden(&self) -> bool {
+        self.hidden
+    }
+
+    /// @fn F049757
+    ///
+    /// The main panel's widgets a tutorial pointer case frames: 1 the squad panel (the GUI's
+    /// +0x130), 2 NamePanel to the bottom, 3 StatsPanel, 6 the medical panel (+0x188), 7
+    /// StatusPanel, 8 its bars 1 to 3 (the vitals, LifeBar2..4), 9 bars 4 to 7 (the limbs,
+    /// LifeBar5..8), 10 bar 0 (blood, LifeBar1), 16 SpeedButtonsPanel, 17 TimeMoneyPanel, 18
+    /// BuildPanel, 19 the bounty panel (+0x118), 20 ShortcutsPanel, 21 ShortcutSquadButton, 22
+    /// ShortcutStatsButton, 23 ShortcutTechButton, 24 OrdersPanel, 25 round the orders' Block,
+    /// Hold, Chase, Taunt, Ranged and Sneak buttons (its +0x58 .. +0x88 but Passive's +0x68),
+    /// 26 JobsPanel, 27 the first job's row, 28 the Obedient Slave job's row (task 187; none
+    /// without it), 29 OrdersMedicButton, 30 OrdersRescueButton. (assumption) +0x130, +0x188
+    /// and +0x118 are SquadPanel, MedicalPanel and BountyPanel. (stand-in) The job rows are
+    /// those shown (scrolled past, none). (not ported) 4 and 5 (StatsText's Power and Workers
+    /// items), 33 (an InputColumn), 34.
+    pub fn pointer_target(&self, case: u8) -> Option<PointerTarget> {
+        let one = |name: &str| self.ui.get(name).map(|e| PointerTarget { main: e, rects: vec![e], shape: PointerShape::One });
+        let span = |a: usize, b: usize| {
+            let first = self.ui.get(&format!("LifeBar{a}"))?;
+            let last = self.ui.get(&format!("LifeBar{b}"))?;
+            Some(PointerTarget { main: first, rects: vec![first, last], shape: PointerShape::Span })
+        };
+        let row = |k: Option<usize>| {
+            let (e, _) = *k.and_then(|k| k.checked_sub(self.jobs.scroll)).and_then(|k| self.jobs.rows.get(k))?;
+            Some(PointerTarget { main: e, rects: vec![e], shape: PointerShape::One })
+        };
+        match case {
+            1 => one("SquadPanel"),
+            2 => one("NamePanel").map(|t| PointerTarget { shape: PointerShape::ToBottom, ..t }),
+            3 => one("StatsPanel"),
+            6 => one("MedicalPanel"),
+            7 => one("StatusPanel"),
+            8 => span(2, 4),
+            9 => span(5, 8),
+            10 => one("LifeBar1"),
+            16 => one("SpeedButtonsPanel"),
+            17 => one("TimeMoneyPanel"),
+            18 => one("BuildPanel"),
+            19 => one("BountyPanel"),
+            20 => one("ShortcutsPanel"),
+            21 => one("ShortcutSquadButton"),
+            22 => one("ShortcutStatsButton"),
+            23 => one("ShortcutTechButton"),
+            24 => one("OrdersPanel"),
+            25 => {
+                let main = self.ui.get("OrdersPanel")?;
+                let rects = ["OrdersBlockButton", "OrdersHoldButton", "OrdersChaseButton", "OrdersTauntButton", "OrdersRangedButton", "OrdersSneakButton"].iter().filter_map(|n| self.ui.get(n)).collect();
+                Some(PointerTarget { main, rects, shape: PointerShape::Union })
+            }
+            26 => one("JobsPanel"),
+            27 => row((!self.jobs.tasks.is_empty()).then_some(0)),
+            28 => row(self.jobs.tasks.iter().position(|&t| t == OBEDIENT_SLAVE)),
+            29 => one("OrdersMedicButton"),
+            30 => one("OrdersRescueButton"),
+            _ => None,
+        }
+    }
+}
+
+/// (testing) KENSHI_PORTRAIT_CLICKS=<k>@<frame>,...: the k-th squad portrait clicked at those
+/// frames.
+pub fn portrait_clicks(hud: Res<Hud>, mut out: MessageWriter<GuiClick>, mut frames: Local<u32>) {
+    *frames += 1;
+    let Ok(v) = std::env::var("KENSHI_PORTRAIT_CLICKS") else { return };
+    for step in v.split(',') {
+        let Some((k, at)) = step.split_once('@') else { continue };
+        if at.parse::<u32>().ok() == Some(*frames)
+            && let Some(&(_, button, _, _)) = k.parse::<usize>().ok().and_then(|k| hud.squad.get(k))
+        {
+            out.write(GuiClick { widget: button, name: String::new() });
+        }
+    }
 }
 
 /// The jobs panel (OrdersPanel's JobsPanel ItemBox, F043076): whose jobs the rows show and what
@@ -49,6 +152,8 @@ pub struct Hud {
 struct Jobs {
     shown: Option<(usize, Vec<(String, bool)>, usize)>,
     rows: Vec<(Entity, Entity)>,
+    /// The jobs listed (their task ids), as the rows were last made.
+    tasks: Vec<u16>,
     scroll: usize,
     drag: Option<(usize, Vec2)>,
     /// (testing) KENSHI_JOBS given.
@@ -86,6 +191,8 @@ pub(super) const FADED: Color = Color::srgb(0.6, 0.56, 0.5);
 pub(super) const fn tag(rgb: u32) -> Color {
     Color::srgb(((rgb >> 16) & 0xff) as f32 / 255.0, ((rgb >> 8) & 0xff) as f32 / 255.0, (rgb & 0xff) as f32 / 255.0)
 }
+/// kenshi_colours.xml's "Alert" (#000000): the medical bars' arrows (F047087).
+const ALERT: Color = Color::BLACK;
 /// 0x141f49248, "#afa68b".
 pub(super) const TAN: Color = tag(0xafa68b);
 /// 0x141f49270, "#140806".
@@ -237,18 +344,33 @@ struct Banner {
     visible: bool,
 }
 
+/// @fn F047028
+///
+/// The weapon indoors penalty (CharStats +0x28) as the equipment bonuses set it: the weapon
+/// equipped's "indoors mod" (Weapon +0x250, F047085), 8 with no weapon at all. F047092 shows it
+/// while the character is inside a building (Character::insideBuilding, F039242) and not where
+/// it is open to the sky (F039279: +0xd5, (not ported) taken as never); F047029 adds it to the
+/// buffed attack bonus there (a positive bonus first dropped to 0 under a penalty) unless the
+/// building is flagged +0xc2. (not ported) The combat's attack bonus (`Fighter::attack_bonus`)
+/// leaves it out, so the ATTACK total here does too.
+fn indoors_penalty(sim: &kenshi_game::sim::Sim, p: &kenshi_game::sim::Person) -> i32 {
+    p.inventory
+        .equipped()
+        .find(|i| i.kind == Some(kenshi_data::ItemType::Weapon))
+        .map_or(8, |w| sim.data.get(&w.record).and_then(|r| r.ints.get("indoors mod").copied()).unwrap_or(0))
+}
+
 /// @fn F047081
 ///
 /// A bonus as a tooltip's value and colour code (`tooltip_ui`): "+n" over 0 in #a8b774, "n" under
-/// in #59231a, "0" in the text colour (F043426). (not ported: the weapon's indoors penalty
-/// itself, CharStats +0x28, shown as 0)
+/// in #59231a, "0" in the text colour (F043426).
 fn bonus_line(n: i32) -> String {
     let colour = match n {
         n if n > 0 => "g",
         n if n < 0 => "r",
         _ => "",
     };
-    if n < 1 { format!("{n}	{colour}") } else { format!("+{n}	{colour}") }
+    if n < 1 { format!("{n}\t{colour}") } else { format!("+{n}\t{colour}") }
 }
 
 /// The life bar parts of the medical panel, in the order Kenshi lists them.
@@ -362,6 +484,7 @@ pub fn open(mut commands: Commands, gui: Res<GuiRes>, assets: Res<AssetServer>, 
         stance_tested: false,
         banner: Banner::default(),
         rows: HashMap::new(),
+        tips: HashMap::new(),
         fonts,
         tab: None,
         tabs_for: (Vec::new(), 0),
@@ -372,6 +495,7 @@ pub fn open(mut commands: Commands, gui: Res<GuiRes>, assets: Res<AssetServer>, 
         unfolded_top: None,
         jobs: Jobs::default(),
         hidden: false,
+        portrait_click: None,
     });
 }
 
@@ -379,12 +503,207 @@ pub fn open(mut commands: Commands, gui: Res<GuiRes>, assets: Res<AssetServer>, 
 struct Bar {
     label: String,
     value: String,
-    /// The hunger trend shown after its label.
+    /// The trend shown after its label (F047087's arrows, in the "Alert" colour).
     arrow: String,
+    /// Its tooltip (on its LifeBar<n>Tooltip widget).
+    tip: String,
     /// green, yellow, red, white (F042974's widths).
     widths: [f32; 4],
     robot: bool,
     crushed: bool,
+}
+
+/// @fn F047087
+///
+/// A body part's bar's arrow and tooltip as MedicalDatapanel::populate makes them (the part's
+/// name for {1}; health = flesh + treatment):
+/// - destroyed (flesh + treatment - stun at or under -max health): "!!!", "Your {1} is totally
+///   destroyed." and, for a part not vital, "Lucky it's not something you need to live.", else
+///   "It's probably the reason you are dead.";
+/// - health under 0: "This wound is getting worse. You need first aid." and "<<", but a robotic
+///   part not vital "This limb is severely damaged and in need of repairs..." with no arrow; a
+///   vital part above the KO point (F040402) "This is a dangerous wound and is getting worse.
+///   Get some medical attention fast.  Death at {-max}" (unconscious, F029130: the coma's
+///   warning in #59231a with the KO point, then "You will die at {2}" with its {2} unfilled, as
+///   Kenshi formats it with one value), below it "This is a critical wound..." and "<<!!";
+/// - health 0 or more: within 20 of the max and over 0.95 of it less the stun, "Your {1} is
+///   okay." (treatment and stun 5 at most) or "is in the process of healing.", then over 5
+///   wear damage its line in #59231a (40 or less "...can be fixed at a Skeleton Bed.", more
+///   "The manual recommends..."); within 20 but not over, "needs bandaging, but it's not
+///   urgent."; else a robotic part not vital "needs bandaging.", any other "<" and "needs
+///   bandaging, it's slowly getting worse.";
+/// then with health less the stun between 0 and 60 the part's effect (a leg "Your movement
+/// speed...", an arm "Your combat and manual labour skills...", a vital part "Your stats...");
+/// a leg when the character cannot kick (F047021: the legs collapsed, or a leg under 0) "You
+/// won't be able to kick."; and a lost limb's (its slot state 1) tip is "This limb is gone
+/// forever." alone (Kenshi assigns it over the rest). Robotic (F040400): the race a robot's
+/// or the part a robotic limb.
+fn part_tip(q: &kenshi_char::medical::BodyPart, name: &str, robot_race: bool, ko: f32, unconscious: bool, can_kick: bool) -> (String, String) {
+    let max = q.max_health();
+    let health = q.flesh + q.treatment;
+    let robotic = robot_race || q.robotic;
+    let mut arrow = "";
+    let mut tip;
+    if -max < health - q.stun {
+        if 0.0 <= health {
+            if max - q.flesh - q.treatment <= 20.0 {
+                if max * 0.95 - q.stun <= health {
+                    tip = if q.treatment + q.stun <= 5.0 { format!("Your {name} is okay.") } else { format!("Your {name} is in the process of healing.") };
+                    let wear = q.max_loss;
+                    if wear > 5.0 {
+                        let line = if wear <= 40.0 {
+                            format!("You have {} points of wear damage, this detracts from your max health and can be fixed at a Skeleton Bed.", wear as i32)
+                        } else {
+                            format!("You have {} points of wear damage. The manual recommends you find a Skeleton Bed for maintenance.", wear as i32)
+                        };
+                        tip = format!("{tip}\n#59231a{line}");
+                    }
+                } else {
+                    tip = format!("Your {name} needs bandaging, but it's not urgent.");
+                }
+            } else if !q.vital && robotic {
+                tip = format!("Your {name} needs bandaging.");
+            } else {
+                arrow = "<";
+                tip = format!("Your {name} needs bandaging, it's slowly getting worse.");
+            }
+        } else {
+            tip = "This wound is getting worse. You need first aid.".to_string();
+            if !q.vital {
+                if robotic {
+                    tip = "This limb is severely damaged and in need of repairs. Luckily though skeleton limbs don't degenerate.".to_string();
+                } else {
+                    arrow = "<<";
+                }
+            } else if ko <= health {
+                let death = -max as i32;
+                tip = if !unconscious {
+                    format!("This is a dangerous wound and is getting worse. Get some medical attention fast.  Death at {death}")
+                } else {
+                    format!(
+                        "#59231aThis is a dangerous wound and is getting worse. If you can regain consciousness before it goes below {} then you could save yourself.\nIf it goes below that then you will have to wait for medical treatment. You will die at {{2}}",
+                        num(ko as i64)
+                    )
+                };
+                arrow = "<<";
+            } else {
+                tip = "This is a critical wound. If it doesn't get medical treatment you will die.".to_string();
+                arrow = "<<!!";
+            }
+        }
+    } else {
+        arrow = "!!!";
+        tip = if !q.vital {
+            format!("Your {name} is totally destroyed. Lucky it's not something you need to live.")
+        } else {
+            format!("Your {name} is totally destroyed. It's probably the reason you are dead.")
+        };
+    }
+    let left = health - q.stun;
+    if 0.0 < left && left < 60.0 {
+        let effect = if q.vital {
+            Some("Your stats will be negatively affected.")
+        } else {
+            match q.kind {
+                1 => Some("Your movement speed will be negatively affected."),
+                2 => Some("Your combat and manual labour skills will be negatively affected."),
+                _ => None,
+            }
+        };
+        if let Some(e) = effect {
+            tip = format!("{tip}\n{e}");
+        }
+    }
+    if q.kind == 1 && !can_kick {
+        tip = format!("{tip}\nYou won't be able to kick.");
+    }
+    if q.slot == 1 {
+        tip = "This limb is gone forever.".to_string();
+    }
+    (arrow.to_string(), tip)
+}
+
+/// @fn F047086
+///
+/// The hunger rate's lines (a key and value each, the value its multiplier "{1,num=fix,p=2}x",
+/// F047082: over 1 in #59231a, under in #a8b774): "Racial hunger rate:" (the race's), "Age:"
+/// (an animal's growth, when not 1), "Encumbrance effect:" ((1 - load) x "encumbrance hunger
+/// rate" + 1), "Resting/KO state:" (in bed or out cold: "bed hunger rate"). (not ported) "Current
+/// work:" (CharStats +0x178, always 1 here) and "Idle:" (0.8, the AI's idle flag).
+fn hunger_rate_lines(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<String> {
+    let p = &sim.folk[id];
+    let f = &sim.arena.f[id];
+    let [_, _, bed, enc, race_rate] = sim.hunger_c;
+    let mult = |label: &str, v: f32| {
+        let code = if v > 1.0 { "r" } else if v < 1.0 { "g" } else { "" };
+        format!("{label}\t{v:.2}x\t{code}")
+    };
+    let mut lines = vec![mult("Racial hunger rate:", race_rate)];
+    if f.body.maturity != 1.0 {
+        lines.push(mult("Age:", f.body.size));
+    }
+    lines.push(mult("Encumbrance effect:", (1.0 - f.load) * enc + 1.0));
+    if p.bed.is_some() || f.medical.knocked_out || f.medical.dead {
+        lines.push(mult("Resting/KO state:", bed));
+    }
+    lines
+}
+
+/// @fn F047087
+///
+/// The hunger bar's tooltip: the hunger rate's lines (F047086), then how the character fares:
+/// with nothing being digested, at 2 or less malnutrition (over 1: "You are suffering from
+/// malnutrition, Your stats and strength will be affected, you need to get some food as soon
+/// as possible. Stat penalty is {1}", the stat penalty F040433 activity 3 with the hunger alone
+/// in #59231a "x"), at 1 or less starving ("When the red bar goes below {1} you will pass out"
+/// at the KO fraction F040501, or passed out: alone, or with squad mates to feed them); over 2,
+/// well fed; with food being digested, over 2 well fed, 1 or less recovering (or passed out
+/// with food), else malnutrition with food. (stand-in) Passed out from starvation (F040414, a
+/// roll each check) is hunger under 0.1, or out cold under the KO fraction.
+fn hunger_tip(sim: &kenshi_game::sim::Sim, id: usize) -> String {
+    let p = &sim.folk[id];
+    let f = &sim.arena.f[id];
+    let m = &f.medical;
+    let h = m.hunger.level;
+    let ko = f.ko_point();
+    // F040501 at 1: (100 + the KO point) / 100
+    let ko_fraction = (100.0 + ko) * 0.01;
+    let passed_out = h < 0.1 || (m.knocked_out && h < ko_fraction);
+    let penalty = || {
+        let with = kenshi_char::fitness::Considering { hunger: true, parts: false, weariness: false, limbs: false, effort: false, mods: false };
+        m.fitness(3, f.body.animal, ko, with, &kenshi_char::fitness::Mods::default())
+    };
+    let mut lines = hunger_rate_lines(sim, id);
+    let state = if m.hunger.stomach <= 0.0 {
+        if h <= 2.0 {
+            if 1.0 < h {
+                format!("You are suffering from malnutrition, Your stats and strength will be affected, you need to get some food as soon as possible. Stat penalty is #59231a{:.2}x", penalty())
+            } else if !passed_out {
+                format!(
+                    "You are starving to death. Get some food fast. When the red bar goes below #59231a{}#140806 you will pass out. When it reaches zero, you die.",
+                    (ko_fraction * 100.0) as i32
+                )
+            } else if p.platoon.is_none_or(|pl| sim.folk.iter().filter(|q| !q.dead && q.platoon == Some(pl)).count() < 2) {
+                "You have passed out from starvation. You're all alone and going to die. Nobody cares.".to_string()
+            } else {
+                "You have passed out from starvation. One of your squad mates will have to feed you or you're going to die.".to_string()
+            }
+        } else {
+            "You are well fed and currently have no problem.".to_string()
+        }
+    } else if 2.0 < h {
+        "You are well fed and currently have no problem.".to_string()
+    } else if h <= 1.0 {
+        if !passed_out {
+            "You are slowly recovering from starvation.".to_string()
+        } else {
+            "You have passed out from starvation. You have food though, so hopefully you will recover.".to_string()
+        }
+    } else {
+        format!("You are suffering from malnutrition, but you have food so you are recovering. Stat penalty is #59231a{:.2}x", penalty())
+    };
+    lines.push(state);
+    lines.join("\n")
 }
 
 /// (assumption, from the game's panel) the parts head first, then the torso (chest, stomach),
@@ -582,8 +901,12 @@ fn state_line(sim: &kenshi_game::sim::Sim, id: usize) -> (&'static str, String) 
 ///   (F047080);
 /// - Hunger Rate: hungerRate (F047009) x 100.
 /// (stand-ins: an arm is crippled with no health left, or lost; blood loss trauma (+0x163,
-/// raised by the bleeding and damage of the frame) is bleeding now; the run speed's and
-/// hunger rate's own tooltips (F047088, F047086) are not ported)
+/// raised by the bleeding and damage of the frame) is bleeding now. The hunger rate's tooltip is
+/// F047086's lines (`hunger_rate_lines`); the run speed's F047088's: "Athletics Skill:", "Max
+/// possible speed:" (the run speed the athletics give, x 0.2237 mph), "Leg injury:" and
+/// "Encumbrance:" ("-n%" in #59231a, when any), "Total speed:" (its key #afa68b). (not ported)
+/// its "Armour/equipment:" (CharStats +0x18, 1 here) and "Robotics:" (the robotic legs' speed)
+/// lines.)
 fn extended_stats(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<Row> {
     use kenshi_char::StatsEnumerated as S;
     let p = &sim.folk[id];
@@ -676,7 +999,18 @@ fn extended_stats(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<Row> {
         _ => format!("{mph} mph"),
     };
     // (F047093 writes the run speed in its red, 0x141f492c0, whenever it differs, faster too)
-    rows.push(Row { label: "Run speed:".into(), value: speed, colour: if diff != 0 { PENALTY } else { LIGHT }, tip: String::new() });
+    // its tip (F047088): what makes it up
+    let mut lines = vec![format!("Athletics Skill:\t{}\t", num(f.level(S::StatAthletics) as i64)), format!("Max possible speed:\t{} mph\t", num((run * 0.2237) as i64))];
+    let legs = ((1.0 - f.legs) * 100.0) as i32;
+    if legs > 0 {
+        lines.push(format!("Leg injury:\t-{}%\tr", num(legs as i64)));
+    }
+    let heavy = ((1.0 - load) * 100.0) as i32;
+    if heavy > 0 {
+        lines.push(format!("Encumbrance:\t-{}%\tr", num(heavy as i64)));
+    }
+    lines.push(format!("Total speed:\t{} mph\tk", num((p.own_speed * 0.2237) as i64)));
+    rows.push(Row { label: "Run speed:".into(), value: speed, colour: if diff != 0 { PENALTY } else { LIGHT }, tip: lines.join("\n") });
     // Hunger Rate (F047009)
     let [_, _, bed, enc, race_rate] = sim.hunger_c;
     let activity = if p.down || p.bed.is_some() {
@@ -686,8 +1020,9 @@ fn extended_stats(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<Row> {
     } else {
         kenshi_char::hunger::Activity::Normal
     };
-    let rate = kenshi_char::hunger::hunger_rate(activity, 1.0, race_rate, bed, enc);
-    rows.push(row("Hunger Rate:", format!("{}%", (rate * 100.0) as i32)));
+    let rate = kenshi_char::hunger::hunger_rate(activity, race_rate, kenshi_char::hunger::CURRENT_WORK_RATE, bed, enc);
+    // its tip the rate's lines (F047093 -> F047086)
+    rows.push(Row { tip: hunger_rate_lines(sim, id).join("\n"), ..row("Hunger Rate:", format!("{}%", (rate * 100.0) as i32)) });
     rows
 }
 
@@ -753,6 +1088,8 @@ pub fn update(
     mut open: ResMut<super::OpenBuildings>,
     mut edits: MessageReader<GuiEdit>,
     boxes: Query<&EditText>,
+    mut rig: ResMut<super::camera::CameraRig>,
+    keys: Res<ButtonInput<KeyCode>>,
 ) {
     // the outpost's name typed (TownPanel's OutpostNameEditBox)
     let name_box = hud.ui.get("OutpostNameEditBox");
@@ -836,7 +1173,23 @@ pub fn update(
             }
             _ => {
                 if let Some(&(_, _, id, _)) = hud.squad.iter().find(|(_, b, _, _)| *b == c.widget) {
-                    game.selected = vec![id];
+                    // F033287 -> F045566: alone selected; with shift added, or taken out if
+                    // selected with others
+                    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+                    if !shift {
+                        game.selected = vec![id];
+                    } else if !game.selected.contains(&id) {
+                        game.selected.push(id);
+                    } else if game.selected.len() >= 2 {
+                        game.selected.retain(|&k| k != id);
+                    }
+                    // F033288: a portrait double-clicked (MyGUI's 250 ms) has the camera
+                    // follow them (F045568 -> F045566 -> F045539)
+                    let now = time.elapsed_secs();
+                    if hud.portrait_click.is_some_and(|(who, t)| who == id && now - t <= 0.25) {
+                        rig.follow(id);
+                    }
+                    hud.portrait_click = Some((id, now));
                 }
             }
         }
@@ -1014,31 +1367,28 @@ pub fn update(
                 // skill not in it) and the buffed melee defence (F047044: the defence bonus +
                 // melee defence, +20 in the block stance, "Defensive combat mode")
                 // their tooltips (F047092): the equipment's bonus, the weapon's indoors penalty
-                // ("-" with no weapon), the weather's ("-" with none), the base hit chance; the
-                // block stance's +20 in green and what defense is
+                // (`indoors_penalty`; "-" outside), the weather's ("-" with none), the base hit
+                // chance; the block stance's +20 in green and what defense is
                 let dust = if f.dust > 0.0 { (f.dust * 10.0) as i32 } else { 0 };
-                let armed = !f.unarmed();
-                let indoors = if armed { bonus_line(0) } else { "-	".into() };
+                let indoors = if p.inside.is_some() { bonus_line(indoors_penalty(&game.sim, p)) } else { "-\t".into() };
                 let mut attack = with("ATTACK:", f.attack_level(), f.attack_bonus());
                 attack.tip = [
-                    format!("Total equipment bonuses:	{}", bonus_line(f.gear.attack + f.weapon_mods.0)),
-                    format!("Weapon indoors penalty:	{indoors}"),
-                    format!("Weather penalty:	{}", if dust != 0 { bonus_line(-dust) } else { "-	".into() }),
-                    format!("Base hit chance:	{}%	", f.attack_level() as i32),
+                    format!("Total equipment bonuses:\t{}", bonus_line(f.gear.attack + f.weapon_mods.0)),
+                    format!("Weapon indoors penalty:\t{indoors}"),
+                    format!("Weather penalty:\t{}", if dust != 0 { bonus_line(-dust) } else { "-\t".into() }),
+                    format!("Base hit chance:\t{}%\t", f.attack_level() as i32),
                 ]
-                .join("
-");
+                .join("\n");
                 stats.push(attack);
                 let block = if p.stance.block { 20 } else { 0 };
                 let mut defense = with("DEFENSE:", f.melee_defence(true), f.defence_bonus() + block);
-                let mut lines = vec![format!("Total equipment bonuses:	{}", bonus_line(f.defence_bonus()))];
+                let mut lines = vec![format!("Total equipment bonuses:\t{}", bonus_line(f.defence_bonus()))];
                 if p.stance.block {
-                    lines.push("Defensive combat mode:	+20	g".into());
+                    lines.push("Defensive combat mode:\t+20\tg".into());
                 }
-                lines.push(format!("Weapon indoors penalty:	{indoors}"));
+                lines.push(format!("Weapon indoors penalty:\t{indoors}"));
                 lines.push("Your defense skill is your chance of blocking enemy attacks.".into());
-                defense.tip = lines.join("
-");
+                defense.tip = lines.join("\n");
                 stats.push(defense);
             }
         }
@@ -1053,14 +1403,22 @@ pub fn update(
         }
         // the bars (F047087): blood, the body parts head to legs, hunger
         let mut bars: Vec<Bar> = Vec::new();
+        // (a robot's is its oil); its tip the race's bleed rate, over 1 in #59231a, under in
+        // #a8b774
+        let bleed = f.body.bleed;
+        let bleed_tag = if bleed > 1.0 { "#59231a" } else if bleed < 1.0 { "#a8b774" } else { "" };
         bars.push(Bar {
-            label: "Blood".into(),
+            label: if f.body.robot { "Oil" } else { "Blood" }.into(),
             value: format!("{}", (m.blood + 0.5) as i32),
             arrow: String::new(),
+            tip: format!("{bleed_tag}Racial bleed rate multiplier: x{bleed:.2}"),
             widths: [(m.blood / m.max_blood.max(1.0)).max(0.0), 0.0, 0.0, 0.0],
             robot: false,
             crushed: false,
         });
+        let ko = f.ko_point();
+        let unconscious = m.knocked_out || m.dead;
+        let can_kick = !m.legs_collapsed(f.body.animal, ko) && m.parts.iter().filter(|q| q.kind == 1).all(|q| q.health() >= 0.0);
         let mut order: Vec<usize> = (0..m.parts.len()).collect();
         order.sort_by_key(|&k| part_order(&m.parts[k], &sim.data));
         for k in order {
@@ -1070,33 +1428,43 @@ pub fn update(
             let yellow = ((q.flesh + q.treatment - q.stun) / max).max(0.0);
             let red = ((max - q.stun) / max).max(0.0);
             let white = if q.slot == 1 { 0.0 } else { (q.bonus * 0.01 + green).clamp(0.0, 1.0) };
+            let name = sim.data.get(&q.id).map_or(q.id.clone(), |r| r.name.clone());
+            let (arrow, part_tip) = part_tip(q, &name, f.body.robot, ko, unconscious, can_kick);
             bars.push(Bar {
-                label: sim.data.get(&q.id).map_or(q.id.clone(), |r| r.name.clone()),
+                label: name,
                 value: format!("{}", (q.flesh - q.stun + 0.5).floor() as i32),
-                arrow: String::new(),
+                arrow,
+                tip: part_tip,
                 widths: [green, yellow, red, white],
                 robot: q.robotic || q.slot == 2,
                 crushed: q.slot == 1 || q.slot == 3,
             });
         }
-        // hunger: x100; the arrow: digesting ">", else "<", "<!" under 2, "<<!!" under 1
+        // hunger: x100; the arrow: digesting ">", else "<" (none in bed), "<!" under 2 (its
+        // "<<!!" under 1 is never reached: Kenshi tests under 2 first); a robot's empty, its tip
+        // "Skeletons don't need to eat."
         let h = m.hunger.level;
         let arrow = if 0.0 < m.hunger.stomach {
             ">"
-        } else if h < 1.0 {
-            "<<!!"
         } else if h < 2.0 {
             "<!"
+        } else if p.bed.is_some() {
+            ""
         } else {
             "<"
         };
-        bars.push(Bar {
-            label: "Hunger".into(),
-            value: format!("{}", (h * 100.0) as i32),
-            arrow: arrow.into(),
-            widths: [(h - 2.0).max(0.0), (h - 1.0).max(0.0), h.max(0.0), 0.0],
-            robot: false,
-            crushed: false,
+        bars.push(if f.body.robot {
+            Bar { label: "Hunger".into(), value: String::new(), arrow: String::new(), tip: "Skeletons don't need to eat.".into(), widths: [0.0; 4], robot: false, crushed: false }
+        } else {
+            Bar {
+                label: "Hunger".into(),
+                value: format!("{}", (h * 100.0) as i32),
+                arrow: arrow.into(),
+                tip: hunger_tip(sim, id),
+                widths: [(h - 2.0).max(0.0), (h - 1.0).max(0.0), h.max(0.0), 0.0],
+                robot: false,
+                crushed: false,
+            }
         });
         for k in 0..BARS {
             let bar = bars.get(k);
@@ -1129,9 +1497,20 @@ pub fn update(
             if let Some(e) = ui.get(&format!("LifeBar{}Value", k + 1)) {
                 commands.queue(SetCaption(e, b.value.clone()));
             }
-            let label = vec![Row { label: b.label.clone(), value: b.arrow.clone(), colour: DARK, tip: String::new() }];
+            // (the arrows in the "Alert" colour, kenshi_colours.xml's #000000)
+            let label = vec![Row { label: b.label.clone(), value: b.arrow.clone(), colour: ALERT, tip: String::new() }];
             let name = format!("LifeBar{}Datapanel", k + 1);
             hud.rows(&mut commands, &name, label, false, DARK, true);
+            // its tip (F043001 / F043002 onto the bar's tooltip widget)
+            if let Some(e) = ui.get(&format!("LifeBar{}Tooltip", k + 1))
+                && hud.tips.get(&e) != Some(&b.tip)
+            {
+                // (it takes the mouse from its first tip on)
+                if hud.tips.insert(e, b.tip.clone()).is_none() {
+                    commands.entity(e).insert(Interaction::default());
+                }
+                commands.entity(e).insert(super::inventory_ui::ItemTip(b.tip.clone()));
+            }
         }
         hud.rows(&mut commands, "NameText", name_row, false, LIGHT, false);
         // the state box over the stats (StateText), the combat stats below (StatsText)
@@ -1533,7 +1912,7 @@ pub fn jobs_panel(
     let h = (24.0 * scale).floor().max(1.0);
     let fit = ((size[1] / h).floor() as usize).max(1);
     // the job list as the rows show it: its text, and whether at full alpha
-    let list: Vec<(String, bool)> = first.map_or_else(Vec::new, |id| {
+    let (tasks, list): (Vec<u16>, Vec<(String, bool)>) = first.map_or_else(Default::default, |id| {
         let p = &game.sim.folk[id];
         let obedient = p.slave.as_ref().is_some_and(|s| s.obedient);
         let jobs = obedient.then(|| (OBEDIENT_SLAVE, "Obedient Slave".to_string())).into_iter().chain(p.jobs.iter().map(|j| {
@@ -1543,7 +1922,7 @@ pub fn jobs_panel(
             };
             (j.task, text)
         }));
-        jobs.enumerate().map(|(k, (task, text))| (format!("{}: {text}", k + 1), p.jobs_on || JOBS_ALWAYS.contains(&task))).collect()
+        jobs.enumerate().map(|(k, (task, text))| (task, (format!("{}: {text}", k + 1), p.jobs_on || JOBS_ALWAYS.contains(&task)))).unzip()
     });
     // the wheel over the panel scrolls it
     let hovered = over.get(panel).is_ok_and(|r| r.cursor_over());
@@ -1593,6 +1972,7 @@ pub fn jobs_panel(
         return;
     }
     hud.jobs.shown = want;
+    hud.jobs.tasks = tasks;
     for (e, _) in hud.jobs.rows.drain(..) {
         commands.entity(e).try_despawn();
     }
@@ -1687,5 +2067,37 @@ fn move_job(p: &mut kenshi_game::sim::Person, from: usize, to: Option<usize>) {
             p.jobs.insert(t, job);
         }
         None => p.jobs.push(job),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::part_tip;
+    use kenshi_char::medical::BodyPart;
+
+    fn part(vital: bool, kind: i32) -> BodyPart {
+        let mut q = BodyPart { vital, kind, max_a: 100.0, max_b: 1.0, max_c: 1.0, ..Default::default() };
+        q.flesh = 100.0;
+        q
+    }
+
+    #[test]
+    fn part_tips_follow_the_health() {
+        let q = part(true, 3);
+        assert_eq!(part_tip(&q, "Head", false, -40.0, false, true), (String::new(), "Your Head is okay.".to_string()));
+        let mut q = part(false, 2);
+        q.flesh = 50.0;
+        let (arrow, tip) = part_tip(&q, "Left Arm", false, -40.0, false, true);
+        assert_eq!(arrow, "<");
+        assert_eq!(tip, "Your Left Arm needs bandaging, it's slowly getting worse.\nYour combat and manual labour skills will be negatively affected.");
+        q.flesh = -150.0;
+        assert_eq!(part_tip(&q, "Left Arm", false, -40.0, false, true).0, "!!!");
+        q.slot = 1;
+        assert_eq!(part_tip(&q, "Left Arm", false, -40.0, false, true).1, "This limb is gone forever.");
+        let mut q = part(true, 0);
+        q.flesh = -60.0;
+        assert_eq!(part_tip(&q, "Chest", false, -40.0, false, true), ("<<!!".to_string(), "This is a critical wound. If it doesn't get medical treatment you will die.".to_string()));
+        q.flesh = -20.0;
+        assert_eq!(part_tip(&q, "Chest", false, -40.0, false, true).1, "This is a dangerous wound and is getting worse. Get some medical attention fast.  Death at -100");
     }
 }

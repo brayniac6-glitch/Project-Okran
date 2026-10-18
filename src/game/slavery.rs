@@ -199,7 +199,7 @@ impl Sim {
 
     /// F030712's shackles (put on as `id` is enslaved, when it wears none) and Task_ProcessNewSlave
     /// begun by `taker`: it stands at it for 3 s before the processing (`processing_tick`).
-    fn begin_processing(&mut self, id: usize, faction: &str, taker: usize) {
+    pub(crate) fn begin_processing(&mut self, id: usize, faction: &str, taker: usize) {
         self.put_on_shackles(id);
         self.order_stop(&[taker]);
         self.law_state.processing.push(crate::law::NewSlave { taker, slave: id, faction: faction.to_string(), left: PROCESSING_SECONDS });
@@ -211,7 +211,7 @@ impl Sim {
     /// slave processed when it is up (`process_new_slave`) and the processor's line,
     /// EV_INTRODUCING_NEW_SLAVE, or EV_RECAPTURED_A_SLAVE for one already shaved (Character
     /// vtable +0x3e0); the processing goes on without its processor when it is down or gone.
-    /// (not ported) The "medic" and "squat T" animations (the processor stands still here).
+    /// The processor plays "medic" meanwhile (`law_task_clip`).
     pub fn processing_tick(&mut self, dt: f32) {
         let mut k = 0;
         while k < self.law_state.processing.len() {
@@ -552,46 +552,6 @@ impl Sim {
             .copied()
     }
 
-    /// @fn F038543
-    ///
-    /// "Slave watching/stripping" (Watching slaves, 183: the Cage Warden's, the slave guards'):
-    /// scored 1 with no target while the watcher stands free (F038543: not flagged +0x348, its
-    /// state 0). (stand-in: the task's target finder, condition 120, and its handler are not
-    /// decompiled; a new slave's stripping is done as it is enslaved, `dress_as_slave`) An idle
-    /// watcher with nothing else to do goes to stand by its faction's nearest slave within 3000
-    /// units, when over 150 from it.
-    pub fn watch_slaves(&mut self) {
-        for w in 0..self.folk.len() {
-            let p = &self.folk[w];
-            if p.duties & crate::sim::DUTY_WATCHES_SLAVES == 0 || p.player || p.down || p.dead || p.slave.is_some() || p.prison.is_some() {
-                continue;
-            }
-            if p.carrying.is_some() || p.pickup.is_some() || p.arrest.is_some() || !p.ai.orders.is_empty() || self.arena.f[w].active {
-                continue;
-            }
-            if p.ai.current.as_ref().is_some_and(|t| t.task != kenshi_ai::task_system::IDLE) {
-                continue;
-            }
-            let Some(f) = p.faction.clone() else { continue };
-            let at = p.mover.position_units();
-            let slave = self
-                .folk
-                .iter()
-                .filter(|q| !q.dead && q.slave.as_ref().is_some_and(|s| s.faction == f))
-                .map(|q| q.mover.position_units())
-                .map(|q| ((q[0] - at[0]).hypot(q[2] - at[2]), q))
-                .filter(|(d, _)| *d < 3000.0)
-                .min_by(|a, b| a.0.total_cmp(&b.0));
-            if let Some((d, q)) = slave
-                && d > 150.0
-            {
-                // a little short of the slave, on the watcher's side
-                let k = (d - 100.0) / d;
-                self.order_move(&[w], [at[0] + (q[0] - at[0]) * k, q[1], at[2] + (q[2] - at[2]) * k]);
-            }
-        }
-    }
-
     /// @fn F040051
     ///
     /// A character made from a CHARACTER with a "slave" state (the Slaves starts' "start slave")
@@ -683,6 +643,10 @@ impl Sim {
                     self.enslave(m, owner, &faction);
                 }
             }
+        }
+        // (processed already: at once, with no processing time or lines)
+        for e in std::mem::take(&mut self.law_state.processing) {
+            self.process_new_slave(e.slave, &e.faction, Some(e.taker));
         }
         self.messages.truncate(said);
     }
@@ -808,7 +772,6 @@ impl Sim {
         }
         if self.tick.is_multiple_of(60) {
             self.slave_states_tick(1.0);
-            self.watch_slaves();
             self.catch_loose_slaves();
         }
         if !self.tick.is_multiple_of(60) {

@@ -130,15 +130,29 @@ pub fn under_cursor(cam: &Camera, at: &GlobalTransform, game: &Game, cursor: Vec
 #[derive(Component)]
 pub struct DropLabel(pub u64);
 
+/// A drop label's name text and its colour (the item's, `item_tip::item_colour`).
+#[derive(Component)]
+pub struct LabelLook {
+    text: Option<Entity>,
+    colour: Color,
+}
+
+/// kenshi_colours.xml's "DropItemLabelTextSelected" and "DropItemLabelBackSelected" (#66ff66):
+/// a label under the mouse (F024538).
+const LABEL_SELECTED: Color = Color::srgb(0.4, 1.0, 0.4);
+
 /// @fn F024557
 ///
 /// Kenshi's "highlight" (controls.cfg: Left Alt) held: an item drop label
 /// (Kenshi_ItemDropLabel.layout) over each item on the ground in sight, its name and, for more
 /// than one, the count in brackets ("{1,num}"), the label as wide as its text; the items glow.
 /// Clicking a label (F024551) sends the first selected character to pick the item up.
-/// (assumption) Kenshi shades an owned item's label apart (taking it is theft, "Hold down the ALT
-/// key to steal items"); the rewrite's ground items belong to no one, so all show alike. The
-/// glow is the object shader's emissive, Kenshi's own highlight look not being ported.
+/// The label's text and its skin in the item's colour (F024557, F024540: `item_tip::item_colour`),
+/// under the mouse both #66ff66 (F024538). (not ported) An item someone owns (its owner not the
+/// player's faction nor "not real", F024557) is stolen if taken: its label's back #ff6666, its
+/// text #ff6666 under the mouse ("DropItemLabelBackSelectedStealing", "...TextSelectedStealing");
+/// the rewrite's ground items belong to no one. The glow is the object shader's emissive,
+/// Kenshi's own highlight look not being ported.
 #[allow(clippy::too_many_arguments)]
 pub fn highlight(
     mut commands: Commands,
@@ -154,7 +168,17 @@ pub fn highlight(
     windows: Query<&Window>,
     mut nodes: Query<&mut Node>,
     pressed: Query<(&Interaction, &DropLabel), Changed<Interaction>>,
+    looks: Query<(Entity, &Interaction, &LabelLook), Changed<Interaction>>,
 ) {
+    // F024538 / F024540: a label under the mouse, its text and back in #66ff66, else in its
+    // item's colour
+    for (e, i, l) in &looks {
+        let c = if *i == Interaction::None { l.colour } else { LABEL_SELECTED };
+        if let Some(t) = l.text {
+            commands.queue(kenshi_gui::SetTextColour(t, c));
+        }
+        commands.queue(kenshi_gui::SetColour(e, c));
+    }
     // a game loaded in the program: its own labels
     if game.is_added() {
         labels.clear();
@@ -203,11 +227,15 @@ pub fn highlight(
                     d.pos = kenshi_gui::res::Pos::Real([0.0, 0.0, w.max(r[2] * 0.5), r[3]]);
                 }
                 let ui = kenshi_gui::ui::spawn(&mut commands, &gui.0, &assets, &defs, None, size);
-                if let Some(t) = ui.get("ItemNameText") {
+                let colour = super::hud_ui::tag(super::item_tip::item_colour(&game.sim.data, &g.item));
+                let name = ui.get("ItemNameText");
+                if let Some(t) = name {
                     commands.queue(kenshi_gui::SetCaption(t, text));
+                    commands.queue(kenshi_gui::SetTextColour(t, colour));
                 }
                 let root = ui.roots[0];
-                commands.entity(root).insert((DropLabel(g.id), Interaction::default(), Button, GlobalZIndex(4)));
+                commands.queue(kenshi_gui::SetColour(root, colour));
+                commands.entity(root).insert((DropLabel(g.id), LabelLook { text: name, colour }, Interaction::default(), Button, GlobalZIndex(4)));
                 root
             });
             if let Ok(mut n) = nodes.get_mut(e) {

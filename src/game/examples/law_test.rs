@@ -77,8 +77,20 @@ fn main() {
     sim.arena.f[me].mover.position = far;
     run(&mut sim, 1.0, "C");
     let owner = sim.folk[g].platoon;
+    // one of the owners close by processes the new slave
+    let near = owner.and_then(|o| sim.folk.iter().find(|q| q.platoon == Some(o) && !q.dead && !q.down && q.slave.is_none()).map(|q| q.id));
+    if let Some(k) = near {
+        let at = sim.folk[me].mover.position;
+        sim.folk[k].mover.position = [at[0] + 2.0 * m, at[1], at[2]];
+        sim.arena.f[k].mover.position = sim.folk[k].mover.position;
+    }
     sim.enslave(me, owner, &faction);
     println!("[C] state {}, prison {:?}, shackled {}", sim.slave_state(me), sim.folk[me].prison.as_ref().map(|p| p.cage), sim.folk[me].shackled);
+    // the processor's clip (Task_ProcessNewSlave: "medic" for 3 s)
+    let takers: Vec<usize> = sim.law_state.processing.iter().map(|e| e.taker).collect();
+    println!("[C] processing by {takers:?}: clip {:?}", takers.first().and_then(|&t| sim.law_task_clip(t)));
+    run(&mut sim, 3.5, "C");
+    println!("[C] processed: clip {:?}", takers.first().and_then(|&t| sim.law_task_clip(t)));
     sim.order_escape(me);
     for _ in 0..240 {
         run(&mut sim, 1.0, "C");
@@ -136,5 +148,96 @@ fn main() {
         }
         run(&mut sim, 1.0, "E");
         println!("[E] prison {:?}, lately released {}", sim.folk[me].prison.is_some(), sim.lately_released(me));
+    }
+    // F: an alarm raised about a thief (DA_CRIME_ALARM): who investigates it
+    sim.folk[me].prison = None;
+    sim.folk[me].bounties.clear();
+    let at = sim.folk[g].mover.position;
+    sim.folk[me].mover.position = [at[0] + 30.0 * m, at[1], at[2]];
+    sim.arena.f[me].mover.position = sim.folk[me].mover.position;
+    run(&mut sim, 1.0, "F");
+    sim.commit_crime(me, CrimeEnum::CrimeStealing, Some(&faction));
+    let raised = sim.crime_alarm(g, me);
+    println!("[F] alarm raised {raised}: {:?}", sim.law_state.alarms.values().map(|v| v.len()).collect::<Vec<_>>());
+    for k in 0..20 {
+        run(&mut sim, 1.0, "F");
+        let inv: Vec<usize> = (0..sim.folk.len()).filter(|&i| sim.folk[i].ai.queue.first().is_some_and(|s| s.task == 209 || s.task == 210)).collect();
+        if k % 4 == 0 {
+            println!("[F] t {:.0}: investigating {:?}, alarms {:?}, near {}", sim.t, inv, sim.law_state.alarms.values().map(|v| v.iter().map(|a| (a.crime, a.left as i32)).collect::<Vec<_>>()).collect::<Vec<_>>(), sim.law_state.alarm_near.iter().filter(|&&b| b).count());
+        }
+    }
+    // G: a wanted one down near the guards: arrested on the planner (Bounty hunting 204:
+    // stripped, lifted, put in a cage)
+    sim.folk[me].prison = None;
+    sim.folk[me].crime = None;
+    sim.add_bounty_amount(me, &faction, 3000);
+    sim.folk[me].disguise_blown = 250.0;
+    let at = sim.folk[g].mover.position;
+    sim.folk[me].mover.position = [at[0] + 20.0 * m, at[1], at[2]];
+    sim.arena.f[me].mover.position = sim.folk[me].mover.position;
+    sim.knock_out(me);
+    sim.arena.f[me].medical.knockout_time = 200.0;
+    for k in 0..90 {
+        run(&mut sim, 1.0, "G");
+        if sim.folk[me].prison.is_some() {
+            println!("[G] t {:.0}: caged {:?}", sim.t, sim.folk[me].prison.as_ref().map(|p| p.cage));
+            break;
+        }
+        if k % 10 == 0 {
+            println!("[G] t {:.0}: carried by {:?}, down {}, weapons {}", sim.t, sim.folk[me].carried_by, sim.folk[me].down, sim.folk[me].inventory.equipped().filter(|i| i.kind == Some(kenshi_data::ItemType::Weapon)).count());
+            if let Some(c) = sim.folk[me].carried_by {
+                let p = &sim.folk[c];
+                println!("[G]   carrier {c}: current {:?}, queue {:?}, orders {:?}, cage {:?}", p.ai.current.as_ref().map(|t| (t.task, t.target)), p.ai.queue.iter().map(|t| (t.task, t.target)).collect::<Vec<_>>(), p.ai.orders.iter().map(|t| t.task).collect::<Vec<_>>(), sim.law_state.view.cages.get(&c));
+            }
+        }
+    }
+    // H: kidnapping a townsperson knocked out (Task_Kidnapping::start as it is lifted: the
+    // crime, seen by the town's people about; the victim, out cold, notices nothing)
+    sim.folk[me].prison = None;
+    sim.folk[me].bounties.clear();
+    sim.folk[me].crime = None;
+    sim.folk[me].carried_by = None;
+    sim.folk[me].disguise_blown = 0.0;
+    sim.arena.f[me].medical.knockout_time = 0.0;
+    // (healed and up again whatever G's fight left)
+    let fresh: Vec<f32> = sim.arena.f[me].medical.parts.iter().map(|p| p.max_health()).collect();
+    for (k, part) in sim.arena.f[me].medical.parts.iter_mut().enumerate() {
+        part.flesh = fresh[k].max(part.flesh);
+    }
+    sim.wake(me);
+    // (no one still after it from G)
+    for k in 0..sim.folk.len() {
+        if sim.folk[k].arrest.as_ref().is_some_and(|a| a.target == me) {
+            sim.folk[k].arrest = None;
+        }
+        if sim.folk[k].carrying == Some(me) {
+            sim.folk[k].carrying = None;
+        }
+        if sim.folk[k].pickup == Some(me) {
+            sim.folk[k].pickup = None;
+        }
+        sim.folk[k].ai.queue.retain(|s| s.target != kenshi_game::sim::Target::Person(me));
+    }
+    run(&mut sim, 5.0, "H");
+    let civ = (0..sim.folk.len()).find(|&c| !sim.folk[c].player && !sim.folk[c].dead && !sim.folk[c].down && sim.folk[c].faction.as_deref() == Some(faction.as_str()) && !sim.guards_town(c) && sim.folk[c].race.is_none());
+    if let Some(v) = civ {
+        let at = sim.folk[v].mover.position;
+        sim.folk[me].mover.position = [at[0] + 3.0 * m, at[1], at[2]];
+        sim.arena.f[me].mover.position = sim.folk[me].mover.position;
+        sim.knock_out(v);
+        sim.arena.f[v].medical.knockout_time = 200.0;
+        run(&mut sim, 1.0, "H");
+        println!("[H] kidnap {v}: is kidnap {}, down {}; me down {} carrying {:?} prison {}", sim.is_kidnap(me, v), sim.folk[v].down, sim.folk[me].down, sim.folk[me].carrying, sim.folk[me].prison.is_some());
+        sim.order_kidnap(&[me], v);
+        println!("[H] pending {:?}", sim.law_state.kidnaps);
+        for _ in 0..20 {
+            run(&mut sim, 1.0, "H");
+            if sim.folk[me].carrying == Some(v) {
+                break;
+            }
+        }
+        println!("[H] carrying {:?}, pending {:?}, crime {:?}", sim.folk[me].carrying, sim.law_state.kidnaps, sim.folk[me].crime.as_ref().map(|c| (c.kind, c.faction.clone(), c.victim)));
+        run(&mut sim, 5.0, "H");
+        println!("[H] bounty {}, alarms {:?}", sim.bounty_with(me, &faction), sim.law_state.alarms.values().map(|v| v.iter().map(|a| a.crime).collect::<Vec<_>>()).collect::<Vec<_>>());
     }
 }

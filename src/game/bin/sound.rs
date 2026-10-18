@@ -19,14 +19,26 @@
 //!   real time (whether or not a piece still plays); a region's music bank goes 60 s after it is
 //!   left.
 //!
-//! (stand-in) Wwise's interactive music (music segments, tracks, switches, kinds 10 - 13) is not
-//! read: a music event plays one of its bank's pieces at random. Buses, effects, RTPCs and attenuation curves are not read: a
+//! - Interactive music (kenshi_audio::music; MusicPlay): a music node an event plays is played
+//!   as Wwise plays it: a switch its child by the switches set (its decision tree), changed as
+//!   they change (its transition rule: at once with its fades, or at the exit cue); a playlist its
+//!   segments one after another as its items' types, loops, weights and avoid-repeat walk them;
+//!   a segment its tracks' clips at their places, the next segment's entry cue at its exit cue;
+//!   the play and stop actions' fades. A region's music event plays three such nodes: the
+//!   day / night pieces (Time_in_Game) and two layers of shorter ones, each a step at random (a
+//!   piece or a silence) each time it is posted. (not ported) Stingers, the transition
+//!   segments, a rule's fade offsets and curves (linear), the sync to a bar or beat (taken as
+//!   the exit cue); a clip's end trim.
+//!
+//! Buses, effects, RTPCs and attenuation curves are not read: a
 //! sound plays at its nodes' summed volume, panned and fading with distance by Bevy's spatial
 //! audio (1/100 of a unit a metre). Day is from "sunrise" to "sunset" (F040780).
 use super::{Game, MainCam, WorldReady};
 use bevy::audio::{AudioPlayer, AudioSource, PlaybackMode, PlaybackSettings, SpatialListener, SpatialScale, Volume};
 use bevy::prelude::*;
+use bevy::audio::{AudioSink, AudioSinkPlayback};
 use kenshi_audio::bnk::{name_id, Bank};
+use kenshi_audio::music::{Music, MusicKind, PlaylistWalk};
 use kenshi_audio::tree::{Action, Kind, Library, Switches};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -58,6 +70,8 @@ struct Voice {
     tag: Option<u64>,
     /// The node the playing started from (an action's target) and the sound's own.
     root: u32,
+    /// The user volume it plays under.
+    channel: Channel,
 }
 
 /// A continuous container playing its children one after another.
@@ -71,6 +85,42 @@ struct Seq {
     left: Option<u32>,
     last: Option<u32>,
     tag: Option<u64>,
+}
+
+/// A music node playing (kenshi_audio::music): the action's target (a switch, playlist or
+/// segment), what it plays now and when the next segment starts.
+struct MusicPlay {
+    root: u32,
+    channel: Channel,
+    tag: Option<u64>,
+    /// A switch root's child playing, and the one to change to at the next segment.
+    child: Option<u32>,
+    switch_to: Option<u32>,
+    /// The playlist walked (and its walk); a segment root played once.
+    playlist: Option<u32>,
+    walk: PlaylistWalk,
+    played: bool,
+    /// When the next segment's entry cue comes (s); the clips waiting (start, source, gain dB,
+    /// seek s); the voices (entity, gain).
+    next_at: f32,
+    pending: Vec<(f32, u32, f32, f32)>,
+    voices: Vec<(Entity, f32)>,
+    /// The fade (start, length, from, to) on the play's gain; stopping when it reaches 0.
+    fade: (f32, f32, f32, f32),
+    stopping: bool,
+    /// No segment is left: gone once its voices end.
+    done: bool,
+}
+
+impl MusicPlay {
+    fn gain(&self, now: f32) -> f32 {
+        let (t0, len, a, b) = self.fade;
+        if len <= 0.0 || now >= t0 + len {
+            b
+        } else {
+            a + (b - a) * ((now - t0) / len).clamp(0.0, 1.0)
+        }
+    }
 }
 
 /// A sound waiting its initial delay.
@@ -99,8 +149,19 @@ pub struct Sound {
     voices: Vec<Voice>,
     seqs: Vec<Seq>,
     delayed: Vec<Delayed>,
+    /// The banks' interactive music, and the music playing (MusicPlay) and fading out.
+    imusic: Music,
+    music_plays: Vec<MusicPlay>,
+    music_fading: Vec<(Entity, f32, f32, f32)>,
+    /// Each playlist's step and avoid-repeat memories (kept between plays), each sequence step
+    /// track's next sub-track, the late clips to seek once their sinks are there.
+    music_memory: HashMap<u32, (HashMap<u32, usize>, HashMap<u32, Vec<usize>>)>,
+    music_memory_tracks: HashMap<u32, u32>,
+    music_seek: Vec<(Entity, f32)>,
     rng: u64,
     volumes: HashMap<&'static str, f32>,
+    /// Volume changes not yet put on the sounds playing: the channel and the factor.
+    rescale: Vec<(Channel, f32)>,
     music_frequency: f32,
     /// The region's ambience event suffix ("Desert") and day, its music bank.
     ambience: Option<(String, bool)>,
@@ -130,13 +191,34 @@ const MUSIC: [&str; 4] = ["Dunes", "Savannah", "Swamplands", "Tarsands"];
 const SPATIAL_SCALE: f32 = 0.01;
 
 impl Sound {
-    /// Set a volume option (settings.cfg's "Music volume" and the like, 0 .. 1) while playing.
+    /// Set a volume option (settings.cfg's "Music volume" and the like, 0 .. 1) while playing
+    /// (F032926: the bus volumes at once, the sounds playing too).
     pub fn set_volume(&mut self, key: &str, v: f32) {
-        for k in ["Music volume", "Ambient volume", "Footstep volume", "Sfx volume", "UI volume", "VO volume"] {
+        let channels = [
+            ("Music volume", Channel::Music),
+            ("Ambient volume", Channel::Ambient),
+            ("Footstep volume", Channel::Footstep),
+            ("Sfx volume", Channel::Sfx),
+            ("UI volume", Channel::Ui),
+            ("VO volume", Channel::Vo),
+        ];
+        for (k, c) in channels {
             if k == key {
-                self.volumes.insert(k, v.clamp(0.0, 1.0));
+                let old = self.volumes.get(k).copied().unwrap_or(0.5);
+                let new = v.clamp(0.0, 1.0);
+                self.volumes.insert(k, new);
+                // (the music's own volume is set each frame)
+                if c != Channel::Music && old > 0.0 {
+                    self.rescale.push((c, new / old));
+                }
             }
         }
+    }
+
+    /// Set the "Music frequency" option (minutes, at least half a minute) while playing
+    /// (F032926): the next piece's wait is drawn from it.
+    pub fn set_music_frequency(&mut self, minutes: f32) {
+        self.music_frequency = minutes.max(0.5) * 60.0;
     }
 
     pub fn new(root: &std::path::Path) -> Sound {
@@ -158,8 +240,15 @@ impl Sound {
             voices: Vec::new(),
             seqs: Vec::new(),
             delayed: Vec::new(),
+            imusic: Music::default(),
+            music_plays: Vec::new(),
+            music_fading: Vec::new(),
+            music_memory: HashMap::new(),
+            music_memory_tracks: HashMap::new(),
+            music_seek: Vec::new(),
             rng: 0x9e37_79b9_7f4a_7c15,
             volumes,
+            rescale: Vec::new(),
             music_frequency: get("Music frequency", 5.0).max(0.5) * 60.0,
             ambience: None,
             music: None,
@@ -185,6 +274,7 @@ impl Sound {
         let Ok(bytes) = std::fs::read(self.dir.join(file)) else { return false };
         let Some(bank) = Bank::parse(bytes) else { return false };
         self.lib.add(&bank);
+        self.imusic.add(&bank);
         let k = self.banks.len();
         for o in bank.objects.iter().filter(|o| o.kind == 4) {
             self.event_bank.insert(o.id, k);
@@ -244,6 +334,8 @@ impl Sound {
     pub fn leave_world(&mut self) -> Vec<Entity> {
         self.posts.clear();
         self.seqs.clear();
+        let mut gone: Vec<Entity> = self.music_plays.drain(..).flat_map(|m| m.voices.into_iter().map(|v| v.0)).collect();
+        gone.extend(self.music_fading.drain(..).map(|f| f.0));
         self.delayed.clear();
         self.stops.clear();
         if let Some((old, _)) = self.ambience.take()
@@ -258,7 +350,24 @@ impl Sound {
             self.unload(&format!("{old}_Music_Bank.bnk"));
         }
         self.music_until = -1.0e9;
-        self.voices.drain(..).map(|v| v.entity).collect()
+        gone.extend(self.voices.drain(..).map(|v| v.entity));
+        gone
+    }
+
+    /// The sounds and music started from these action targets stopped now.
+    fn stop_roots(&mut self, commands: &mut Commands, roots: &[u32]) {
+        let stop: Vec<Entity> = self.voices.iter().filter(|v| roots.contains(&v.root)).map(|v| v.entity).collect();
+        for e in stop {
+            commands.entity(e).despawn();
+        }
+        self.voices.retain(|v| !roots.contains(&v.root));
+        for m in self.music_plays.iter_mut().filter(|m| roots.contains(&m.root)) {
+            for (e, _) in m.voices.drain(..) {
+                commands.entity(e).despawn();
+            }
+            m.pending.clear();
+            m.done = true;
+        }
     }
 
     fn volume(&self, c: Channel) -> f32 {
@@ -316,7 +425,7 @@ fn spawn_sound(commands: &mut Commands, s: &mut Sound, assets: &mut Assets<Audio
         eprintln!("sound: play {source} (node {node}) gain {gain:.2}{}{}", if looped { " looped" } else { "" }, at.map_or(String::new(), |a| format!(" at {a:.0}")));
     }
     let e = commands.spawn((AudioPlayer::new(handle), settings, Transform::from_translation(at.unwrap_or_default()))).id();
-    s.voices.push(Voice { entity: e, root, tag: s.cur_tag });
+    s.voices.push(Voice { entity: e, root, tag: s.cur_tag, channel });
 }
 
 /// Start node `id` (from the action's target `root`): a continuous container as a sequence,
@@ -396,10 +505,20 @@ fn length_of(s: &Sound, id: u32, depth: u32) -> f32 {
 
 /// Start the posted events, the sequences' next sounds and the delayed ones; drop the voices
 /// done.
-pub fn play(mut commands: Commands, mut s: ResMut<Sound>, mut assets: ResMut<Assets<AudioSource>>, time: Res<Time>, live: Query<Entity, With<AudioPlayer>>) {
+pub fn play(mut commands: Commands, mut s: ResMut<Sound>, mut assets: ResMut<Assets<AudioSource>>, time: Res<Time>, live: Query<Entity, With<AudioPlayer>>, mut sinks: Query<&mut AudioSink>) {
     let now = time.elapsed_secs();
     let s = &mut *s;
     s.voices.retain(|v| live.get(v.entity).is_ok());
+    // a volume changed: the sounds playing under it (a sound muted at 0 comes back with its
+    // next playing)
+    for (c, k) in std::mem::take(&mut s.rescale) {
+        for v in s.voices.iter().filter(|v| v.channel == c) {
+            if let Ok(mut sink) = sinks.get_mut(v.entity) {
+                let g = sink.volume().to_linear();
+                sink.set_volume(Volume::Linear(g * k));
+            }
+        }
+    }
     // tags stopped: their sounds, sequences and waiting sounds
     for tag in std::mem::take(&mut s.stops) {
         for v in s.voices.iter().filter(|v| v.tag == Some(tag)) {
@@ -408,6 +527,13 @@ pub fn play(mut commands: Commands, mut s: ResMut<Sound>, mut assets: ResMut<Ass
         s.voices.retain(|v| v.tag != Some(tag));
         s.seqs.retain(|q| q.tag != Some(tag));
         s.delayed.retain(|d| d.tag != Some(tag));
+        for m in s.music_plays.iter_mut().filter(|m| m.tag == Some(tag)) {
+            for (e, _) in m.voices.drain(..) {
+                commands.entity(e).despawn();
+            }
+            m.pending.clear();
+            m.done = true;
+        }
     }
     let posts = std::mem::take(&mut s.posts);
     for p in posts {
@@ -418,33 +544,48 @@ pub fn play(mut commands: Commands, mut s: ResMut<Sound>, mut assets: ResMut<Ass
         if std::env::var("KENSHI_SOUND_DEBUG").is_ok() {
             eprintln!("sound: event {} ({} actions)", p.event, actions.len());
         }
-        // (stand-in) one piece of music an event at most
-        let mut music_started = false;
         for a in actions {
             match a {
                 Action::Play(t) => {
                     if s.lib.nodes.contains_key(&t) {
                         start(&mut commands, s, &mut assets, now, t, t, p.at, &sw, p.channel, 0);
-                    } else if let Some(&k) = s.event_bank.get(&p.event) {
-                        // (stand-in) interactive music: one of its bank's pieces (an event's
-                        // several music objects make one piece, not one each)
-                        let ids: Vec<u32> = s.banks[k].1.sounds.keys().copied().collect();
-                        if !ids.is_empty() && !music_started && !s.voices.iter().any(|v| v.root == t) {
-                            music_started = true;
-                            let pick = ids[(s.rand() * ids.len() as f32) as usize % ids.len()];
-                            if let Some(h) = s.audio(pick, &mut assets) {
-                                s.music_until = now + s.lengths.get(&pick).copied().unwrap_or(0.0);
-                                if std::env::var("KENSHI_SOUND_DEBUG").is_ok() {
-                                    eprintln!("sound: music {pick} ({:.0} s) from {}", s.music_until - now, s.banks[k].0);
-                                }
-                                let gain = s.volume(p.channel) * 0.5;
-                                let e = commands.spawn((AudioPlayer::new(h), PlaybackSettings { mode: PlaybackMode::Despawn, volume: Volume::Linear(gain), ..PlaybackSettings::ONCE })).id();
-                                s.voices.push(Voice { entity: e, root: t, tag: p.tag });
-                            }
+                    } else if s.imusic.nodes.contains_key(&t) {
+                        // interactive music: from now, faded in over the action's fade
+                        let fade = s.lib.fades.get(&(p.event, t)).copied().unwrap_or(0.0);
+                        if std::env::var("KENSHI_SOUND_DEBUG").is_ok() {
+                            eprintln!("sound: music {t} starts (fade {fade} s)");
                         }
+                        s.music_plays.push(MusicPlay {
+                            root: t,
+                            channel: p.channel,
+                            tag: p.tag,
+                            child: None,
+                            switch_to: None,
+                            playlist: None,
+                            walk: PlaylistWalk::default(),
+                            played: false,
+                            next_at: now,
+                            pending: Vec::new(),
+                            voices: Vec::new(),
+                            fade: (now, fade, if fade > 0.0 { 0.0 } else { 1.0 }, 1.0),
+                            stopping: false,
+                            done: false,
+                        });
                     }
                 }
                 Action::Stop(t) => {
+                    // interactive music: faded out over the action's fade, then gone
+                    let fade = s.lib.fades.get(&(p.event, t)).copied().unwrap_or(0.0);
+                    for k in 0..s.music_plays.len() {
+                        if s.music_plays[k].root != t || s.music_plays[k].stopping {
+                            continue;
+                        }
+                        let g = s.music_plays[k].gain(now);
+                        let m = &mut s.music_plays[k];
+                        m.stopping = true;
+                        m.pending.clear();
+                        m.fade = (now, fade, g, 0.0);
+                    }
                     let under = |s: &Sound, mut n: u32| {
                         for _ in 0..32 {
                             if n == t {
@@ -519,6 +660,224 @@ pub fn play(mut commands: Commands, mut s: ResMut<Sound>, mut assets: ResMut<Ass
     s.cur_tag = None;
 }
 
+/// The next segment music play `k` plays (its switch's child, playlist walk or segment); None:
+/// none left.
+fn next_segment(s: &mut Sound, k: usize) -> Option<u32> {
+    let switches = s.switches.clone();
+    let mut node = {
+        let m = &mut s.music_plays[k];
+        if let Some(c) = m.switch_to.take() {
+            m.child = Some(c);
+            m.playlist = None;
+            m.walk = PlaylistWalk::default();
+            m.played = false;
+        }
+        m.child.unwrap_or(m.root)
+    };
+    for _ in 0..8 {
+        let kind = s.imusic.nodes.get(&node)?.kind.clone();
+        match kind {
+            MusicKind::Segment { .. } => {
+                let m = &mut s.music_plays[k];
+                if m.played {
+                    return None;
+                }
+                m.played = true;
+                return Some(node);
+            }
+            MusicKind::Playlist { items, .. } => {
+                if s.music_plays[k].playlist != Some(node) {
+                    let m = &mut s.music_plays[k];
+                    m.playlist = Some(node);
+                    m.walk = PlaylistWalk::default();
+                }
+                // the step and avoid-repeat memories are the playlist's own, kept between plays
+                let mut walk = std::mem::take(&mut s.music_plays[k].walk);
+                if walk.step.is_empty() && walk.recent.is_empty() {
+                    if let Some((st, re)) = s.music_memory.get(&node) {
+                        walk.step = st.clone();
+                        walk.recent = re.clone();
+                    }
+                }
+                let mut rng = s.rng;
+                let mut rand = || {
+                    rng ^= rng << 13;
+                    rng ^= rng >> 7;
+                    rng ^= rng << 17;
+                    (rng % 1_000_000) as f32 / 1_000_000.0
+                };
+                let next = walk.next(&items, &mut rand);
+                s.rng = rng;
+                s.music_memory.insert(node, (walk.step.clone(), walk.recent.clone()));
+                s.music_plays[k].walk = walk;
+                return next;
+            }
+            MusicKind::Switch { .. } => {
+                let c = s.imusic.switch_child(node, &|g| switches.get(&g).copied());
+                if c == 0 {
+                    return None;
+                }
+                node = c;
+            }
+            MusicKind::Track { .. } => return None,
+        }
+    }
+    None
+}
+
+/// Interactive music, each frame: switches following their values, segments started at their
+/// entry cues, clips at their places, fades.
+pub fn music(mut commands: Commands, mut s: ResMut<Sound>, mut assets: ResMut<Assets<AudioSource>>, time: Res<Time>, mut sinks: Query<&mut AudioSink>, live: Query<Entity, With<AudioPlayer>>) {
+    let now = time.elapsed_secs();
+    let s = &mut *s;
+    let debug = std::env::var("KENSHI_SOUND_DEBUG").is_ok();
+    // the voices fading out after a switch's immediate change
+    s.music_fading.retain(|&(e, t0, len, g)| {
+        let left = if len > 0.0 { 1.0 - (now - t0) / len } else { 0.0 };
+        if left <= 0.0 || live.get(e).is_err() {
+            if live.get(e).is_ok() {
+                commands.entity(e).despawn();
+            }
+            return false;
+        }
+        if let Ok(mut sink) = sinks.get_mut(e) {
+            sink.set_volume(Volume::Linear(g * left));
+        }
+        true
+    });
+    for k in 0..s.music_plays.len() {
+        let root = s.music_plays[k].root;
+        // a switch following its value (its transition rule: at once with its fades, else at the
+        // exit cue)
+        if !s.music_plays[k].stopping
+            && !s.music_plays[k].done
+            && let Some(MusicKind::Switch { rules, .. }) = s.imusic.nodes.get(&root).map(|n| n.kind.clone())
+        {
+            let switches = s.switches.clone();
+            let want = s.imusic.switch_child(root, &|g| switches.get(&g).copied());
+            let m = &s.music_plays[k];
+            let cur = m.child;
+            if m.child.is_some() && Some(want) != cur && m.switch_to != Some(want) {
+                let fits = |ids: &[u32], id: Option<u32>| ids.iter().any(|&x| x == u32::MAX || Some(x) == id);
+                let rule = rules
+                    .iter()
+                    .filter(|r| fits(&r.src, cur) && fits(&r.dst, Some(want)))
+                    .max_by_key(|r| (!r.src.contains(&u32::MAX)) as u8 + (!r.dst.contains(&u32::MAX)) as u8)
+                    .cloned()
+                    .unwrap_or_default();
+                if debug {
+                    eprintln!("sound: music {root} switches {cur:?} -> {want} (sync {}, fades {} / {} ms)", rule.sync, rule.fade_out, rule.fade_in);
+                }
+                if rule.sync == 0 {
+                    let g = m.gain(now);
+                    let out = rule.fade_out.max(0) as f32 / 1000.0;
+                    let m = &mut s.music_plays[k];
+                    for (e, base) in m.voices.drain(..) {
+                        s.music_fading.push((e, now, out, base * g));
+                    }
+                    m.pending.clear();
+                    m.switch_to = Some(want);
+                    m.next_at = now;
+                    let inn = rule.fade_in.max(0) as f32 / 1000.0;
+                    m.fade = (now, inn, if inn > 0.0 { 0.0 } else { 1.0 }, 1.0);
+                } else {
+                    s.music_plays[k].switch_to = Some(want);
+                }
+            }
+        }
+        // the next segment at its time
+        if !s.music_plays[k].stopping && !s.music_plays[k].done && s.music_plays[k].next_at <= now {
+            if s.music_plays[k].child.is_none()
+                && let Some(MusicKind::Switch { .. }) = s.imusic.nodes.get(&root).map(|n| &n.kind)
+            {
+                let switches = s.switches.clone();
+                let c = s.imusic.switch_child(root, &|g| switches.get(&g).copied());
+                s.music_plays[k].child = Some(c);
+            }
+            match next_segment(s, k) {
+                Some(seg) => {
+                    let Some(n) = s.imusic.nodes.get(&seg).cloned() else { continue };
+                    let MusicKind::Segment { entry, exit, .. } = n.kind else { continue };
+                    let at = s.music_plays[k].next_at;
+                    if debug {
+                        eprintln!("sound: music {root} plays segment {seg} ({:.1} s{})", (exit - entry) / 1000.0, if n.children.is_empty() { ", silent" } else { "" });
+                    }
+                    for t in &n.children {
+                        let Some(MusicKind::Track { clips, kind, sub_tracks, switch }) = s.imusic.nodes.get(t).map(|x| x.kind.clone()) else { continue };
+                        // the sub-track: a random step track's at random, a switch track's by its
+                        // switch, a sequence step track's in turn (assumption: from the first)
+                        let sub = match kind {
+                            1 => Some((s.rand() * sub_tracks.max(1) as f32) as u32),
+                            2 => {
+                                let c = s.music_memory_tracks.entry(*t).or_insert(0);
+                                let v = *c % sub_tracks.max(1);
+                                *c += 1;
+                                Some(v)
+                            }
+                            3 => switch.as_ref().map(|(g, d, ids)| {
+                                let v = s.switches.get(g).copied().unwrap_or(*d);
+                                ids.iter().position(|x| *x == v).unwrap_or(0) as u32
+                            }),
+                            _ => None,
+                        };
+                        let db = s.imusic.volume(*t);
+                        for c in clips.iter().filter(|c| sub.is_none_or(|v| c.sub_track == v)) {
+                            let start = at + ((c.play_at + c.begin_trim - entry) / 1000.0) as f32;
+                            let seek = (c.begin_trim / 1000.0) as f32;
+                            s.music_plays[k].pending.push((start, c.source, db, seek));
+                        }
+                    }
+                    s.music_plays[k].next_at = at + ((exit - entry) / 1000.0).max(0.05) as f32;
+                    s.music_until = s.music_plays[k].next_at;
+                }
+                None => s.music_plays[k].done = true,
+            }
+        }
+        // the clips due (a late one seeks to where it should be)
+        let due: Vec<(f32, u32, f32, f32)> = {
+            let m = &mut s.music_plays[k];
+            let (a, b): (Vec<_>, Vec<_>) = std::mem::take(&mut m.pending).into_iter().partition(|c| c.0 <= now);
+            m.pending = b;
+            a
+        };
+        for (start, source, db, seek) in due {
+            let Some(h) = s.audio(source, &mut assets) else { continue };
+            let base = 10f32.powf(db / 20.0) * s.volume(s.music_plays[k].channel);
+            let g = s.music_plays[k].gain(now);
+            let e = commands.spawn((AudioPlayer::new(h), PlaybackSettings { mode: PlaybackMode::Despawn, volume: Volume::Linear(base * g), ..PlaybackSettings::ONCE })).id();
+            let late = (now - start).max(0.0) + seek;
+            if late > 0.05 {
+                s.music_seek.push((e, late));
+            }
+            s.music_plays[k].voices.push((e, base));
+        }
+        // fades
+        let g = s.music_plays[k].gain(now);
+        let m = &mut s.music_plays[k];
+        m.voices.retain(|(e, _)| live.get(*e).is_ok());
+        for (e, base) in &m.voices {
+            if let Ok(mut sink) = sinks.get_mut(*e) {
+                sink.set_volume(Volume::Linear(base * g));
+            }
+        }
+        if m.stopping && g <= 0.0 {
+            for (e, _) in m.voices.drain(..) {
+                commands.entity(e).despawn();
+            }
+            m.done = true;
+        }
+    }
+    // seeks once the sinks are there
+    s.music_seek.retain(|&(e, at)| match sinks.get_mut(e) {
+        Ok(sink) => {
+            let _ = sink.try_seek(std::time::Duration::from_secs_f32(at));
+            false
+        }
+        Err(_) => live.get(e).is_ok(),
+    });
+    s.music_plays.retain(|m| !(m.done && m.voices.is_empty() && m.pending.is_empty()));
+}
+
 fn under_static(lib: &Library, mut n: u32, t: u32) -> bool {
     for _ in 0..32 {
         if n == t {
@@ -549,12 +908,9 @@ pub fn menu_music(mut commands: Commands, mut s: ResMut<Sound>, ready: Option<Re
     }
     if ready.is_some() && !s.in_world {
         s.in_world = true;
-        // (stand-in for "Create_or_Load_Game", whose music objects are not read) the theme stops
-        let roots: Vec<u32> = s.lib.events.get(&name_id("Boot_Up_Game")).map(|a| a.iter().filter_map(|x| if let Action::Play(t) = x { Some(*t) } else { None }).collect()).unwrap_or_default();
-        let stop: Vec<Entity> = s.voices.iter().filter(|v| roots.contains(&v.root)).map(|v| v.entity).collect();
-        for e in stop {
-            commands.entity(e).despawn();
-        }
+        // "Create_or_Load_Game": its own sound and the theme stopped (its stop action)
+        s.post("Create_or_Load_Game", Channel::Music);
+        let _ = &mut commands;
     }
 }
 
@@ -618,10 +974,7 @@ pub fn regions(
     for (old, _) in s.music_leaving.iter().filter(|(_, at)| now > *at).cloned().collect::<Vec<_>>() {
         // (stand-in for UnloadBank stopping its sounds) the music playing from it stops
         let roots: Vec<u32> = s.lib.events.get(&name_id(&format!("Music_{old}_Play"))).map(|a| a.iter().filter_map(|x| if let Action::Play(t) = x { Some(*t) } else { None }).collect()).unwrap_or_default();
-        let stop: Vec<Entity> = s.voices.iter().filter(|v| roots.contains(&v.root)).map(|v| v.entity).collect();
-        for e in stop {
-            commands.entity(e).despawn();
-        }
+        s.stop_roots(&mut commands, &roots);
         s.unload(&format!("{old}_Music_Bank.bnk"));
     }
     s.music_leaving.retain(|(_, at)| now <= *at);
@@ -674,7 +1027,8 @@ fn place(game: &Game, id: usize) -> Vec3 {
 }
 
 /// The fights: a swing "Attack" (WEAPONS: the weapon kind, a creature attack, unarmed
-/// "HtH_Punch"), now and then the attacker "VO_ATTACK"; a hit "Impact" (Impacts: "Heavy_Hit"
+/// "HtH_Punch" or "HtH_Kick" by the striking limb, "_Robot" for a robot or a robotic limb), now
+/// and then the attacker "VO_ATTACK"; a hit "Impact" (Impacts: "Heavy_Hit"
 /// from 25 damage, else "Light_Hit"; unarmed "HtH_Impacts") and the victim "VO_Get_Hit"; a block
 /// "Impact" "Parry"; someone falling "VO_Drop" (a creature dying "VO_Creature_Die").
 /// (assumption) The timing within the swing and the voice chance are not decompiled: the swing
@@ -690,7 +1044,13 @@ pub fn fights(mut s: ResMut<Sound>, mut game: ResMut<Game>, mut down: Local<Vec<
                 }
                 use kenshi_combat::weapon_category::WeaponCategory as W;
                 let (voice, creature) = race_sound(&game, me);
-                let robot = voice == Some("SKELETON");
+                // AttackState::tryAttack (F029615): an unarmed attack's striking limb (its last
+                // frame's) picks a punch (an arm, 0 / 1) or a kick; a robot's, or a robotic limb's
+                // (MedicalSystem limb state 2), the robot one
+                let limb = game.sim.arena.f[me].last_attack.and_then(|k| game.sim.arena.sh.attacks.get(k)).and_then(|t| t.frame(i32::MAX)).map(|f| f.limb);
+                let kick = limb.is_some_and(|l| l != 0 && l != 1);
+                let robotic = limb.and_then(|l| game.sim.folk[me].limbs.get(l as usize)).is_some_and(|x| x.is_some());
+                let robot = voice == Some("SKELETON") || robotic;
                 let weapon = match (creature, Some(game.sim.arena.f[me].wielded.category)) {
                     (Some("Gorillo"), _) => "Gorillo_Fhand",
                     (Some(c), _) => c,
@@ -703,8 +1063,12 @@ pub fn fights(mut s: ResMut<Sound>, mut game: ResMut<Game>, mut down: Local<Vec<
                     (None, Some(W::SkillHackers)) => "Hackers",
                     (None, Some(W::SkillBow)) => "Bow",
                     (None, Some(W::SkillTurret)) => "Turret",
-                    _ if robot => "HtH_Punch_Robot",
-                    _ => "HtH_Punch",
+                    _ => match (kick, robot) {
+                        (false, false) => "HtH_Punch",
+                        (false, true) => "HtH_Punch_Robot",
+                        (true, false) => "HtH_Kick",
+                        (true, true) => "HtH_Kick_Robot",
+                    },
                 };
                 let at = Some(place(&game, me));
                 s.post_with("Attack", at, &[("WEAPONS", weapon)], Channel::Sfx);

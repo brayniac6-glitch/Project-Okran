@@ -67,6 +67,11 @@ pub struct DialogMemory {
     /// medics who have said their kit is empty.
     pub healing: std::collections::HashMap<usize, usize>,
     pub kit_empty: std::collections::HashSet<usize>,
+    /// Who was fighting at the last second (`speech::combat_events`).
+    pub fighting: std::collections::HashSet<usize>,
+    /// Whether each (package, character, faction)'s packages answer sightings of others
+    /// (`speech::answers_sightings`).
+    pub sighting_packages: std::collections::HashMap<(Option<String>, Option<String>, Option<String>), bool>,
 }
 
 /// A squad hired on a line's "AI contract" (F028601): on the package for the ref's first value
@@ -793,6 +798,10 @@ impl Sim {
         if self.said_lately(l, npc) || !self.type_ok(l, player) {
             return false;
         }
+        // an interjector's line: its conditions and filters are its own (`interjectors`)
+        if (3..=5).contains(&l.ints.get("speaker").copied().unwrap_or(T_ME)) {
+            return self.speaker_of(l, npc, player).is_some();
+        }
         if !self.conditions_pass(l, npc, player) {
             return false;
         }
@@ -803,19 +812,65 @@ impl Sim {
     }
 
     /// Who says line `l` (TalkerEnum): the NPC (T_ME), the player's character (T_TARGET,
-    /// T_TARGET_IF_PLAYER, T_TARGET_WITH_RACE), an interjector (T_INTERJECTOR1..3: another of
-    /// the two squads, the first whose filters and conditions pass), the NPC for its whole
-    /// squad (T_WHOLE_SQUAD). None: no one can.
+    /// T_TARGET_IF_PLAYER, T_TARGET_WITH_RACE), an interjector (T_INTERJECTOR1..3: of
+    /// `interjectors`, the likeliest), the NPC for its whole squad (T_WHOLE_SQUAD). None: no
+    /// one can.
     fn speaker_of(&self, l: &GameData, npc: usize, player: usize) -> Option<usize> {
         match l.ints.get("speaker").copied().unwrap_or(T_ME) {
             1 | 2 | 7 => Some(player),
-            3..=5 => {
-                let mut near: Vec<usize> = self.squad_of(npc);
-                near.extend(self.squad_of(player));
-                near.into_iter().filter(|&k| k != npc && k != player && !self.folk[k].down && !self.folk[k].dead).find(|&k| self.filters_pass(l, k, if self.folk[k].player { npc } else { player }))
-            }
+            3..=5 => self.interjectors(l, npc, player).into_iter().max_by(|a, b| a.1.total_cmp(&b.1)).map(|x| x.0),
             _ => Some(npc),
         }
+    }
+
+    /// @fn F040891
+    ///
+    /// Those of `npc`'s squad who could interject line `l` in its talk with `target`, each with
+    /// its weight: standing, not `npc` nor the one talked to, no animal, not saying a line of
+    /// its own, not "dumb" (CHARACTER, F039418) unless the line names it ("is character"), the
+    /// line's conditions and filters passing for it as the speaker (F040888); weighted 1 within
+    /// 30 units of `npc` falling to 0 at 450 (squared 900 .. 202800, F050517), a tenth on
+    /// another floor (not in the same building).
+    fn interjectors(&self, l: &GameData, npc: usize, target: usize) -> Vec<(usize, f32)> {
+        let now = self.hours_gone();
+        let at = self.folk[npc].mover.position_units();
+        let named: Vec<&String> = l.refs("is character").iter().map(|(c, _)| c).collect();
+        self.squad_of(npc)
+            .into_iter()
+            .filter(|&k| k != npc && k != target && !self.folk[k].down && !self.folk[k].dead && self.folk[k].race.is_none())
+            .filter(|&k| self.bark_next.get(&k).is_none_or(|&t| now >= t))
+            .filter(|&k| {
+                let dumb = self.folk[k].character.as_deref().and_then(|c| self.data.get(c)).is_some_and(|c| c.bools.get("dumb").copied().unwrap_or(false));
+                !dumb || self.folk[k].character.as_ref().is_some_and(|c| named.contains(&c))
+            })
+            .filter(|&k| self.conditions_pass(l, k, target) && self.filters_pass(l, k, target))
+            .filter_map(|k| {
+                let q = self.folk[k].mover.position_units();
+                let d2 = (q[0] - at[0]).powi(2) + (q[1] - at[1]).powi(2) + (q[2] - at[2]).powi(2);
+                let mut w = ((d2 - 202_800.0) / (900.0 - 202_800.0)).min(1.0).max(0.0);
+                if self.folk[k].inside != self.folk[npc].inside {
+                    w *= 0.1;
+                }
+                (w > 0.0).then_some((k, w))
+            })
+            .collect()
+    }
+
+    /// One of `interjectors` at random by weight (F041399 / F041256).
+    fn pick_interjector(&mut self, l: &GameData, npc: usize, target: usize) -> Option<usize> {
+        let list = self.interjectors(l, npc, target);
+        let total: f32 = list.iter().map(|x| x.1).sum();
+        if total <= 0.0 {
+            return None;
+        }
+        let mut r = self.rng.uniform() * total;
+        for (k, w) in &list {
+            r -= w;
+            if r < 0.0 {
+                return Some(*k);
+            }
+        }
+        list.last().map(|x| x.0)
     }
 
     /// The town person `id` is in (Character vtable 0x70 +0x88, F038707): as the world last
@@ -977,8 +1032,17 @@ impl Sim {
         if c.refs("bounty factions").is_empty() && self.data.get("defaultEmpireFactionSID").is_some() {
             factions.push("defaultEmpireFactionSID".to_string());
         }
+        // (F046510's adding, quietly: no one is told of a bounty a character is made with)
+        let now = self.now_hours();
         for f in factions {
-            self.add_bounty_amount(id, &f, amount);
+            let p = &mut self.folk[id];
+            match p.bounties.iter_mut().find(|b| b.faction == f) {
+                Some(b) => {
+                    b.amount += amount;
+                    b.stamp = now;
+                }
+                None => p.bounties.push(crate::law::Bounty { faction: f, amount, crimes: 0, stamp: now }),
+            }
         }
     }
 
@@ -1386,7 +1450,11 @@ impl Sim {
                     let t = text(&n, r);
                     let t = self.words(&t, npc, player, self.line_cost(&n));
                     // an interjector's line under its name
-                    let by = self.speaker_of(&n, npc, player).filter(|&s| s != npc);
+                    let by = match n.ints.get("speaker").copied().unwrap_or(T_ME) {
+                        3..=5 => self.pick_interjector(&n, npc, player),
+                        _ => self.speaker_of(&n, npc, player),
+                    }
+                    .filter(|&s| s != npc);
                     if !t.is_empty() {
                         npc_text = match by {
                             Some(s) => format!("{npc_text}\n\n{}: {t}", self.display_name(s)),
@@ -1873,8 +1941,10 @@ impl Sim {
                 self.temp_ally(npc);
             }
             // DA_FLAG_TEMP_ENEMY (case 0x15): the speaker's squad's memory tags the target
-            // ST_TEMPORARY_ENEMY (F04d9c8, and nothing more). (stand-in) The squad then goes for
-            // it: its AI's foe test of the tag is not ported.
+            // ST_TEMPORARY_ENEMY (F04d9c8, and nothing more): its AI then takes it for an enemy
+            // (`temp_enemies`, read by the AI view's enemy test). (stand-in) The squad is also
+            // ordered at it: of the planners' goals only Attacking enemies (16) goes for the
+            // enemies the view counts, and squads without it (guards) would not fight.
             21 => {
                 if let Some(t) = target {
                     self.tag_short(npc, t, StTemporaryEnemy);
@@ -1896,7 +1966,8 @@ impl Sim {
                 }
             }
             // DA_GIVE_TARGET_MY_SLAVES (case 0x18): the slaves of its squad (their cages
-            // opened) join the target's
+            // opened) the target's squad's (F01f235); (stand-in) given to the player's, they
+            // join it free
             24 => {
                 let owner = self.folk[npc].platoon;
                 let slaves: Vec<usize> = self.folk.iter().filter(|p| owner.is_some() && p.slave.as_ref().is_some_and(|s| s.owner == owner)).map(|p| p.id).collect();
@@ -1904,10 +1975,18 @@ impl Sim {
                     if let Some(c) = self.folk[s].prison.as_ref().map(|pr| pr.cage) {
                         self.leave_cage(s, c);
                     }
-                    self.folk[s].slave = None;
                     self.folk[s].prison = None;
-                    self.folk[s].shackled = false;
-                    self.recruit(s);
+                    match target.filter(|&t| !self.folk[t].player) {
+                        Some(t) => {
+                            let f = self.folk[t].faction.clone().unwrap_or_default();
+                            self.make_slave(s, self.folk[t].platoon, &f);
+                        }
+                        None => {
+                            self.folk[s].slave = None;
+                            self.folk[s].shackled = false;
+                            self.recruit(s);
+                        }
+                    }
                 }
             }
             // DA_TAG_ESCAPED_SLAVE (F038704 2): the target an escaping slave of the speaker's
@@ -1968,11 +2047,11 @@ impl Sim {
                     }
                 }
             }
-            // DA_CRIME_ALARM: the speaker's people about turn on the target (`alarm`).
-            // (stand-in) The game reports the crime to the town's law (F048892).
+            // DA_CRIME_ALARM (F040912 0x21): the target's crime seen and the town's alarm
+            // raised (crate::law `crime_alarm`)
             33 => {
                 if let Some(t) = target {
-                    self.alarm(npc, t);
+                    self.crime_alarm(npc, t);
                 }
                 out.push(Effect::Alarm);
             }
@@ -1992,23 +2071,20 @@ impl Sim {
                     self.dialog_memory.locked.insert((npc, r));
                 }
             }
-            // DA_ASSAULT_PHASE / DA_RETREAT_PHASE / DA_VICTORY_PHASE (0x25..0x27): the speaker's
-            // running campaign's phase (1 or 2, 2, 3). (stand-in) The world's campaigns keep no
-            // phase number: the assault attacks; retreat and victory end the campaign as won (a
-            // squad on none goes home)
-            37 => {
-                if let Some(t) = target {
-                    self.dialogue_attack(npc, t);
+            // DA_ASSAULT_PHASE / DA_RETREAT_PHASE / DA_VICTORY_PHASE (0x25..0x27): the campaign
+            // the speaker's squad is on (F03da87) to its assault (1, or over without one), over
+            // (2) or victory (3), its clocks restarted (`set_campaign_phase`). On none, nothing.
+            37..=39 => {
+                if let Some(c) = self.campaign_of(npc) {
+                    let phase = match action {
+                        37 => crate::world::PHASE_ASSAULT,
+                        38 => crate::world::PHASE_OVER,
+                        _ => crate::world::PHASE_VICTORY,
+                    };
+                    self.set_campaign_phase(&c, phase);
                 }
-                out.push(Effect::Attack);
-            }
-            38 | 39 => {
-                if let Some(k) = self.world.squads.iter().position(|s| s.members.contains(&npc)) {
-                    match self.world.squads[k].goal.clone() {
-                        crate::world::Goal::Campaign { campaign, .. } => self.campaign_over(&campaign, true),
-                        _ if action == 38 => self.go_home(k),
-                        _ => {}
-                    }
+                if action == 37 {
+                    out.push(Effect::Attack);
                 }
             }
             // DA_ENSLAVE_TARGETS_CARRIED_PERSON: whom the target carries is taken (out of the
@@ -2190,6 +2266,33 @@ impl Sim {
         self.dialog_memory.met.insert((holder, subject), now);
         let key = self.memory_key(holder);
         self.platoon_memory.entry(key).or_default().add_tag(subject, own, squad, tag, clock);
+    }
+
+    /// Each person's squad's temporary enemies now (its platoon memory's ST_TEMPORARY_ENEMY
+    /// tags set within `SHORT_TAG_HOURS`; a player squad's entry is all the player's people):
+    /// the AI's enemy test takes them for enemies (Character::isEnemy, F044572), so a squad that
+    /// tags someone (DA_FLAG_TEMP_ENEMY) goes for it as it would a foe.
+    pub fn temp_enemies(&self) -> Vec<Vec<usize>> {
+        let now = self.hours_gone() * 3600.0;
+        let flag = kenshi_ai::PerceptionShortTerm::StTemporaryEnemy as i32;
+        let players: Vec<usize> = self.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
+        let mut by_key: std::collections::HashMap<u64, Vec<usize>> = std::collections::HashMap::new();
+        for (k, m) in &self.platoon_memory {
+            let mut v = Vec::new();
+            for (s, t) in &m.entries {
+                if !t.short_term.has(flag) || now - t.time >= SHORT_TAG_HOURS * 3600.0 {
+                    continue;
+                }
+                match s {
+                    kenshi_ai::tags::Subject::Character(c) => v.push(*c),
+                    kenshi_ai::tags::Subject::Squad(_) => v.extend(players.iter().copied()),
+                }
+            }
+            if !v.is_empty() {
+                by_key.insert(*k, v);
+            }
+        }
+        (0..self.folk.len()).map(|id| by_key.get(&self.memory_key(id)).cloned().unwrap_or_default()).collect()
     }
 
     /// Whether `holder`'s squad has short-term tag `tag` on `subject`, set within
@@ -2557,32 +2660,6 @@ impl Sim {
                     foes.retain(|&s| s != player_side);
                 }
             }
-        }
-    }
-
-    /// DA_CRIME_ALARM: `npc`'s faction's people within 1000 units turn on `target`'s side and go
-    /// for them.
-    pub fn alarm(&mut self, npc: usize, target: usize) {
-        let side = self.arena.f[target].team;
-        let (faction, at) = (self.folk[npc].faction.clone(), self.folk[npc].mover.position_units());
-        let mut answering = Vec::new();
-        for k in 0..self.folk.len() {
-            let w = &self.folk[k];
-            if w.player || w.down || w.dead || w.faction != faction {
-                continue;
-            }
-            let q = w.mover.position_units();
-            if (q[0] - at[0]).hypot(q[2] - at[2]) < 1000.0 {
-                if let Some(foes) = &mut self.arena.f[k].foes
-                    && !foes.contains(&side)
-                {
-                    foes.push(side);
-                }
-                answering.push(k);
-            }
-        }
-        if !answering.is_empty() {
-            self.order_attack(&answering, target);
         }
     }
 

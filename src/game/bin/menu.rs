@@ -474,6 +474,7 @@ pub fn buttons(
     mut exit: MessageWriter<AppExit>,
     mut saves: ResMut<SavesPanel>,
     mut done: MessageReader<SavesDone>,
+    (mut options, monitors): (ResMut<super::options_ui::Menus>, Query<&bevy::window::Monitor>),
 ) {
     let size = window_size(&windows);
     let idle = menu.loading.lock().is_ok_and(|l| l.is_none());
@@ -547,6 +548,8 @@ pub fn buttons(
                 }
             }
             "NewGameButton" if menu.panel.is_none() => open_panel(&mut commands, &gui, &assets, &mut menu, size),
+            // F048551's OPTIONS: the options window over the title screen (options_ui)
+            "OptionsButton" if !menu.in_game && !saves.is_open() => options.open_options(&mut commands, &gui, &assets, &menu.root.clone(), size, &monitors),
             "LeftButton" | "RightButton" if !menu.starts.is_empty() => {
                 let n = menu.starts.len();
                 menu.pick = if c.name == "LeftButton" { (menu.pick + n - 1) % n } else { (menu.pick + 1) % n };

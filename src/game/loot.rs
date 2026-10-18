@@ -4,9 +4,15 @@
 //! Specs: F048909 (a town's spawn: for each "loot spawn" entry, a VENDOR_LIST, a random count
 //! between its two values of items generated from the list (F049397, `trade::generate`), each
 //! put at a random place near the town on the ground).
-//! (assumption) The places are within 400 units of the town's centre, on the navmesh; a town
-//! spawns its loot once (the world's own respawning is not ported); an item is picked up from
-//! within 25 units; ground items are not saved yet.
+//! A town's ground loot comes once: Town::setup (F048904) registers the spawn (F048821), and each
+//! time the town comes into the world (F048879, again after F048828 let it go with its zone
+//! unloaded) F048909 runs it, but its loot spawn only puts items down in a fresh zone
+//! (ZoneMapContent +0xa8, F051437: a zone with no saved state). A zone starts afresh again when
+//! its town turns into an "override town" (F051436: the world states call for one); its items
+//! lying about are cleared then ("1-itemlist") and the override's loot spawn put down, as the
+//! zone loads. Kenshi has no timer on it (the 24 - 48 h refill is the buildings' item spots').
+//! (assumption) The places are within 400 units of the town's centre, on the navmesh; an item is
+//! picked up from within 25 units; a zone's items are those lying within its square.
 
 use crate::sim::Sim;
 use kenshi_char::inventory::Item;
@@ -68,11 +74,26 @@ impl Sim {
             }
         }
         self.spots_tick();
-        let due: Vec<usize> = (0..self.towns.len())
-            .filter(|&t| !self.looted.contains(&self.towns[t].record) && self.zones.contains(&zone_of(self.towns[t].position)))
+        // the zones coming in now (F051437 runs as a zone loads)
+        let fresh: std::collections::HashSet<(i32, i32)> = self.zones.difference(&self.loot_zones).copied().collect();
+        self.loot_zones = self.zones.clone();
+        let due: Vec<(usize, String)> = (0..self.towns.len())
+            .filter(|&t| self.zones.contains(&zone_of(self.towns[t].position)))
+            .map(|t| (t, self.town_record(t)))
+            .filter(|(_, now)| !self.looted.contains(now))
             .collect();
-        for t in due {
-            let (record, centre) = (self.towns[t].record.clone(), self.towns[t].position);
+        for (t, record) in due {
+            let centre = self.towns[t].position;
+            // F051436: a town now an override town: its zone starts afresh as it loads, the items
+            // lying in it cleared (but those on a building's item spot)
+            if record != self.towns[t].record {
+                let z = zone_of(centre);
+                if !fresh.contains(&z) {
+                    continue;
+                }
+                let on_spots: std::collections::HashSet<u64> = self.spots.iter().filter_map(|s| s.item).collect();
+                self.ground.retain(|g| zone_of(g.at) != z || on_spots.contains(&g.id));
+            }
             self.looted.insert(record.clone());
             let Some(town) = self.data.get(&record).cloned() else { continue };
             for (list, v) in town.refs("loot spawn") {

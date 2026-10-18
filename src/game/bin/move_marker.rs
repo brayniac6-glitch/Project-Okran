@@ -45,7 +45,7 @@ pub struct RotationMarker(Option<Entity>);
 ///
 /// The camera's rotation marker: shown while the camera is turned with the mouse (the camera's
 /// +0 flag, set by the mouse-rotate key) and "Show rotation marker" is on, 1 over the camera's
-/// centre (10 over what it looks at), not turning with the camera, scaled by the camera's
+/// centre, not turning with the camera, scaled by the camera's
 /// distance x 0.06, at least 3. (assumption) In the movement marker's green: its material,
 /// by an id (0x9cb187), is not read.
 #[allow(clippy::too_many_arguments)]
@@ -86,7 +86,7 @@ pub fn rotation(
         *vis = want;
     }
     if show {
-        *tr = Transform::from_translation(game.focus + Vec3::Y * 11.0).with_scale(Vec3::splat((game.dist * 0.06).max(3.0)));
+        *tr = Transform::from_translation(game.focus + Vec3::Y).with_scale(Vec3::splat((game.dist * 0.06).max(3.0)));
     }
 }
 

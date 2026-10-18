@@ -15,15 +15,17 @@ pub const EV_LOST_LEG: i32 = 70;
 pub const EV_LOST_ARM: i32 = 71;
 pub const EV_GET_UP_PEACE: i32 = 23;
 pub const EV_GET_UP_FIGHT: i32 = 24;
+pub const EV_GET_UP_UNNECCESSARY_FIGHT: i32 = 25;
+pub const EV_SPEECH_INTERRUPTED_ATTACKED_BY_TARGET: i32 = 28;
+pub const EV_SPEECH_INTERRUPTED_ATTACKED_BY_STRANGERS: i32 = 29;
+pub const EV_BETRAYAL: i32 = 31;
+pub const EV_ASSASSINATION_FAILED: i32 = 56;
 pub const EV_I_SEE_ENEMY_PLAYER: i32 = 66;
 pub const EV_I_SEE_ALLY_PLAYER: i32 = 67;
 pub const EV_I_SEE_ANIMAL_SQUAD: i32 = 27;
 pub const EV_WITNESS_GENERIC_ASSAULT: i32 = 41;
 pub const EV_WITNESS_LOOTING_ALLY: i32 = 42;
 pub const EV_WITNESS_THIEF_OR_LOCKPICK: i32 = 43;
-/// "I recognised someone has a bounty and is wanted. Won't trigger for allies" (fcs.def;
-/// raised by crate::disguise's notice, F046537).
-pub const EV_BOUNTY_SPOTTED: i32 = 44;
 pub const EV_USING_MY_TRAINING_EQUIPMENT: i32 = 59;
 pub const EV_UNLOCK_MY_CAGE_OR_SHACKLES: i32 = 13;
 pub const EV_HEALING_OTHER_START: i32 = 18;
@@ -93,13 +95,11 @@ impl Sim {
         let got_up: Vec<usize> = self.was_down.difference(&down).copied().filter(|&i| i < self.folk.len() && !self.folk[i].dead).collect();
         self.was_down = down;
         for id in got_up {
-            let fight = self.arena.f.iter().enumerate().any(|(k, f)| k != id && f.active && !f.down && {
-                let (a, b) = (self.folk[k].mover.position_units(), self.folk[id].mover.position_units());
-                (a[0] - b[0]).hypot(a[2] - b[2]) < 400.0
-            });
+            let event = self.get_up_event(id);
             let target = self.nearest_player(id).map_or(id, |(p, _)| p);
-            self.bark(id, target, if fight { EV_GET_UP_FIGHT } else { EV_GET_UP_PEACE });
+            self.bark(id, target, event);
         }
+        self.combat_events();
         // the sensors: each of the player's characters newly seen
         let players: Vec<usize> = self.folk.iter().filter(|p| p.player && !p.dead && !p.away).map(|p| p.id).collect();
         let watchers: Vec<usize> = self.folk.iter().filter(|p| !p.player && !p.dead && !p.away && (p.dialogue.is_some() || p.package.is_some())).map(|p| p.id).collect();
@@ -111,6 +111,32 @@ impl Sim {
             for &p in &players {
                 if self.can_see(id, p) {
                     seen.insert((id, p));
+                }
+            }
+            // others about (within 1000 units, not of its squad nor its faction: those make no
+            // event, `sighted`), by those whose packages answer a sighting of them
+            // (EV_I_SEE_NEUTRAL_SQUAD, EV_I_SEE_ANIMAL_SQUAD)
+            if self.answers_sightings(id) {
+                let at = self.folk[id].mover.position_units();
+                let (pl, mine) = (self.folk[id].platoon, self.folk[id].faction.clone());
+                let others: Vec<usize> = (0..self.folk.len())
+                    .filter(|&k| {
+                        let q = &self.folk[k];
+                        let w = q.mover.position_units();
+                        k != id
+                            && !q.player
+                            && !q.dead
+                            && !q.down
+                            && !q.away
+                            && (pl.is_none() || q.platoon != pl)
+                            && (q.race.is_some() || q.faction != mine)
+                            && (w[0] - at[0]).hypot(w[2] - at[2]) < 1000.0
+                    })
+                    .collect();
+                for k in others {
+                    if self.can_see(id, k) {
+                        seen.insert((id, k));
+                    }
                 }
             }
         }
@@ -148,6 +174,90 @@ impl Sim {
         }
     }
 
+    /// @fn F047465
+    ///
+    /// The event of `id` getting up: no foes about (its combat's +0x94 / +0x98), EV_GET_UP_PEACE;
+    /// foes but none of its own standing (+0x4c), EV_GET_UP_UNNECCESSARY_FIGHT; else
+    /// EV_GET_UP_FIGHT. (assumption) Its foes: fighters within 400 units fighting its side; its
+    /// own: its squad's others standing. (The game raises it at no one: here at the player's
+    /// nearest.)
+    fn get_up_event(&self, id: usize) -> i32 {
+        let at = self.folk[id].mover.position_units();
+        let team = self.arena.f[id].team;
+        let foes = self.arena.f.iter().enumerate().any(|(k, f)| {
+            let q = self.folk[k].mover.position_units();
+            k != id && f.active && !f.down && f.foes.as_ref().is_some_and(|x| x.contains(&team)) && (q[0] - at[0]).hypot(q[2] - at[2]) < 400.0
+        });
+        if !foes {
+            return EV_GET_UP_PEACE;
+        }
+        let mates = self.squad_of(id).into_iter().any(|k| k != id && !self.folk[k].down);
+        if mates { EV_GET_UP_FIGHT } else { EV_GET_UP_UNNECCESSARY_FIGHT }
+    }
+
+    /// Every second, those newly in a fight (CombatTask::engage, F050266):
+    /// - one speaking (F040924: a line still shown, or its dialogue begun within
+    ///   `ONE_AT_A_TIME_HOURS`), not in a fighting event (EV_I_SEE_ENEMY_PLAYER,
+    ///   EV_I_DEFEATED_SQUAD, EV_LAUNCH_ATTACK, EV_INTRUDER_FOUND, EV_GET_UP_FIGHT): its talk ends
+    ///   and it says EV_SPEECH_INTERRUPTED_ATTACKED_BY_TARGET at the one it talked to, or
+    ///   _BY_STRANGERS at another (the nobles' guards called on the player);
+    /// - one on a contract attacked by its hirer's side (Contract_HiredAlly, F029019): betrayed,
+    ///   it says EV_BETRAYAL. (assumption) The contract ends there, the squad back on its own
+    ///   package.
+    ///   (assumption) Its attacker: the nearest fighter with it as target, else its own target.
+    fn combat_events(&mut self) {
+        let now = self.hours_gone();
+        let fighting: std::collections::HashSet<usize> = (0..self.folk.len()).filter(|&k| self.arena.f[k].active && !self.folk[k].dead && !self.folk[k].down).collect();
+        let new: Vec<usize> = fighting.iter().copied().filter(|k| !self.dialog_memory.fighting.contains(k)).collect();
+        self.dialog_memory.fighting = fighting;
+        for id in new {
+            let at = self.folk[id].mover.position_units();
+            let attacker = (0..self.folk.len())
+                .filter(|&k| k != id && self.arena.f[k].focus == Some(id) && !self.folk[k].dead)
+                .min_by(|&a, &b| {
+                    let d = |k: usize| {
+                        let q = self.folk[k].mover.position_units();
+                        (q[0] - at[0]).hypot(q[2] - at[2])
+                    };
+                    d(a).total_cmp(&d(b))
+                })
+                .or(self.arena.f[id].focus);
+            let Some(attacker) = attacker else { continue };
+            // betrayed by its hirer's side
+            if let Some(c) = self.contracts.iter().position(|c| c.members.contains(&id)) {
+                let hirer = self.contracts[c].hirer;
+                if self.faction_key(attacker).is_some() && self.faction_key(attacker) == self.faction_key(hirer) {
+                    let contract = self.contracts.remove(c);
+                    for (m, was) in contract.members.iter().zip(&contract.was) {
+                        if let Some(p) = was {
+                            self.set_package(*m, p);
+                        }
+                    }
+                    self.bark_next.remove(&id);
+                    self.bark(id, attacker, EV_BETRAYAL);
+                    continue;
+                }
+            }
+            // interrupted speaking
+            let running = self.dialog_memory.running.get(&id).and_then(|d| self.dialog_memory.spoken.get(&(id, d.clone()))).is_some_and(|&t| now < t + crate::dialogue::ONE_AT_A_TIME_HOURS);
+            let speaking = self.bark_next.get(&id).is_some_and(|&t| now < t) || running;
+            let event = self.dialog_memory.running_event.get(&id).copied().unwrap_or(0);
+            if speaking && ![EV_I_SEE_ENEMY_PLAYER, crate::dialogue::EV_I_DEFEATED_SQUAD, 16, 17, EV_GET_UP_FIGHT].contains(&event) {
+                let partner = self.talking_to(id);
+                self.dialog_memory.partner.remove(&id);
+                self.bark_next.remove(&id);
+                self.bark(id, attacker, if partner == Some(attacker) { EV_SPEECH_INTERRUPTED_ATTACKED_BY_TARGET } else { EV_SPEECH_INTERRUPTED_ATTACKED_BY_STRANGERS });
+            }
+        }
+    }
+
+    /// Task_StealthKO (F031279): a failed knockout makes its `target` say
+    /// EV_ASSASSINATION_FAILED at `assassin` (the nobles' "Assassin noble": their guards' hunt).
+    /// For crate::law's stealth knockout to call as its roll fails.
+    pub fn assassination_failed(&mut self, target: usize, assassin: usize) {
+        self.bark(target, assassin, EV_ASSASSINATION_FAILED);
+    }
+
     /// The nearest of the player's characters to `id` (and how far).
     fn nearest_player(&self, id: usize) -> Option<(usize, f32)> {
         let at = self.folk[id].mover.position_units();
@@ -159,6 +269,20 @@ impl Sim {
                 (p.id, (q[0] - at[0]).hypot(q[2] - at[2]))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    /// Whether `id`'s packages answer a sighting of others (EV_I_SEE_NEUTRAL_SQUAD or
+    /// EV_I_SEE_ANIMAL_SQUAD; F040904 flags such a package so its owner looks), kept per
+    /// (package, character, faction).
+    fn answers_sightings(&mut self, id: usize) -> bool {
+        let p = &self.folk[id];
+        let key = (p.dialogue.clone(), p.character.clone(), p.faction.clone());
+        if let Some(&v) = self.dialog_memory.sighting_packages.get(&key) {
+            return v;
+        }
+        let v = self.has_event(id, crate::dialogue::EV_I_SEE_NEUTRAL_SQUAD) || self.has_event(id, EV_I_SEE_ANIMAL_SQUAD);
+        self.dialog_memory.sighting_packages.insert(key, v);
+        v
     }
 
     /// Whether `id`'s dialogue packages list a dialogue under `event` (F00bc9e: the package's
@@ -182,16 +306,16 @@ impl Sim {
 
     /// @fn F046547
     ///
-    /// `id`'s sensor newly sees `other` (one of the player's): an animal is EV_I_SEE_ANIMAL_SQUAD
+    /// `id`'s sensor newly sees `other`: an animal is EV_I_SEE_ANIMAL_SQUAD
     /// (an animal sighting no one unless its dialogue answers EV_I_SEE_NEUTRAL_SQUAD); a slave
     /// says nothing; an ally of its faction (its squad not on a campaign, the other no slave)
     /// is EV_I_SEE_ALLY_PLAYER; else, neither fighting, one training on its faction's
     /// equipment is EV_USING_MY_TRAINING_EQUIPMENT, and (its squad not on a campaign, the
     /// other no slave) an enemy of its faction EV_I_SEE_ENEMY_PLAYER, anyone else
-    /// EV_I_SEE_NEUTRAL_SQUAD. (not ported here) The escaped prisoner, escaping slave,
-    /// intruder, shoo and uniform imposter sightings the function also makes (crate::law,
-    /// crate::slavery, crate::intruders, crate::disguise raise theirs); NPCs' sightings of one
-    /// another.
+    /// EV_I_SEE_NEUTRAL_SQUAD (the ally and enemy events are for the player's people only: an
+    /// NPC's ally is nothing, any other NPC neutral). (not ported here) The escaped prisoner,
+    /// escaping slave, intruder, shoo and uniform imposter sightings the function also makes
+    /// (crate::law, crate::slavery, crate::intruders, crate::disguise raise theirs).
     pub fn sighted(&mut self, id: usize, other: usize) {
         if id == other || self.folk[id].dead || self.folk[other].dead {
             return;
@@ -210,9 +334,10 @@ impl Sim {
         if self.slave_state(id) == 1 {
             return;
         }
+        let theirs_player = self.folk[other].player;
         if self.counts_ally(id, other) {
             let faction_ally = self.folk[id].faction.as_deref().and_then(|f| self.relations.get(f)).is_some_and(|r| r.is_ally(self.faction_key(other).as_deref()));
-            if !self.on_campaign(id) && self.slave_state(other) != 1 && faction_ally {
+            if theirs_player && !self.on_campaign(id) && self.slave_state(other) != 1 && faction_ally {
                 self.bark(id, other, EV_I_SEE_ALLY_PLAYER);
             }
             return;
@@ -231,7 +356,8 @@ impl Sim {
         if self.on_campaign(id) || self.slave_state(other) == 1 {
             return;
         }
-        let enemy = self.folk[id].faction.as_deref().and_then(|f| self.relations.get(f)).is_some_and(|r| r.is_enemy(self.faction_key(other).as_deref()));
+        // (the enemy event is the player's; anyone else is EV_I_SEE_NEUTRAL_SQUAD)
+        let enemy = theirs_player && self.folk[id].faction.as_deref().and_then(|f| self.relations.get(f)).is_some_and(|r| r.is_enemy(self.faction_key(other).as_deref()));
         let spoke = self.bark(id, other, if enemy { EV_I_SEE_ENEMY_PLAYER } else { crate::dialogue::EV_I_SEE_NEUTRAL_SQUAD });
         if std::env::var("KENSHI_SPEECH_DEBUG").is_ok() {
             eprintln!("speech: {id} sights {other} ({}): {}", if enemy { "enemy" } else { "neutral" }, if spoke { "spoke" } else { "nothing" });

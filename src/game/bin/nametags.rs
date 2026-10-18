@@ -9,7 +9,9 @@
 //! someone to pick up), each at its "Point".
 //! (assumption) The player's characters always have their tag, anyone else when the pointer is
 //! on them; the tag sits 22 units over the feet; which pointer shows where follows the game's
-//! default right-click orders.
+//! default right-click orders. The options' "Show character names" off, the player's tags keep
+//! their stealth eye but not their name (F039228 / F042059: the panel's name flag, F042119),
+//! (assumption) but for the one under the pointer.
 use super::{Game, MainCam, pick};
 use bevy::prelude::*;
 use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage};
@@ -73,8 +75,12 @@ pub fn update(
     captions: Query<&kenshi_gui::ui::Caption>,
     (children, mut images): (Query<&Children>, Query<&mut ImageNode>),
     (mouse, time, mut order_until): (Res<ButtonInput<MouseButton>>, Res<Time>, Local<f32>),
-    speech: Option<Res<super::speech_ui::Speech>>,
+    (speech, settings, hud): (Option<Res<super::speech_ui::Speech>>, Option<Res<super::options_ui::Settings>>, Option<Res<super::hud_ui::Hud>>),
 ) {
+    let show_names = settings.as_ref().is_none_or(|s| s.on("Show names"));
+    // F042062: the main panel hidden ("Toggle main gui"), the player's tags go with it while
+    // names are shown
+    let gui_hidden = show_names && hud.as_ref().is_some_and(|h| h.is_hidden());
     let (Ok((win_e, win)), Ok((cam, at))) = (windows.single(), cams.single()) else { return };
     let size = [win.width(), win.height()];
     let over_ui = ui.iter().any(|i| *i != Interaction::None);
@@ -125,7 +131,7 @@ pub fn update(
     }
     // the tags wanted: the player's people standing and the one under the pointer
     let origin = game.zone.origin;
-    let mut want: Vec<usize> = game.sim.folk.iter().filter(|p| p.player && !p.dead && !p.away && p.carried_by.is_none()).map(|p| p.id).collect();
+    let mut want: Vec<usize> = game.sim.folk.iter().filter(|p| !gui_hidden && p.player && !p.dead && !p.away && p.carried_by.is_none()).map(|p| p.id).collect();
     if let Some(h) = hovered
         && !want.contains(&h)
     {
@@ -152,6 +158,7 @@ pub fn update(
         });
         let name = if p.name.is_empty() { game.sim.display_name(id) } else { p.name.clone() };
         if let Some(e) = b.get("NameText") {
+            commands.queue(SetVisible(e, show_names || hovered == Some(id) || !p.player));
             let selected = game.selected.contains(&id);
             // F042119: the selected's name in brackets ("[" name "]"), the others' as it is
             commands.queue(SetCaption(e, if selected { format!("[{name}]") } else { name }));

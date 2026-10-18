@@ -1,5 +1,6 @@
-//! Ditch items (`kenshi_game::routines`): an idle character carrying building materials beside a
-//! "Storage: Building Materials" takes them there:
+//! Ditch items (`kenshi_game::jobs`: Ditching resources, F036915's built-in goal, with JOBS on):
+//! an idle character carrying building materials beside a "Storage: Building Materials" takes
+//! them there; with JOBS off it does not:
 //! `KENSHI_BUILD_DEBUG=1 cargo run --release -p kenshi-game --example ditch_trip -- <install> X Y`
 use kenshi_game::base::PlayerBuilding;
 use kenshi_game::sim::Sim;
@@ -27,9 +28,16 @@ fn main() {
         let c = |inv: &kenshi_char::inventory::Inventory| inv.sections.iter().flat_map(|s| s.items.iter()).filter(|p| p.item.record == kenshi_game::base::BUILDING_MATERIAL).map(|p| p.item.quantity).sum::<u32>();
         (c(&sim.folk[me].inventory), sim.buildings.last().and_then(|b| b.storage.as_ref()).map_or(0, c))
     };
+    // (the spawn's orders dropped, as a stop order drops them)
+    sim.order_stop(&[me]);
     println!("start: carried, stored {:?}", count(&sim));
-    while sim.t < 120.0 {
+    while sim.t < 40.0 {
         sim.step();
     }
-    println!("after 120 s: carried, stored {:?}", count(&sim));
+    println!("after 40 s with JOBS off: carried, stored {:?}", count(&sim));
+    sim.toggle_jobs(&[me]);
+    while sim.t < 160.0 {
+        sim.step();
+    }
+    println!("after 120 s with JOBS on: carried, stored {:?}", count(&sim));
 }

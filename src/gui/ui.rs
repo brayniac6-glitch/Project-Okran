@@ -131,6 +131,8 @@ struct Ctx<'a, 'w, 's> {
     gui: &'a Gui,
     assets: &'a AssetServer,
     built: Built,
+    /// The alpha of the widget being built into (MyGUI's real alpha, inherited).
+    alpha: f32,
 }
 
 /// Spawn layout widgets inside `parent` (or as UI roots) whose size is `size` pixels.
@@ -152,7 +154,7 @@ pub fn spawn_design(
     if parent.is_none() {
         crate::res::set_ui_scale(size);
     }
-    let mut ctx = Ctx { commands, gui, assets, built: Built::default() };
+    let mut ctx = Ctx { commands, gui, assets, built: Built::default(), alpha: 1.0 };
     for d in defs {
         let e = widget(&mut ctx, d, &[], parent, design, size, None);
         if parent.is_none()
@@ -256,13 +258,19 @@ fn widget(
     let mut text_rect = [0.0, 0.0, size[0], size[1]];
     let mut text_colours: Vec<(String, [f32; 3])> = Vec::new();
     let mut main_rect = None;
-    // MyGUI's "Colour" (r g b, 0 .. 1) and "Alpha" tint the widget's skin (the Esc menu's
-    // backdrop: WhiteSkin coloured black at 0.75)
+    // MyGUI's alpha (Widget::_updateAlpha): the widget's "Alpha" times its parent's real alpha
+    // (unless "InheritsAlpha" is false), on its skin, its text, its picture and all it holds
+    // (the jobs panel's "[No jobs assigned]" at 0.5; the Esc menu's backdrop at 0.75, its
+    // children not inheriting it)
+    let parent_alpha = ctx.alpha;
+    let alpha = prop("Alpha").and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0)
+        * if prop("InheritsAlpha").as_deref() == Some("false") { 1.0 } else { parent_alpha };
+    // MyGUI's "Colour" (r g b, 0 .. 1) tints the widget's skin, not its text (the Esc menu's
+    // backdrop: WhiteSkin coloured black)
     let tint = {
         let c: Vec<f32> = prop("Colour").map(|v| v.split_whitespace().filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
-        let a = prop("Alpha").and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
         let (r, g, b) = if c.len() >= 3 { (c[0], c[1], c[2]) } else { (1.0, 1.0, 1.0) };
-        Color::srgba(r, g, b, a)
+        Color::srgba(r, g, b, alpha)
     };
     if let Some(skin) = ctx.gui.skins.get(skin_name) {
         let tex = skin.texture.as_ref().map(|t| ctx.assets.load::<Image>(t.clone()));
@@ -314,7 +322,7 @@ fn widget(
                 .commands
                 .spawn((
                     node(mr),
-                    ImageNode { image: ctx.assets.load(tex), rect: sub.map(rect), image_mode: NodeImageMode::Stretch, ..default() },
+                    ImageNode { image: ctx.assets.load(tex), rect: sub.map(rect), image_mode: NodeImageMode::Stretch, color: Color::srgba(1.0, 1.0, 1.0, alpha), ..default() },
                 ))
                 .id();
             ctx.commands.entity(e).add_child(img);
@@ -330,10 +338,24 @@ fn widget(
         let font = prop("FontName")
             .and_then(|f| ctx.gui.fonts.get(&f).cloned())
             .or_else(|| ctx.gui.fonts.get("Kenshi_StandardFont_Medium").cloned());
-        let colour = prop("TextColour")
+        // an edit box writes with its client's text (MyGUI's EditBox: its "Client" part's text, the
+        // TextBox the template puts there): the client's text colour and shadow unless the edit
+        // box sets its own ("[No jobs assigned]" in Kenshi_TextboxStandardText's dark brown)
+        let gui = ctx.gui;
+        let own = |k: &str| def.props.iter().chain(extra.iter()).rev().find(|(a, _)| a == k).map(|(_, v)| v.clone());
+        let client = if target == "EditBox" { tpl.and_then(|t| t.children.iter().find(|c| c.name == "Client")) } else { None };
+        let client_prop = |k: &str| client.and_then(|c| c.prop(k).map(str::to_string).or_else(|| gui.templates.get(&c.skin).and_then(|t| t.prop(k)).map(str::to_string)));
+        let text_prop = |k: &str| own(k).or_else(|| client_prop(k)).or_else(|| prop(k));
+        let client_skin_colour = client
+            .and_then(|c| gui.skins.get(gui.templates.get(&c.skin).map_or(c.skin.as_str(), |t| t.skin.as_str())))
+            .and_then(|s| s.parts.iter().find(|p| p.kind == PartKind::Text))
+            .and_then(|p| p.state("normal"))
+            .and_then(|s| s.colour);
+        let colour = text_prop("TextColour")
             .map(|c| floats(&c))
             .filter(|v| v.len() >= 3)
             .map(|v| [v[0], v[1], v[2]])
+            .or(client_skin_colour)
             .or_else(|| text_colours.iter().find(|(n, _)| n == "normal").map(|(_, c)| *c))
             .unwrap_or([1.0, 1.0, 1.0]);
         let (jc, ai, j) = text_align(&prop("TextAlign").unwrap_or_default());
@@ -351,14 +373,20 @@ fn widget(
                     font_size: FontSize::Px(font.as_ref().map_or(14.0 * crate::res::ui_scale(), |f| f.screen_px())),
                     ..default()
                 },
-                TextColor(Color::srgb(colour[0], colour[1], colour[2])),
+                TextColor(Color::srgba(colour[0], colour[1], colour[2], alpha)),
                 TextLayout::new(j, wrap),
             ))
             .id();
+        // MyGUI's text shadow ("TextShadow", "TextShadowColour", black unless set): the text again
+        // a pixel right and down, under it
+        if text_prop("TextShadow").as_deref() == Some("true") {
+            let c = text_prop("TextShadowColour").map(|c| floats(&c)).filter(|v| v.len() >= 3).unwrap_or(vec![0.0, 0.0, 0.0]);
+            ctx.commands.entity(t).insert(TextShadow { offset: Vec2::new(1.0, 1.0), color: Color::srgba(c[0], c[1], c[2], alpha) });
+        }
         ctx.commands.entity(holder).add_child(t);
         ctx.commands.entity(e).add_child(holder);
         ctx.commands.entity(e).insert(Caption(t));
-        if !text_colours.is_empty() && prop("TextColour").is_none() {
+        if !text_colours.is_empty() && text_prop("TextColour").is_none() {
             looks.text = Some((t, text_colours));
         }
     }
@@ -376,7 +404,8 @@ fn widget(
             bevy::ui::RelativeCursorPosition::default(),
         ));
     }
-    // the template's own parts, then the widget's children in its client area
+    // the template's own parts, then the widget's children in its client area, under its alpha
+    ctx.alpha = alpha;
     let mut client = (e, size);
     if let Some(t) = tpl {
         let tdesign = match t.pos {
@@ -473,6 +502,7 @@ fn widget(
     for c in &def.children {
         widget(ctx, c, &[], Some(client.0), child_design, client.1, None);
     }
+    ctx.alpha = parent_alpha;
     e
 }
 
@@ -550,6 +580,40 @@ impl Command for SetAlpha {
     }
 }
 
+/// MyGUI Widget::setColour: the widget's own skin tinted (not its text, nor the widgets it
+/// holds), its alpha kept.
+pub struct SetColour(pub Entity, pub Color);
+
+impl Command for SetColour {
+    type Out = ();
+    fn apply(self, world: &mut World) {
+        let parts: Vec<Entity> = world.get::<Children>(self.0).map(|c| c.iter().collect()).unwrap_or_default();
+        for p in parts {
+            if world.get::<GuiWidget>(p).is_some() {
+                continue;
+            }
+            if let Some(mut i) = world.get_mut::<ImageNode>(p) {
+                let a = i.color.alpha();
+                i.color = self.1.with_alpha(a);
+            }
+        }
+    }
+}
+
+/// MyGUI TextBox::setTextColour: the widget's caption in this colour, its alpha kept.
+pub struct SetTextColour(pub Entity, pub Color);
+
+impl Command for SetTextColour {
+    type Out = ();
+    fn apply(self, world: &mut World) {
+        let Some(t) = world.get::<Caption>(self.0).map(|c| c.0) else { return };
+        if let Some(mut c) = world.get_mut::<TextColor>(t) {
+            let a = c.0.alpha();
+            c.0 = self.1.with_alpha(a);
+        }
+    }
+}
+
 /// Show or hide a widget.
 pub struct SetVisible(pub Entity, pub bool);
 
@@ -562,13 +626,19 @@ impl Command for SetVisible {
     }
 }
 
+/// A button's parts and text by its state (MyGUI's skin states): disabled, pushed, highlighted
+/// or normal, "_checked" when ticked; again when it is disabled or enabled.
 #[allow(clippy::type_complexity)]
 fn looks(
-    q: Query<(&Interaction, &Looks, Has<Disabled>, Option<&Checked>), Or<(Changed<Interaction>, Changed<Checked>)>>,
+    changed: Query<Entity, (With<Looks>, Or<(Changed<Interaction>, Changed<Checked>, Added<Disabled>)>)>,
+    mut enabled: RemovedComponents<Disabled>,
+    q: Query<(&Interaction, &Looks, Has<Disabled>, Option<&Checked>)>,
     mut images: Query<&mut ImageNode>,
     mut colours: Query<&mut TextColor>,
 ) {
-    for (i, l, off, checked) in &q {
+    let mut which: Vec<Entity> = changed.iter().collect();
+    which.extend(enabled.read());
+    for (i, l, off, checked) in which.into_iter().filter_map(|e| q.get(e).ok()) {
         let base = match (off, i) {
             (true, _) => "disabled",
             (_, Interaction::Pressed) => "pushed",
@@ -593,7 +663,8 @@ fn looks(
             && let (Ok(mut c), Some((_, rgb))) =
                 (colours.get_mut(*t), cs.iter().find(|(n, _)| n == state).or_else(|| cs.iter().find(|(n, _)| n == "normal")))
         {
-            c.0 = Color::srgb(rgb[0], rgb[1], rgb[2]);
+            let a = c.0.alpha();
+            c.0 = Color::srgba(rgb[0], rgb[1], rgb[2], a);
         }
     }
 }

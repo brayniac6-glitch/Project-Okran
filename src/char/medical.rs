@@ -38,6 +38,10 @@ pub struct Constants {
     pub blood_recovery_rate: f32,
     pub degeneration_mult_1: f32,
     pub degeneration_mult_99: f32,
+    /// The options' "Dismemberment" (settings.cfg, 0x142133504; not a GLOBAL CONSTANTS key):
+    /// 0 Never, 1 Rare (a limb a hit takes below minus its most health, F040472), 2 Frequent
+    /// (any limb under that, F040473). Set by the game from its options.
+    pub dismemberment: i32,
 }
 
 impl Constants {
@@ -65,6 +69,7 @@ impl Constants {
             blood_recovery_rate: f("blood recovery rate", 0.4),
             degeneration_mult_1: f("degeneration mult 1", 1.0),
             degeneration_mult_99: f("degeneration mult 99", 1.0),
+            dismemberment: 1,
         }
     }
 }
@@ -382,9 +387,9 @@ impl Medical {
         self.blood -= (d.cut + d.pierce) * c.immediate_blood_loss * d.bleed * race_bleed;
         let p = &mut self.parts[i];
         p.damage(d, c.blunt_permanent_organ_damage);
-        // limb loss ("Rare", the options' default: only by a hit): a limb hit below minus its
-        // most health is lost (F040471: slot state 1), but not a robotic one (state 2)
-        if p.is_limb() && p.slot != 1 && p.slot != 2 && p.health() < -p.max_health() {
+        // limb loss (the options' "Dismemberment" not Never, F040472): a limb hit below minus
+        // its most health is lost (F040471: slot state 1), but not a robotic one (state 2)
+        if c.dismemberment > 0 && p.is_limb() && p.slot != 1 && p.slot != 2 && p.health() < -p.max_health() {
             p.slot = 1;
             self.severed.push(i);
         }
@@ -447,10 +452,19 @@ impl Medical {
             conscious: !self.knocked_out && !self.dead,
             g: t.g,
         };
-        for p in &mut self.parts {
-            if p.update(&tick, c) == PartState::Dead {
-                self.dead = true;
-                return false;
+        for (i, p) in self.parts.iter_mut().enumerate() {
+            match p.update(&tick, c) {
+                PartState::Dead => {
+                    self.dead = true;
+                    return false;
+                }
+                // F040473: "Dismemberment" Frequent, a whole limb (slot state 0) under minus its
+                // most health is lost as a hit would take it
+                PartState::LimbLost if c.dismemberment > 1 && p.is_limb() && p.slot == 0 => {
+                    p.slot = 1;
+                    self.severed.push(i);
+                }
+                _ => {}
             }
         }
         if self.blood < self.max_blood && self.bleed_rate <= 0.0 {
@@ -561,6 +575,7 @@ mod tests {
             blood_recovery_rate: 0.4,
             degeneration_mult_1: 1.0,
             degeneration_mult_99: 1.0,
+            dismemberment: 1,
         }
     }
 
@@ -619,6 +634,31 @@ mod tests {
             parts,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn dismemberment_option_decides_limb_loss() {
+        let hit = Damage { cut: 250.0, blunt: 0.0, pierce: 0.0, stun: 0.0, bleed: 0.0 };
+        // Never: a hit far below minus the limb's most health takes nothing
+        let mut c = constants();
+        c.dismemberment = 0;
+        let mut m = healthy(1, 1);
+        m.apply_damage(1, hit, 1.0, &c);
+        assert!(m.severed.is_empty() && m.parts[1].slot == 0);
+        // Rare: the hit takes it
+        c.dismemberment = 1;
+        let mut m = healthy(1, 1);
+        m.apply_damage(1, hit, 1.0, &c);
+        assert_eq!((m.severed.clone(), m.parts[1].slot), (vec![1], 1));
+        // Rare: a limb under minus its most health without a hit stays
+        let mut m = healthy(1, 1);
+        m.parts[1].flesh = -150.0;
+        m.update(&medical_tick(0.1), &Stats { toughness: 50.0, toughness_scale: 1.0 }, &c);
+        assert!(m.severed.is_empty());
+        // Frequent: it goes
+        c.dismemberment = 2;
+        m.update(&medical_tick(0.1), &Stats { toughness: 50.0, toughness_scale: 1.0 }, &c);
+        assert_eq!((m.severed.clone(), m.parts[1].slot), (vec![1], 1));
     }
 
     #[test]

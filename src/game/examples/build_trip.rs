@@ -1,6 +1,6 @@
-//! A builder's round trips (`kenshi_game::base`): a storage of building materials and a building
-//! site either side of the squad; the first character ordered to build fetches the materials
-//! from the storage, adds them and builds:
+//! A builder's round trips (`kenshi_game::base`, `kenshi_game::jobs`): a storage of building
+//! materials and a building site either side of the squad; the first character ordered to build
+//! plans fetching the materials from the storage, adding them and building:
 //! `KENSHI_BUILD_DEBUG=1 cargo run --release -p kenshi-game --example build_trip -- <install> X Y "<building>" [seconds]`
 use kenshi_game::base::PlayerBuilding;
 use kenshi_game::sim::Sim;
@@ -39,7 +39,7 @@ fn main() {
         sim.step();
         if sim.tick.is_multiple_of(600) {
             let q = sim.folk[me].mover.position_units();
-            println!("t {:.0}: builder at [{:.0}, {:.0}], used {} progress {:.2}, fetch {:?}", sim.t, q[0] - at[0], q[2] - at[2], sim.buildings[b].used, sim.buildings[b].progress, sim.folk[me].build_fetch);
+            println!("t {:.0}: builder at [{:.0}, {:.0}], used {} progress {:.2}, plan {:?}", sim.t, q[0] - at[0], q[2] - at[2], sim.buildings[b].used, sim.buildings[b].progress, sim.folk[me].ai.queue.iter().map(|s| s.task).collect::<Vec<_>>());
         }
     }
     println!("built: {} at t {:.0}", sim.buildings[b].done, sim.t);

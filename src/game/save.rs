@@ -208,6 +208,9 @@ pub struct SavedWorld {
     /// The uniques whose death the player was involved in (crate::world::World::involved).
     #[serde(default)]
     pub involved: Vec<String>,
+    /// The running campaigns' phases (crate::world::World::phases).
+    #[serde(default)]
+    pub phases: Vec<(String, crate::world::Phase)>,
     /// The Kenshi save this game was imported from: the base its saves in Kenshi's layout are
     /// written over (crate::kenshi_save_over).
     #[serde(default)]
@@ -257,6 +260,7 @@ fn saved_items(inv: &kenshi_char::inventory::Inventory) -> Vec<SavedItem> {
                 maker: it.item.maker.clone(),
                 model: it.item.model.clone(),
                 uniform: it.item.uniform.clone(),
+                owner: it.item.owner.clone(),
                 contents: it.item.contents.as_ref().map(saved_items).unwrap_or_default(),
             });
         }
@@ -277,6 +281,7 @@ fn saved_item(item: &kenshi_char::inventory::Item) -> SavedItem {
         maker: item.maker.clone(),
         model: item.model.clone(),
         uniform: item.uniform.clone(),
+        owner: item.owner.clone(),
         contents: item.contents.as_ref().map(saved_items).unwrap_or_default(),
     }
 }
@@ -304,6 +309,7 @@ fn with_grade(data: &kenshi_data::GameDataContainer, mut item: kenshi_char::inve
     item.maker = si.maker.clone();
     item.model = si.model.clone();
     item.uniform = si.uniform.clone();
+    item.owner = si.owner.clone();
     match si.quality {
         Some(q) => item.with_quality(data, q),
         None => item,
@@ -381,6 +387,9 @@ pub struct SavedItem {
     /// A faction uniform's faction (crate::disguise).
     #[serde(default)]
     pub uniform: Option<String>,
+    /// Its owners when not its holder's (loot, F044581).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     /// A backpack's contents.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contents: Vec<SavedItem>,
@@ -756,6 +765,7 @@ impl Sim {
             trigger_side: self.world.trigger_side.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             campaigns_locked: self.world.campaigns_locked.iter().cloned().collect(),
             involved: self.world.involved.iter().cloned().collect(),
+            phases: self.world.phases.iter().map(|(k, v)| (k.clone(), *v)).collect(),
             kenshi_base: self.kenshi_base.clone(),
         }
     }
@@ -777,6 +787,7 @@ impl Sim {
         self.world.trigger_side = w.trigger_side.into_iter().collect();
         self.world.campaigns_locked = w.campaigns_locked.into_iter().collect();
         self.world.involved = w.involved.into_iter().collect();
+        self.world.phases = w.phases.into_iter().collect();
         for (faction, default, rels) in w.relations {
             let r = self.relations.entry(faction.clone()).or_insert_with(|| kenshi_ai::faction::FactionRelations { faction, ..Default::default() });
             r.default_relation = default;
@@ -1178,7 +1189,7 @@ mod tests {
                 medical: Medical::default(),
                 down: false,
                 dead: false,
-                inventory: vec![SavedItem { section: 9, record: "x".into(), quantity: 2, x: 1, y: 3, food_left: Some(10.0), quality: None, maker: None, model: None, uniform: None, contents: Vec::new() }],
+                inventory: vec![SavedItem { section: 9, record: "x".into(), quantity: 2, x: 1, y: 3, food_left: Some(10.0), quality: None, maker: None, model: None, uniform: None, owner: None, contents: Vec::new() }],
                 look: None,
                 bounties: Vec::new(),
                 stance: Default::default(),

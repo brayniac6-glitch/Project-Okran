@@ -11,7 +11,9 @@
 //! density: 1 / "distance", 1 for none), F023531 (the alpha with the colour; hidden at 0),
 //! F023552 (additive: source alpha + one; else alpha blending), F023246 / F023247 / F023243
 //! (the effect's "fog fade in duration" and "fog fade out duration" fade the volumes' alpha).
-//! (assumption) "ground movement" is not ported: a volume keeps its offset from the effect.
+//! "ground movement" (F023263 keeps it beside the volume, its holder's +8) is not read by the
+//! effect and fog volume code (F023240 - F023569 read no such flag), so a volume keeps its
+//! offset from the effect.
 //!
 //! The map's fog features (kenshi_world::fog_features: the swamps' mists and the other standing
 //! fogs) are drawn the same way, and their plane volumes as FogPlaneVolume (F023580 / F023581,

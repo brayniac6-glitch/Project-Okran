@@ -326,7 +326,7 @@ pub fn act(game: &mut Game, inv: &mut inventory_ui::InventoryWindow, talk: &mut 
     }
     if a == Action::PutDown {
         let carriers: Vec<usize> = selected.iter().copied().filter(|&i| game.sim.folk[i].carrying.is_some()).collect();
-        game.sim.order_drop(&carriers);
+        game.sim.order_put_down(&carriers);
         return;
     }
     if let Some(f) = target.checked_sub(kenshi_game::production::FURN_TARGET) {

@@ -68,7 +68,9 @@ fn task(data: &GameDataContainer, sid: &str) -> Option<(u16, u8, i32, i32, Strin
 /// @fn F028593
 ///
 /// The goals a package gives a role: its "inherits from" packages' first (F028594), then its
-/// "AI Goals" (every role but slaves), then its own list for the role.
+/// "AI Goals" (every role but slaves), then its own list for the role: the squad takes the
+/// leader's list when the package has no "Squad AI Goals", squad2 the squad's (else the
+/// leader's) when it has no "Squad2 AI Goals".
 pub fn package_goals(data: &GameDataContainer, package: &GameData, role: Role) -> Vec<PackageGoal> {
     let mut out = vec![];
     collect(data, package, role, &mut out, 0);
@@ -96,7 +98,17 @@ fn collect(
     } else {
         p.refs("AI Goals")
     };
-    for (sid, v) in common.iter().chain(p.refs(role.list())) {
+    // F028594: a package with no "Squad AI Goals" gives its squad the leader's list; "Squad2"
+    // falls back on the squad's list, then on the leader's
+    let has = |k: &str| !p.refs(k).is_empty();
+    let list = match role {
+        Role::Squad if !has(Role::Squad.list()) => Role::Leader.list(),
+        Role::Squad2 if !has(Role::Squad2.list()) => {
+            if has(Role::Squad.list()) { Role::Squad.list() } else { Role::Leader.list() }
+        }
+        r => r.list(),
+    };
+    for (sid, v) in common.iter().chain(p.refs(list)) {
         let Some((task, classification, targeting, ending, name)) = task(data, sid) else {
             continue;
         };

@@ -214,6 +214,15 @@ pub struct Fighter {
     /// ("attack mod", "defence mod", with its model's; F047028 adds them to the armour's).
     pub gear: crate::armour::GearMods,
     pub weapon_mods: (i32, i32),
+    /// CharStats +0x28 (F047028): the weapon's "indoors mod" (F047085), 8 with no weapon at all.
+    pub indoors_mod: i32,
+    /// Inside a building (Character vtable 0x1d8), set by the game: the buffed bonuses take
+    /// the indoors mod (F047029 / F047030).
+    pub indoors: bool,
+    /// Carrying someone over the left shoulder (Character +0x348; F039254 marks the animation
+    /// class's left arm busy, +0x21e), set by the game: its clips are the carrying ones
+    /// ("sword ready (carry)" its combat idle).
+    pub carrying: bool,
     /// The last blow's knockback (units, direction x strength) and when it landed (s).
     pub knock: [f32; 3],
     pub knock_at: f32,
@@ -412,20 +421,43 @@ impl Fighter {
     /// @fn F047041
     ///
     /// Martial arts: lerp(load (+0x190), 0.2, 1) x (the unarmed attack bonus (F047030: the
-    /// armour's unarmed bonus) + martial arts (+0x10c)) x the maturity (vtable 0x398).
+    /// armour's unarmed bonus, +0x2c, buffed as `attack_bonus`: the indoors mod inside, less the
+    /// dust storm's toll) + martial arts (+0x10c)) x the maturity (vtable 0x398).
+    /// (assumption) F047041 leaves F047030's buffed flag as its own caller's (dl is not set
+    /// before the call): taken as buffed.
     pub fn martial(&self) -> f32 {
-        martial_arts(self.load, self.gear.unarmed, self.level(StatsEnumerated::StatMartialarts), self.body.maturity)
+        martial_arts(self.load, self.buffed(self.gear.unarmed), self.level(StatsEnumerated::StatMartialarts), self.body.maturity)
+    }
+
+    /// @fn F040399
+    ///
+    /// The dust storm's toll on the buffed bonuses (F047029 / F047030): int(dust x 10 x 1).
+    fn dust_toll(&self) -> i32 {
+        if self.dust > 0.0 { (self.dust * 10.0) as i32 } else { 0 }
+    }
+
+    /// F047029 / F047030: a buffed bonus inside a building: plus the indoors mod (+0x28), a
+    /// positive bonus first dropped to 0 when the mod is negative; then less the dust's toll.
+    /// (assumption) Character vtable 0x1e0 answering false and the building's +0xc2 unset.
+    fn buffed(&self, bonus: i32) -> i32 {
+        let mut b = bonus;
+        if self.indoors {
+            if 0 < b && self.indoors_mod < 0 {
+                b = 0;
+            }
+            b += self.indoors_mod;
+        }
+        b - self.dust_toll()
     }
 
     /// @fn F047029
     ///
     /// The attack bonus (CharStats +0x20): the armour's "combat attk bonus" summed plus the
     /// weapon's attack mod (F047028); likewise the defence bonus (+0x24). Buffed (F047029) it
-    /// loses the dust storm's toll (F040399: int(dust x 10)). (+0x28, added for a squad member
-    /// of a squad not flagged +0xc2, is never set by the game: 0.)
+    /// takes the indoors mod inside a building and loses the dust storm's toll (F040399:
+    /// int(dust x 10)): `buffed`.
     pub fn attack_bonus(&self) -> i32 {
-        let dust = if self.dust > 0.0 { (self.dust * 10.0) as i32 } else { 0 };
-        self.gear.attack + self.weapon_mods.0 - dust
+        self.buffed(self.gear.attack + self.weapon_mods.0)
     }
     pub fn defence_bonus(&self) -> i32 {
         self.gear.defence + self.weapon_mods.1
@@ -1773,12 +1805,14 @@ pub fn situation(f: &Fighter) -> Situation {
     // combat mode
     let aiming = f.shooting;
     Situation {
-        category: if aiming { 8 } else { 0 },
+        // F037184: 5 lying prone (the legs collapsed: the crawl clips), 8 aiming, else 0
+        category: if f.prone() { 5 } else if aiming { 8 } else { 0 },
         speed: (v[0] * v[0] + v[2] * v[2]).sqrt() * 10.0,
         weapon_l: false,
         weapon_r: true,
         ignore_legs: false,
-        carrying_left: false,
+        // the arm busy with a body (F039254: the left, +0x21e)
+        carrying_left: f.carrying,
         carrying_right: false,
         being_carried: false,
         combat_mode: if aiming { 0 } else { 1 },
@@ -2023,27 +2057,38 @@ pub fn weapon_reach(f: &Fighter, attacks: &[CombatTechnique]) -> f32 {
     reach
 }
 
-/// (stand-in for the Havok characters' collision) Standing fighters in the fight don't overlap:
-/// two closer than their footprint radii together are pushed apart along the line between
-/// them, each half the overlap (on the ground plane).
+/// @fn F024363
+///
+/// Standing fighters in the fight push off one another as Kenshi's mover does
+/// (`kenshi_char::movement::neighbour_push`): each takes its share of the deepest overlap of
+/// footprint radii, the smaller more, a fiftieth of it as they are in combat mode (Character
+/// +0xe0; (assumption) every active fighter is), and its next steer bends round it.
+/// (stand-in for the mover's nearby list) the fighters within 1.5 m of its height.
 fn separate(f: &mut [Fighter]) {
     let live: Vec<usize> = (0..f.len()).filter(|&i| f[i].active && !f[i].down).collect();
-    for (a, &i) in live.iter().enumerate() {
-        for &j in &live[a + 1..] {
-            let (p, q) = (f[i].mover.position, f[j].mover.position);
-            let (dx, dz) = (q[0] - p[0], q[2] - p[2]);
-            let d = (dx * dx + dz * dz).sqrt();
-            // radii in units, positions in metres
-            let min = (f[i].radius + f[j].radius) * 0.1;
-            if d >= min || (q[1] - p[1]).abs() > 1.5 {
-                continue;
-            }
-            let (nx, nz) = if d < 1e-4 { (1.0, 0.0) } else { (dx / d, dz / d) };
-            let push = (min - d) * 0.5;
-            f[i].mover.position[0] -= nx * push;
-            f[i].mover.position[2] -= nz * push;
-            f[j].mover.position[0] += nx * push;
-            f[j].mover.position[2] += nz * push;
+    let mut moves = Vec::new();
+    for &i in &live {
+        let p = f[i].mover.position;
+        let near: Vec<kenshi_char::movement::Neighbour> = live
+            .iter()
+            .filter(|&&j| j != i && (f[j].mover.position[1] - p[1]).abs() <= 1.5)
+            .map(|&j| kenshi_char::movement::Neighbour { position: f[j].mover.position, radius: f[j].radius * 0.1 })
+            .collect();
+        // (stand-in for rand()) a fixed draw per pair of places
+        let mut x = (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ p[0].to_bits() as u64;
+        let rand = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 40) as f32 / (1u64 << 24) as f32
+        };
+        moves.push((i, kenshi_char::movement::neighbour_push(p, f[i].radius * 0.1, &near, true, rand)));
+    }
+    for (i, push) in moves {
+        f[i].mover.avoid = push;
+        if let Some((n, depth)) = push {
+            f[i].mover.position[0] += n[0] * depth;
+            f[i].mover.position[2] += n[2] * depth;
         }
     }
 }
@@ -2588,6 +2633,9 @@ impl Fighter {
             strain: 0.0,
             load: 1.0,
             dust: 0.0,
+            indoors_mod: 8,
+            indoors: false,
+            carrying: false,
             legs: 1.0,
             weapon_weight: kit.weapon.combat_weight,
             combat: CombatClass::default(),
@@ -2694,6 +2742,7 @@ impl Fighter {
         let bag = armour.iter().filter_map(|i| data.get(&i.record)).find(|r| r.item_type() == Some(ItemType::Container)).map(crate::armour::BagMods::from_record);
         self.gear = crate::armour::gear_mods(&pieces, bag);
         self.weapon_mods = item.as_ref().map_or((0, 0), |w| (w.attack_mod, w.defence_mod));
+        self.indoors_mod = item.as_ref().map_or(8, |w| w.indoors_mod);
         self.armour = armour
             .iter()
             .filter_map(|i| data.get(&i.record).map(|r| (i, r)))

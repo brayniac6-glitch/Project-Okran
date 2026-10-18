@@ -4,4 +4,4 @@ pub mod ui;
 pub mod xml;
 
 pub use res::{Gui, WidgetDef};
-pub use ui::{Built, Caption, EditText, GuiClick, GuiEdit, GuiPlugin, GuiRes, GuiScroll, GuiWidget, Parts, Scroll, SetAlpha, SetCaption, SetProgress, SetScroll, SetVisible, sliced};
+pub use ui::{Built, Caption, EditText, GuiClick, GuiEdit, GuiPlugin, GuiRes, GuiScroll, GuiWidget, Parts, Scroll, SetAlpha, SetCaption, SetColour, SetProgress, SetScroll, SetTextColour, SetVisible, sliced};

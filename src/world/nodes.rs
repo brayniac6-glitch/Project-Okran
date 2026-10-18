@@ -11,9 +11,10 @@ use std::path::Path;
 
 /// Furnishing layouts (`interiors.level`, kind-30 records): (building string id, layout name)
 /// -> the furniture and nodes placed in the building's frame. A building's state record names
-/// its "interior layout name" and "exterior layout name".
+/// its "interior layout name" and "exterior layout name". Beside each layout, which of its
+/// instances are "outside" (`Layouts::outside`).
 #[derive(Debug, Clone, Default)]
-pub struct Layouts(pub HashMap<(String, String), Vec<Instance>>);
+pub struct Layouts(pub HashMap<(String, String), Vec<Instance>>, pub HashMap<(String, String), Vec<bool>>);
 
 impl Layouts {
     /// Every interiors.level: the leveldata root first, then the zone folders (later ones win).
@@ -25,8 +26,21 @@ impl Layouts {
                 .map(|f| dir.join(f).join("interiors.level")),
         );
         let mut m = HashMap::new();
+        let mut outside = HashMap::new();
         for f in files.filter(|f| f.is_file()) {
             let Ok(file) = fcs::read(&f) else { continue };
+            // F037789: a building's "is outside" is its state record's "flags" bit 0, else its
+            // "is outside"
+            let out: HashMap<String, bool> = file
+                .records
+                .iter()
+                .filter(|r| r.kind == 35)
+                .map(|r| {
+                    let flags = r.ints.iter().find(|(k, _)| k == "flags").map(|(_, v)| *v);
+                    let is = r.bools.iter().find(|(k, _)| k == "is outside").is_some_and(|(_, v)| *v);
+                    (r.string_id.clone(), flags.map_or(is, |f| f & 1 != 0))
+                })
+                .collect();
             for r in file.records.into_iter().filter(|r| r.kind == 30) {
                 let Some(b) = r
                     .strings
@@ -36,10 +50,12 @@ impl Layouts {
                 else {
                     continue;
                 };
+                let flags = r.instances.iter().map(|i| i.states.iter().any(|s| out.get(s).copied().unwrap_or(false))).collect();
+                outside.insert((b.clone(), r.name.clone()), flags);
                 m.insert((b, r.name.clone()), r.instances);
             }
         }
-        Layouts(m)
+        Layouts(m, outside)
     }
 
     pub fn get(&self, building: &str, layout: &str) -> &[Instance] {
@@ -56,31 +72,39 @@ impl Layouts {
         building: &str,
         layout: &str,
     ) -> &[Instance] {
-        let own = self.get(building, layout);
-        if !own.is_empty() {
-            return own;
+        self.key_for(data, building, layout)
+            .map_or(&[], |k| self.get(&k, layout))
+    }
+
+    /// Which of `for_building`'s instances are "outside" (their state record's "flags" bit 0,
+    /// else its "is outside", F037789): shown while the building's interior is closed (F037736).
+    pub fn outside(&self, data: &GameDataContainer, building: &str, layout: &str) -> &[bool] {
+        self.key_for(data, building, layout)
+            .and_then(|k| self.1.get(&(k, layout.to_string())))
+            .map_or(&[], |v| v)
+    }
+
+    /// The building whose layout `for_building` takes.
+    fn key_for(&self, data: &GameDataContainer, building: &str, layout: &str) -> Option<String> {
+        if !self.get(building, layout).is_empty() {
+            return Some(building.to_string());
         }
-        let Some(b) = data.get(building) else {
-            return &[];
-        };
+        let b = data.get(building)?;
         for (sid, _) in b.refs("shares interiors with") {
-            let l = self.get(sid, layout);
-            if !l.is_empty() {
-                return l;
+            if !self.get(sid, layout).is_empty() {
+                return Some(sid.clone());
             }
         }
         for o in data.of_type(ItemType::Building) {
             if o.refs("shares interiors with")
                 .iter()
                 .any(|(s, _)| s == building)
+                && !self.get(&o.string_id, layout).is_empty()
             {
-                let l = self.get(&o.string_id, layout);
-                if !l.is_empty() {
-                    return l;
-                }
+                return Some(o.string_id.clone());
             }
         }
-        &[]
+        None
     }
 }
 
