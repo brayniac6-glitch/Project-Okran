@@ -1,0 +1,46 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+136 town nodes (34 general)
+town Shark at [-47040.98, 120.94015, 48137.1], type 2, radius 2500
+417 pieces of furniture, bars: ["Swamp Dome", "Swamp Dome"]
+15 interior volumes, 15 doors
+swamper fish and drugs at Swamp Store: 1 leader(s), 0 others, package Shop
+Swamper Blackshifter at Swamp Shack: 1 leader(s), 4 others, package Guard building, residents
+the dancing skeleton at Swamp Dome: 1 leader(s), 4 others, package Shop-24hr
+swamp trade goods at Swamp House: 1 leader(s), 1 others, package Shop
+swamp travel shop at Swamp House: 1 leader(s), 1 others, package Shop
+swamper fish and drugs at Swamp Store: 1 leader(s), 0 others, package Shop
+swamp shop mechanical at Swamp Shack: 1 leader(s), 0 others, package Shop
+swamp smithy at Swamp House: 1 leader(s), 1 others, package Shop
+Swamper resident solo at Swamp Shack: 1 leader(s), 1 others, package worker fighter indie resident
+Swamper resident solo at Swamp Shack: 1 leader(s), 0 others, package worker fighter indie resident
+Swamper resident solo at Swamp House: 1 leader(s), 0 others, package worker fighter indie resident
+Swamper resident solo at Swamp House: 1 leader(s), 1 others, package worker fighter indie resident
+Swamper resident solo at Swamp Shack: 1 leader(s), 1 others, package worker fighter indie resident
+hound hq at Swamp Dome: 1 leader(s), 8 others, package Guard building, residents
+blsh casino guy at Swamp Dome: 1 leader(s), 5 others, package Shop-24hr
+player squad: 2
+44 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Swampers: enemies here []
+faction Blackshifters: enemies here []
+faction Hounds: enemies here []
+faction Nameless: enemies here []
+hour 109 s
+world: 0 squads abroad, 304 towns
+1 t 60: 42 goal Some(275) queue [(221, Furniture(6)), (275, None)] operating Some(6) bed None
+1 t 60: 43 goal Some(153) queue [(98, Furniture(4)), (153, None)] operating None bed Some(4)
+check: one sits true; the hurt one in bed true
+jobs: 42 starts 97 on Building(0)
+2 t 120: 42 goal Some(97) queue [(97, Building(0))] operating None bed None
+2 t 120: 43 goal Some(153) queue [(98, Furniture(4)), (153, None)] operating None bed Some(4)
+check: the sitter trains true
+jobs: 43 starts 257 on None
+3 t 1047: 42 goal Some(97) queue [(97, Building(0))] operating None bed None
+3 t 1047: 43 goal Some(275) queue [(221, Furniture(6)), (275, None)] operating Some(6) bed None
+check: the healed one up true
+exit 0

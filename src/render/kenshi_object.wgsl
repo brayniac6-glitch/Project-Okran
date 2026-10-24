@@ -8,7 +8,7 @@
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::view
 #import kenshi::interior::interior_clipped
-#import kenshi::lighting::{apply_fog, local_lights, main_light, sun_shadow, make_wet, reflection_dir, reflection_mip, to_screen}
+#import kenshi::lighting::{KenshiLight, apply_fog, local_lights, main_light, sun_shadow, make_wet, reflection_dir, reflection_mip, to_screen}
 
 struct ObjectParams {
     // xy: tiling; z: glossMult; w: alpha threshold (0: no TRANSPARENCY)
@@ -39,6 +39,7 @@ struct ObjectParams {
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> p: ObjectParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(70) var<storage, read> kl: KenshiLight;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var base_map: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var base_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var base_normal: texture_2d<f32>;
@@ -212,11 +213,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
     // DUST
     if (p.modes.y > 0.5) {
         let noise_effect = 2.2 - noise.x * 6.0;
-        let slope_effect = clamp((world_normal.y - 0.7 + p.dust_amount.z) * 4.0, 0.0, 1.0);
+        let slope_effect = clamp((world_normal.y - 0.7 + kl.dust.z) * 4.0, 0.0, 1.0);
         let gloss_effect = -diffuse.a * 6.0;
         var dust = slope_effect + gloss_effect + noise_effect;
-        dust = dust * 2.0 + p.dust_amount.x - 1.0;
-        dust = dust * min(1.0, p.dust_amount.x * 8.0);
+        dust = dust * 2.0 + kl.dust.x - 1.0;
+        dust = dust * min(1.0, kl.dust.x * 8.0);
         diffuse = vec4<f32>(mix(diffuse.rgb, p.dust_colour.rgb, clamp(dust, 0.0, 1.0)), diffuse.a);
         if (!is_triplanar) {
             world_normal = normalize(mix(world_normal, n, clamp(dust * 0.5, 0.0, 1.0)));
@@ -227,12 +228,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
     diffuse.a = diffuse.a * p.tiling_gloss.z;
     if (grass) {
         // grass_fs: makeWet with absorbance 0.9, the gloss written x 0.6
-        diffuse = make_wet(diffuse, p.flags.z, 0.9, 100.0 - world_pos.y, 0.5);
+        diffuse = make_wet(diffuse, kl.misc.y, 0.9, 100.0 - world_pos.y, 0.5);
         diffuse.a = diffuse.a * 0.6;
     } else if (!is_triplanar) {
         var absorb = 1.0 - diffuse.a;
         absorb = absorb * (1.0 - metalness);
-        diffuse = make_wet(diffuse, p.flags.z, absorb, 100.0 - world_pos.y, 0.5);
+        diffuse = make_wet(diffuse, kl.misc.y, absorb, 100.0 - world_pos.y, 0.5);
     }
 
     // EMISSIVE: buf1.a = 0.5 + brightness * (1 - normal.a) * 0.5; the light pass reads
@@ -269,10 +270,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
     let refl = textureSampleLevel(specularity_cube, cube_sampler,
         reflection_dir(world_normal, view_dir, gloss), reflection_mip(gloss));
     let lit = main_light(world_normal, view_dir, diffuse.rgb, gloss, metalness, emissive,
-        translucency, p.sun_direction.xyz, p.sun_colour, p.env_colour.w, p.ambient_params.w,
+        translucency, kl.sun_direction.xyz, kl.sun_colour, kl.env_colour.w, kl.ambient_params.w,
         ambient_mult, irr, refl, sun_shadow(in.world_position, n, shadow_jitter));
     let lit_all = lit + local_lights(in.world_position.xyz, in.position.xy, world_normal, view_dir, diffuse.rgb, gloss, metalness);
-    let fogged = apply_fog(lit_all, camera, world_pos, p.sun_real.xyz, p.horizon, p.fog, p.fog_colour,
-        p.sun_colour.w);
-    return vec4<f32>(to_screen(fogged, p.origin_exposure.w), 1.0);
+    let fogged = apply_fog(lit_all, camera, world_pos, kl.sun_real.xyz, kl.horizon, kl.fog, kl.fog_colour,
+        kl.sun_colour.w);
+    return vec4<f32>(to_screen(fogged, kl.misc.x), 1.0);
 }

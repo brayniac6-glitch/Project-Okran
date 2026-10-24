@@ -27,7 +27,10 @@ fn main() {
     let (zx, zy): (i32, i32) = (a[1].parse().unwrap(), a[2].parse().unwrap());
     let skill: f32 = a.get(3).map_or(80.0, |n| n.parse().unwrap());
     let mut sim = Sim::load(install, zx, zy, 0, &["player:1".to_string()]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     let me = sim.folk.iter().find(|p| p.player).map(|p| p.id).expect("a player character");
+    let start = sim.folk[me].mover.position;
     run(&mut sim, 2.0, "load");
     let guards: Vec<usize> = (0..sim.folk.len()).filter(|&g| !sim.folk[g].player && sim.guards_town(g)).collect();
     println!("{} guards of the town: {:?}", guards.len(), guards.iter().map(|&g| (g, sim.npc_class(g), sim.folk[g].faction.clone())).take(8).collect::<Vec<_>>());
@@ -101,10 +104,12 @@ fn main() {
     println!("[C] state {}, prison {:?}, shackled {}, escaped {:?}, crime {:?}", sim.slave_state(me), sim.folk[me].prison.as_ref().map(|p| p.cage), sim.folk[me].shackled, sim.folk[me].escaped, sim.folk[me].crime.as_ref().map(|c| (c.kind, c.faction.clone())));
     run(&mut sim, 5.0, "C");
     println!("[C] after: state {}, blown {:.0}, bounty {}", sim.slave_state(me), sim.folk[me].disguise_blown, sim.bounty_with(me, &faction));
-    // D: a fight with a guard (no longer a slave, no bounty)
+    // D: a fight with a guard (no longer a slave, no bounty; free, healed and up whatever C's
+    // escape left: no one still after it)
     sim.folk[me].slave = None;
     sim.folk[me].bounties.clear();
     sim.folk[me].crime = None;
+    reset(&mut sim, me);
     let g2 = guards.iter().copied().find(|&k| !sim.folk[k].down && !sim.arena.f[k].active).unwrap_or(g);
     let at = sim.folk[g2].mover.position;
     sim.folk[me].mover.position = [at[0] + 5.0 * m, at[1], at[2]];
@@ -193,31 +198,14 @@ fn main() {
     }
     // H: kidnapping a townsperson knocked out (Task_Kidnapping::start as it is lifted: the
     // crime, seen by the town's people about; the victim, out cold, notices nothing)
-    sim.folk[me].prison = None;
     sim.folk[me].bounties.clear();
     sim.folk[me].crime = None;
-    sim.folk[me].carried_by = None;
-    sim.folk[me].disguise_blown = 0.0;
-    sim.arena.f[me].medical.knockout_time = 0.0;
-    // (healed and up again whatever G's fight left)
-    let fresh: Vec<f32> = sim.arena.f[me].medical.parts.iter().map(|p| p.max_health()).collect();
-    for (k, part) in sim.arena.f[me].medical.parts.iter_mut().enumerate() {
-        part.flesh = fresh[k].max(part.flesh);
-    }
-    sim.wake(me);
-    // (no one still after it from G)
-    for k in 0..sim.folk.len() {
-        if sim.folk[k].arrest.as_ref().is_some_and(|a| a.target == me) {
-            sim.folk[k].arrest = None;
-        }
-        if sim.folk[k].carrying == Some(me) {
-            sim.folk[k].carrying = None;
-        }
-        if sim.folk[k].pickup == Some(me) {
-            sim.folk[k].pickup = None;
-        }
-        sim.folk[k].ai.queue.retain(|s| s.target != kenshi_game::sim::Target::Person(me));
-    }
+    // (healed and up again whatever G's fight left, no one still after it)
+    reset(&mut sim, me);
+    // (out of the barracks G left it in: where it stood at the start)
+    sim.folk[me].mover.position = start;
+    sim.arena.f[me].mover.position = start;
+    sim.folk[me].inside = None;
     run(&mut sim, 5.0, "H");
     let civ = (0..sim.folk.len()).find(|&c| !sim.folk[c].player && !sim.folk[c].dead && !sim.folk[c].down && sim.folk[c].faction.as_deref() == Some(faction.as_str()) && !sim.guards_town(c) && sim.folk[c].race.is_none());
     if let Some(v) = civ {
@@ -240,4 +228,45 @@ fn main() {
         run(&mut sim, 5.0, "H");
         println!("[H] bounty {}, alarms {:?}", sim.bounty_with(me, &faction), sim.law_state.alarms.values().map(|v| v.iter().map(|a| a.crime).collect::<Vec<_>>()).collect::<Vec<_>>());
     }
+}
+
+/// The player's character free, healed and up, and no one still after it (arresting, carrying,
+/// picking it up, planning on it or fighting it): a scenario's start whatever the last left.
+fn reset(sim: &mut Sim, me: usize) {
+    sim.folk[me].prison = None;
+    sim.folk[me].escaped = None;
+    sim.folk[me].carried_by = None;
+    sim.folk[me].disguise_blown = 0.0;
+    sim.arena.f[me].medical.knockout_time = 0.0;
+    let fresh: Vec<f32> = sim.arena.f[me].medical.parts.iter().map(|p| p.max_health()).collect();
+    for (k, part) in sim.arena.f[me].medical.parts.iter_mut().enumerate() {
+        part.flesh = fresh[k].max(part.flesh);
+    }
+    sim.wake(me);
+    // (no squad holding it a temporary enemy from the last scenario's barks)
+    sim.platoon_memory.clear();
+    for k in 0..sim.folk.len() {
+        if sim.folk[k].arrest.as_ref().is_some_and(|a| a.target == me) {
+            sim.folk[k].arrest = None;
+        }
+        if sim.folk[k].carrying == Some(me) {
+            sim.folk[k].carrying = None;
+        }
+        if sim.folk[k].pickup == Some(me) {
+            sim.folk[k].pickup = None;
+        }
+        // (planning on it, fighting it, or still in a fight with no one left: G's guards, their
+        // plans begun afresh)
+        let on_me = sim.folk[k].ai.queue.iter().any(|s| s.target == kenshi_game::sim::Target::Person(me));
+        if k != me && (on_me || sim.arena.f[k].focus == Some(me) || (sim.arena.f[k].active && sim.arena.f[k].focus.is_none())) {
+            sim.folk[k].ai.queue.clear();
+            sim.folk[k].ai.current = None;
+            sim.folk[k].started = false;
+            sim.arena.f[k].focus = None;
+            sim.arena.f[k].active = false;
+        }
+    }
+    // (nor fighting anyone itself)
+    sim.arena.f[me].focus = None;
+    sim.arena.f[me].active = false;
 }

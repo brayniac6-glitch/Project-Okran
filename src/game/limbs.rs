@@ -122,11 +122,41 @@ impl Sim {
     /// @fn F040471
     ///
     /// The limbs hits severed this tick: blood lost, toughness trained, a leg's loss knocking
-    /// them down by chance, a message.
+    /// them down by chance, a message, and the limb dropped: the race's "severed limbs" item for
+    /// the slot (its first value the slot: left arm 0, right arm 1, left leg 2, right leg 3)
+    /// dropped with physics on (Item vtable 0x228, F043877 setting +0x1da) at the part's "bone
+    /// name 2" bone (`limb_drops`, the game's to place). Not for one being carried (Character
+    /// vtable 0x248).
     pub fn limb_tick(&mut self) {
         for id in 0..self.folk.len() {
             let severed = std::mem::take(&mut self.arena.f[id].medical.severed);
+            if self.folk[id].carried_by.is_some() {
+                continue;
+            }
             for i in severed {
+                // the limb as an item, lying where they stand until the game puts it at the bone
+                let slot = (0..4).find(|&s| self.limb_part(id, s) == Some(i));
+                // (one with no character record, as the harness's squad: Greenlander, `race_of`'s
+                // own fallback race)
+                let race = self.race_of(id).or_else(|| self.data.of_type(kenshi_data::ItemType::Race).find(|r| r.name == "Greenlander").map(|r| r.string_id.clone()));
+                let record = slot.and_then(|s| {
+                    let r = self.data.get(race.as_ref()?)?;
+                    r.refs("severed limbs").iter().find(|(_, v)| v.first() == Some(&(s as i32))).map(|(sid, _)| sid.clone())
+                });
+                if std::env::var("KENSHI_RAGDOLL_DEBUG").is_ok() {
+                    eprintln!("limb lost by {id}: part {i} slot {slot:?} race {race:?} item {record:?}");
+                }
+                if let Some(rec) = record.and_then(|sid| self.data.get(&sid)) {
+                    let item = kenshi_char::inventory::Item::from_record(rec, 1);
+                    self.next_ground += 1;
+                    let at = self.folk[id].mover.position_units();
+                    self.ground.push(crate::loot::GroundItem { id: self.next_ground, item, at, yaw: 0.0 });
+                    self.limb_drops.push((self.next_ground, id, i));
+                    // (with no game to take them, the queue keeps only the newest)
+                    if self.limb_drops.len() > 32 {
+                        self.limb_drops.remove(0);
+                    }
+                }
                 let kind = self.arena.f[id].medical.parts[i].kind;
                 let loss = 5.0 + self.rng.uniform() * 25.0;
                 self.arena.f[id].medical.blood -= loss;

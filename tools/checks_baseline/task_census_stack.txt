@@ -1,0 +1,50 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+298 town nodes (129 general)
+town Stack at [-56046.645, 1060.4626, -13188.141], type 2, radius 2500
+603 pieces of furniture, bars: ["Storm House", "Storm House"]
+13 interior volumes, 13 doors
+Shop trade adv at L-House: 1 leader(s), 3 others, package Shop
+shop hats holy at Old Storm House: 1 leader(s), 1 others, package Shop
+Shop bar holy at Storm House: 1 leader(s), 1 others, package Shop-24hr
+Shop bar holy at Storm House: 1 leader(s), 1 others, package Shop-24hr
+holy armour shop at Y-House: 1 leader(s), 2 others, package Shop
+Shop clothes holy at Storm House: 1 leader(s), 2 others, package Shop
+Holy Priest church at Stephouse: 1 leader(s), 4 others, package Guard building, residents
+holy Armoury at Longhouse: 1 leader(s), 3 others, package Storage Guard
+Civilian solo holy -small at Small Shack: 1 leader(s), 2 others, package Civilian
+Holy Gate Guards at Defensive Gate IV: 1 leader(s), 8 others, package Gate guard  -no turrets -arrests
+Holy Guards at Longhouse: 1 leader(s), 12 others, package guard town - lawful arrests
+Holy Guards at Longhouse: 1 leader(s), 12 others, package guard town - lawful arrests
+inquisitor seta hq at Bughouse: 1 leader(s), 8 others, package throne room / king
+72 people (arresting 35, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction The Holy Nation: enemies here []
+world: 0 squads abroad, 304 towns
+dropped steps (task: count):
+goals held (task: person-seconds):
+    38 Static guard                     6324
+   157 Static town guard                2514
+   149 Turret guard                     1738
+    20 Shopkeeper                       1080
+    43 Staying home                     696
+   118 Shopping                         360
+   180 Gate guard                       180
+    36 Patrolling town                  68
+turrets: 10 (10 manned)
+  39 at [-55935, 1265, -12212]: queue [(146, Furniture(273)), (149, None)] operating Some(273)
+    turret 273 at [-55935, 1265, -12212], approach [-55934, 1265, -12212], speed 0.0, path false
+  41 at [-55458, 1363, -12012]: queue [(146, Furniture(480)), (149, None)] operating Some(480)
+    turret 480 at [-55458, 1363, -12012], approach [-55448, 1360, -12016], speed 0.0, path false
+  43 at [-55936, 1256, -12515]: queue [(146, Furniture(272)), (149, None)] operating Some(272)
+    turret 272 at [-55936, 1256, -12515], approach [-55929, 1257, -12510], speed 0.0, path false
+  44 at [-56136, 1162, -12841]: queue [(146, Furniture(275)), (149, None)] operating Some(275)
+    turret 275 at [-56136, 1162, -12841], approach [-56135, 1162, -12841], speed 0.0, path false
+stalled on a path (10 s samples) 1
+paths found 150 failed 22
+wall sweeps 255485 stuck 94
+exit 0

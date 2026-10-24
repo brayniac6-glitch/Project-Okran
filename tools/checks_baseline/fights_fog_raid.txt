@@ -1,0 +1,191 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+99 town nodes (45 general)
+town Mourn at [12507.244, 956.0521, 65253.223], type 2, radius 2500
+310 pieces of furniture, bars: ["Storm House"]
+17 interior volumes, 4 doors
+mourn hq at Ancient Lab: 0 leader(s), 0 others, package animals in building, hostile
+Mourn squatters at Watchtower: 1 leader(s), 2 others, package Squatters
+Mourn squatters at Watchtower: 1 leader(s), 0 others, package Squatters
+super adventure shop at Old Storm House: 1 leader(s), 3 others, package Shop
+Bar Mourn at Storm House: 1 leader(s), 4 others, package Shop-24hr
+Mourn squatters at Outpost s-IV: 1 leader(s), 1 others, package Squatters
+Mourn squatters at Outpost s-IV: 1 leader(s), 1 others, package Squatters
+Fog raid: 0 leader(s), 18 others, package Cannibal patrol map (short range), formation Loose
+35 people (arresting 0, watching slaves 0, getting food 0, kidnapping 18, capturing 18)
+faction Tech Hunters: enemies here ["Fogmen"]
+faction Trade Ninjas: enemies here ["Fogmen"]
+faction Fogmen: enemies here ["Tech Hunters", "Trade Ninjas"]
+Fogmen x18 [17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34] [Drifters: enemy, Tech Hunters: enemy, Vagrants: enemy]
+Drifters x1 [35] [Fogmen: enemy, Tech Hunters: ally, Vagrants: -10]
+Tech Hunters x3 [36, 37, 38] [Fogmen: enemy, Drifters: 0, Vagrants: -10]
+Vagrants x1 [39] [Fogmen: enemy, Drifters: -10, Tech Hunters: -10]
+world: 0 squads abroad, 304 towns
+t    2  Fogmen fight 0 drawn 18 down 0 task Some(16) q [4, 16] at (12436,65265) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11862,65224) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11322,64833) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13277,65500) | others fighting 0 | in bed 0
+t    4  Fogmen fight 0 drawn 18 down 0 task Some(16) q [4, 16] at (12281,65315) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11843,65237) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11352,64829) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13260,65514) | others fighting 0 | in bed 0
+t    6  Fogmen fight 0 drawn 18 down 0 task Some(16) q [4, 16] at (12119,65333) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11825,65252) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11382,64825) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13244,65527) | others fighting 0 | in bed 0
+t    8  Fogmen fight 10 drawn 18 down 0 task Some(16) q [4, 16] at (12074,65269) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11809,65274) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11412,64820) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 5 | in bed 0
+t   10  Fogmen fight 17 drawn 18 down 0 task Some(16) q [4, 16] at (12078,65257) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11831,65295) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11441,64816) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 7 | in bed 0
+t   12  Fogmen fight 17 drawn 18 down 0 task Some(16) q [4, 16] at (12078,65258) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11851,65318) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11471,64812) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 9 | in bed 0
+t   14  Fogmen fight 17 drawn 16 down 2 task Some(16) q [4, 16] at (12078,65261) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11872,65339) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11501,64808) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 5 | in bed 0
+t   16  Fogmen fight 17 drawn 16 down 2 task Some(16) q [4, 16] at (12078,65262) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11892,65361) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11529,64811) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 5 | in bed 0
+t 16.1 person 6 picks up 27
+t 16.6 person 9 is knocked out
+t 17.0 person 17 goes to capture 9
+t 17.3 person 5 picks up 27
+t   18  Fogmen fight 17 drawn 16 down 2 task Some(16) q [4, 16] at (12078,65263) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11912,65364) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11551,64832) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 7 | in bed 0
+t 18.1 person 18 is knocked out
+t 18.1 person 22 is knocked out
+t 18.3 person 23 is knocked out
+t 18.6 person 7 picks up 27
+t   20  Fogmen fight 18 drawn 13 down 5 task Some(16) q [4, 16] at (12076,65268) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11940,65353) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11572,64853) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 7 | in bed 0
+t 20.3 person 12 is knocked out
+t 20.4 person 26 is knocked out
+t 21.0 person 33 is knocked out
+t 21.0 person 19 goes to capture 12
+t 21.1 person 19 is knocked out
+t   22  Fogmen fight 18 drawn 10 down 8 task Some(16) q [4, 16] at (12077,65268) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11970,65344) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11594,64874) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 8 | in bed 0
+t 22.1 person 10 is knocked out
+t 22.1 person 11 picks up 19
+t 22.5 person 24 is knocked out
+t 23.0 person 20 goes to capture 10
+t 23.1 person 8 is knocked out
+t 23.3 person 11 picks up 19
+t 23.5 person 25 is knocked out
+t 24.0 person 20 picks up 10
+t   24  Fogmen fight 17 drawn 8 down 10 task Some(16) q [4, 16] at (12077,65270) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11998,65333) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11615,64894) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 9 | in bed 0
+t 24.8 person 28 is knocked out
+t 25.3 person 11 picks up 19
+t   26  Fogmen fight 17 drawn 7 down 11 task Some(32) q [4, 13, 32] at (12070,65278) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (12029,65320) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11637,64915) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 12 | in bed 0
+t 26.2 person 29 is knocked out
+t 27.3 person 11 picks up 19
+t 27.7 person 34 is knocked out
+t   28  Fogmen fight 17 drawn 5 down 13 task Some(32) q [4, 13, 32] at (12075,65278) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (12044,65306) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11658,64936) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 9 | in bed 0
+t 28.2 person 17 is knocked out
+t 29.2 person 31 is knocked out
+t 29.3 person 11 picks up 19
+t   30  Fogmen fight 17 drawn 3 down 15 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (12051,65290) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11680,64956) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 11 | in bed 0
+t 31.3 person 11 picks up 19
+t 31.7 person 20 is knocked out
+t   32  Fogmen fight 18 drawn 2 down 16 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (12071,65268) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11702,64977) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 7 | in bed 0
+t 33.3 person 11 picks up 19
+t 33.5 person 32 is knocked out
+t   34  Fogmen fight 18 drawn 1 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (12078,65239) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11723,64998) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 6 | in bed 0
+t 34.7 person 12 comes round
+t 35.3 person 11 picks up 19
+t   36  Fogmen fight 18 drawn 1 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11745,65019) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 5 | in bed 0
+t 37.3 person 11 picks up 19
+t   38  Fogmen fight 18 drawn 1 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11766,65039) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 5 | in bed 0
+t 38.4 person 6 picks up 27
+t 39.3 person 11 picks up 19
+t   40  Fogmen fight 18 drawn 1 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (11788,65060) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 5 | in bed 0
+t 40.4 person 5 picks up 27
+t 41.3 person 11 picks up 19
+t 41.4 person 9 comes round
+t 41.6 person 7 picks up 27
+t   42  Fogmen fight 18 drawn 1 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 3 down 0 task Some(214) q [1, 87, 214] at (11876,65122) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 5 | in bed 0
+t 43.3 person 11 picks up 19
+t   44  Fogmen fight 18 drawn 1 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 2 down 0 task Some(214) q [1, 87, 214] at (11967,65134) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 4 | in bed 0
+t 45.3 person 11 picks up 19
+t   46  Fogmen fight 18 drawn 1 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 2 down 0 task Some(58) q [67, 25, 58] at (11989,65212) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 4 | in bed 0
+t 47.3 person 11 picks up 19
+t   48  Fogmen fight 18 drawn 1 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 1 down 0 task Some(214) q [1, 87, 214] at (12040,65122) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 4 | in bed 0
+t 49.0 person 3 is knocked out
+t 49.3 person 11 picks up 19
+t 50.0 person 21 goes to capture 3
+t   50  Fogmen fight 17 drawn 1 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 2 down 0 task Some(1) q [1] at (12015,65133) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 51.3 person 11 picks up 19
+t 51.9 person 21 is knocked out
+t   52  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(1) q [1] at (12179,65150) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 53.3 person 11 picks up 19
+t   54  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(1) q [1] at (12343,65201) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 55.3 person 11 picks up 19
+t   56  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(1) q [1] at (12505,65191) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 57.3 person 11 picks up 19
+t   58  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(1) q [1] at (12658,65113) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 59.3 person 11 picks up 19
+t   60  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (12706,65086) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 61.3 person 11 picks up 19
+t   62  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (12556,65174) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 63.3 person 11 picks up 19
+t   64  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (12407,65260) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 65.3 person 11 picks up 19
+t   66  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (12248,65318) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 67.3 person 11 picks up 19
+t   68  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (12080,65329) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 69.0 person 6 picks up 27
+t 69.3 person 11 picks up 19
+t   70  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 70.3 person 5 picks up 27
+t 71.3 person 11 picks up 19
+t 71.6 person 7 picks up 27
+t   72  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 73.3 person 11 picks up 19
+t   74  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 75.3 person 11 picks up 19
+t   76  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 77.3 person 11 picks up 19
+t   78  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 79.3 person 11 picks up 19
+t   80  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 81.3 person 11 picks up 19
+t   82  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 83.3 person 11 picks up 19
+t   84  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 85.3 person 11 picks up 19
+t   86  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 87.3 person 11 picks up 19
+t   88  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 89.3 person 11 picks up 19
+t   90  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 90.3 person 6 picks up 27
+t 91.3 person 11 picks up 19
+t   92  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 93.3 person 5 picks up 27
+t 93.3 person 11 picks up 19
+t   94  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 95.3 person 11 picks up 19
+t 95.5 person 7 picks up 27
+t   96  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 97.3 person 11 picks up 19
+t   98  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 99.3 person 11 picks up 19
+t  100  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 101.3 person 11 picks up 19
+t  102  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 103.3 person 11 picks up 19
+t  104  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 105.3 person 11 picks up 19
+t  106  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 107.3 person 11 picks up 19
+t  108  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 109.3 person 11 picks up 19
+t  110  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 111.3 person 11 picks up 19
+t  112  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 113.3 person 11 picks up 19
+t 113.4 person 28 comes round
+t 114.0 person 6 picks up 27
+t  114  Fogmen fight 17 drawn 0 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 115.3 person 5 picks up 27
+t 115.3 person 11 picks up 19
+t  116  Fogmen fight 17 drawn 0 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+t 117.3 person 11 picks up 19
+t  118  Fogmen fight 18 drawn 1 down 17 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 6 | in bed 0
+t 118.3 person 7 picks up 27
+t 119.3 person 11 picks up 19
+t 119.4 person 7 picks up 27
+t 119.8 person 28 is knocked out
+t  120  Fogmen fight 18 drawn 0 down 18 task Some(32) q [] at (12076,65279) | Drifters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12096,65228) | Tech Hunters fight 0 drawn 0 down 0 task Some(214) q [87, 214] at (12063,65245) | Vagrants fight 0 drawn 0 down 0 task Some(214) q [1, 87, 214] at (13222,65530) | others fighting 3 | in bed 0
+duties Drifters: 1 people, arresting 0, watching slaves 0, getting food 0, kidnapping 0
+duties Fogmen: 18 people, arresting 0, watching slaves 0, getting food 0, kidnapping 18
+duties Tech Hunters: 15 people, arresting 4, watching slaves 0, getting food 0, kidnapping 0
+duties Trade Ninjas: 5 people, arresting 5, watching slaves 0, getting food 0, kidnapping 0
+duties Vagrants: 1 people, arresting 0, watching slaves 0, getting food 0, kidnapping 0
+fighting by goal: {15: 1, 16: 3, 32: 17}
+exit 0

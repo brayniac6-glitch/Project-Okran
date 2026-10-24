@@ -123,4 +123,5 @@ fn main() {
         .map(|p| format!("{} ({}, goal {:?})", p.id, name(&sim, &p.faction), p.ai.current.as_ref().map(|c| c.task)))
         .collect();
     println!("{} never moved: {}", still.len(), still.iter().take(25).cloned().collect::<Vec<_>>().join(", "));
+    eprintln!("wall sweeps {} stuck {}", kenshi_world::navmesh::SWEEPS.load(std::sync::atomic::Ordering::Relaxed), kenshi_world::navmesh::STUCK.load(std::sync::atomic::Ordering::Relaxed));
 }

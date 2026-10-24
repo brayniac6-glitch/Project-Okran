@@ -6,6 +6,7 @@ pub mod character_material;
 pub mod fog_volume;
 pub mod hdr;
 pub mod interior_mask;
+pub mod light_buffer;
 pub mod local_lights;
 pub mod mipmaps;
 pub mod texture_quality;

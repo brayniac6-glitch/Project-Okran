@@ -1,0 +1,39 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+137 town nodes (51 general)
+town Clownsteady at [-61297.914, 149.17818, 91649.81], type 2, radius 2500
+575 pieces of furniture, bars: ["Outpost s-III"]
+11 interior volumes, 12 doors
+Shop trade adv at Y-House: 1 leader(s), 3 others, package Shop
+shop tools UC at Storm House: 1 leader(s), 1 others, package Shop
+Police Station Tower at Outpost s-IV: 1 leader(s), 9 others, package empire police station
+Shop bar Empire at Outpost s-III: 1 leader(s), 3 others, package Shop-24hr
+Civilian family UC at Longhouse: 1 leader(s), 2 others, package Civilian
+Shop Weapons UC small at Bughouse: 1 leader(s), 1 others, package Shop
+Empire Gate guard at Defensive Gate IV: 1 leader(s), 7 others, package Gate guard -no turrets
+Civilian solo UC small at Storm House: 1 leader(s), 0 others, package Civilian
+Civilian family UC at Watchtower: 1 leader(s), 3 others, package Civilian
+Civilian solo UC small at Small Shack: 1 leader(s), 0 others, package Civilian
+39 people (arresting 10, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction United Cities: enemies here []
+faction Machinists: enemies here []
+faction Traders Guild: enemies here []
+world: 0 squads abroad, 304 towns
+dropped steps (task: count):
+goals held (task: person-seconds):
+    38 Static guard                     2700
+   214 Relaxing                         2520
+    43 Staying home                     2500
+    20 Shopkeeper                       900
+   118 Shopping                         740
+   180 Gate guard                       180
+turrets: 14 (0 manned)
+stalled on a path (10 s samples) 4
+paths found 80 failed 10
+wall sweeps 153510 stuck 659
+exit 0

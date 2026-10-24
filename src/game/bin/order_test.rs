@@ -634,7 +634,8 @@ pub fn script(mut s: Local<State>, mut game: ResMut<Game>) {
             }
         }
         // a town changing hands: the town the squad is in, the uniques its first override's world
-        // states want dead marked dead, then the squad sent 9000 units away and back
+        // states want dead marked dead, then the squad sent 9000 units away and back (Kenshi
+        // takes the override as the town's zone loads in a later game load: it stays as it is)
         "reseat" => {
             if f == 150 {
                 let Some(t) = game.sim.folk[me].town else { return log("not in a town".into()) };

@@ -7,7 +7,7 @@
 #ifdef DEPTH_PREPASS
 #import bevy_pbr::prepass_utils::prepass_depth
 #endif
-#import kenshi::lighting::{punctual, lazarov, fresnel_diffuse, reflection_dir, reflection_mip,
+#import kenshi::lighting::{KenshiLight, punctual, lazarov, fresnel_diffuse, reflection_dir, reflection_mip,
     apply_fog, to_screen, Light, PI}
 
 struct WaterParams {
@@ -31,6 +31,7 @@ struct WaterParams {
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> p: WaterParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(70) var<storage, read> kl: KenshiLight;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var colour_map: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var map_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var flow_map: texture_2d<f32>;
@@ -84,8 +85,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // waterFP
     let dist = length(cam);
     let view_dir = normalize(cam);
-    let light_dir = normalize(p.sun_direction.xyz);
-    let light_colour = p.sun_colour.rgb;
+    let light_dir = normalize(kl.sun_direction.xyz);
+    let light_colour = kl.sun_colour.rgb;
     let spec_colour = vec3<f32>(0.04);
     let water_colour = textureSample(colour_map, map_sampler, map_xy).rgb;
     var albedo = water_colour;
@@ -109,7 +110,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var speed = length(direction);
     direction = direction / speed;
     speed = speed / p.distortion.x;
-    let game_time = p.origin_time.w * p.distortion.x;
+    let game_time = kl.misc.w * p.distortion.x;
 
     // depth: the scene behind the water, along the view ray
     var depth = 1e6;
@@ -136,7 +137,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let ripples_b = rain_ripple(map_zw.yx * 6.0, game_time * 1.5 + 0.5, 1.0);
     let ripples_c = rain_ripple(map_zw * 2.0, game_time + 0.3, 1.0);
     if (!distant) {
-        let rain = p.world.y * clamp(view_dir.y * 2.0 - dist * 0.0001, 0.0, 1.0);
+        let rain = kl.misc.z * clamp(view_dir.y * 2.0 - dist * 0.0001, 0.0, 1.0);
         normal = normal + ripples_a * rain * 2.0 + ripples_b * rain * 2.0 + ripples_c * rain * 0.8;
     }
     normal = normalize(normal);
@@ -173,9 +174,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var env: Light;
     env.specular = lazarov(gloss, nov, spec_colour) * (refl.rgb * refl.a * 10.0);
     env.diffuse = (irr.rgb * irr.a * 4.0) * fresnel_diffuse(spec_colour);
-    let env_w = p.env_colour.w * clamp(light_dir.y * 5.0 + 0.2, 0.1, 1.0);
-    env.diffuse = env.diffuse * p.env_colour.rgb * env_w;
-    env.specular = env.specular * p.env_colour.rgb * env_w;
+    let env_w = kl.env_colour.w * clamp(light_dir.y * 5.0 + 0.2, 0.1, 1.0);
+    env.diffuse = env.diffuse * kl.env_colour.rgb * env_w;
+    env.specular = env.specular * kl.env_colour.rgb * env_w;
     env.specular = env.specular * rf * env_w;
     var colour = sun_light.specular + env.specular + (sun_light.diffuse + env.diffuse) * albedo;
     colour = colour + p.consts.w * water_colour * (1.0 - info.b);
@@ -209,7 +210,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if (mode == 5) { return vec4<f32>(rf, 1.0); }
     if (mode == 4) { return vec4<f32>(albedo, 1.0); }
     // (assumption) the atmosphere fog over the water at its own distance
-    colour = apply_fog(colour, camera, world_pos, p.sun_real.xyz, p.horizon, p.fog, p.fog_colour,
-        p.sun_colour.w);
-    return vec4<f32>(to_screen(colour, p.world.x), alpha);
+    colour = apply_fog(colour, camera, world_pos, kl.sun_real.xyz, kl.horizon, kl.fog, kl.fog_colour,
+        kl.sun_colour.w);
+    return vec4<f32>(to_screen(colour, kl.misc.x), alpha);
 }

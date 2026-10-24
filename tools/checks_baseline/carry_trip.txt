@@ -1,0 +1,22 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+13 town nodes (13 general)
+town Tower of Abuse at [23826.102, 1147.2146, 17893.418], type 4, radius 875
+73 pieces of furniture, bars: []
+1 interior volumes, 0 doors
+tower of abuse at Ancient Lab: 1 leader(s), 21 others, package Guard building 24hr service- squad2 robo guards
+player squad: 2
+24 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Thrall Masters: enemies here ["Nameless"]
+faction Nameless: enemies here ["Thrall Masters"]
+world: 0 squads abroad, 304 towns
+"shoulder lift left" lasts 2.47 s: taken up at 0.99, done at 2.34
+lift began Some(0.116666675); body taken 0.98 s into the lift; lift done 2.33 s into the lift
+put down after 1.98 s (0.8 of the clip: 1.97): carrying None, the body carried by None, down true
+wall sweeps 5157 stuck 10
+exit 0

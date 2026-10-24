@@ -15,6 +15,8 @@ fn main() {
         extras.push("player:1".to_string());
     }
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &extras);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     sim.step();
     let Some(who) = sim.folk.iter().find(|p| p.player && p.race.is_none()).map(|p| p.id) else {
         println!("no player character");
@@ -62,4 +64,5 @@ fn main() {
         }
     }
     println!("ticks moving: {crawled} prone, {stood} standing");
+    eprintln!("wall sweeps {} stuck {}", kenshi_world::navmesh::SWEEPS.load(std::sync::atomic::Ordering::Relaxed), kenshi_world::navmesh::STUCK.load(std::sync::atomic::Ordering::Relaxed));
 }

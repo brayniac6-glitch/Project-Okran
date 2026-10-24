@@ -402,13 +402,14 @@ const CAGE_REACH: f32 = 25.0;
 ///
 /// The line of sight from a character at `from` to one at `at` (positions, world units): a ray
 /// from the eye (18 units up) toward the target's middle (9 units up) against the buildings'
-/// solids (the physics query, mask 0x87f9e04 outdoors / 0x87fde44 inside); blocked by a hit
+/// solids (the physics query's groups: 0x87f9e04 for an observer in a building, its +0x1d8 one,
+/// else 0x87fde44, which takes the map features and foliage, 6 and 14, too); blocked by a hit
 /// nearer than the two's distance less 2, unless what it hits is the cage the target is held
 /// in (Character +0x2f8 / +0x300). Clear with no solids loaded (headless).
 /// (assumption) The cage: a hit within 25 units across of a caged target.
 /// (not ported) An observer with its Character +0x258 handle set (+0x260 not NULL_ITEM): none
 /// within 40 units seen, the eye along its CharMovement +0xd0 x 40.
-pub fn sight_line(obstacles: &Obstacles, from: [f32; 3], at: [f32; 3], caged: bool) -> bool {
+pub fn sight_line(obstacles: &Obstacles, from: [f32; 3], at: [f32; 3], caged: bool, inside: bool) -> bool {
     let eye = [from[0], from[1] + EYE_HEIGHT, from[2]];
     let to = [at[0], at[1] + EYE_HEIGHT / SIGHT_SLACK, at[2]];
     let d = [to[0] - eye[0], to[1] - eye[1], to[2] - eye[2]];
@@ -418,7 +419,8 @@ pub fn sight_line(obstacles: &Obstacles, from: [f32; 3], at: [f32; 3], caged: bo
         return true;
     }
     let dir = [d[0] / len, d[1] / len, d[2] / len];
-    let Some(hit) = kenshi_combat::arena::wall_hit(obstacles, eye, dir, reach) else {
+    let groups = if inside { 0x87f_9e04 } else { 0x87f_de44 };
+    let Some(hit) = kenshi_combat::arena::wall_hit(obstacles, eye, dir, reach, groups) else {
         return true;
     };
     caged && (eye[0] + dir[0] * hit - at[0]).hypot(eye[2] + dir[2] * hit - at[2]) < CAGE_REACH
@@ -435,7 +437,7 @@ pub fn sight_cast(o: &Noise, n: &Noise) -> bool {
 /// Whether the sight test's line from `o` at `from` to `n` at `at` is clear (F046539's tail:
 /// `sight_cast`, then `sight_line`).
 pub fn in_sight(obstacles: &Obstacles, o: &Noise, from: [f32; 3], n: &Noise, at: [f32; 3]) -> bool {
-    !sight_cast(o, n) || sight_line(obstacles, from, at, n.caged)
+    !sight_cast(o, n) || sight_line(obstacles, from, at, n.caged, o.inside.is_some())
 }
 
 /// F037712 over `doors`: whether building `b` is open (no doors, or one broken, open or
@@ -747,7 +749,7 @@ impl Sim {
     /// F046499 from `seer` to `seen` (`sight_line`).
     pub fn line_of_sight(&self, seer: usize, seen: usize) -> bool {
         let caged = self.folk[seen].prison.as_ref().is_some_and(|c| !c.out);
-        sight_line(&self.arena.obstacles, self.folk[seer].mover.position_units(), self.folk[seen].mover.position_units(), caged)
+        sight_line(&self.arena.obstacles, self.folk[seer].mover.position_units(), self.folk[seen].mover.position_units(), caged, self.folk[seer].inside.is_some())
     }
 
     /// The weather on each one (`LawState::weather`), once a second.
@@ -1365,7 +1367,9 @@ impl Sim {
         if !self.tick.is_multiple_of(60) || self.law_state.kidnapped.is_empty() {
             return;
         }
-        let list: Vec<usize> = self.law_state.kidnapped.iter().copied().collect();
+        // (in a fixed order: the set's own is the hasher's)
+        let mut list: Vec<usize> = self.law_state.kidnapped.iter().copied().collect();
+        list.sort_unstable();
         for k in list {
             let Some(p) = self.folk.get(k) else {
                 self.law_state.kidnapped.remove(&k);
@@ -1582,7 +1586,13 @@ impl Sim {
                 } else if tick % 60 == (g as u64 * 3) % 60 {
                     self.order_move(&[g], cp);
                 }
-            } else if (self.folk[c].down || self.folk[c].surrendered) && self.folk[c].carried_by.is_none() && self.folk[g].pickup.is_none() {
+            } else if (self.folk[c].down || self.folk[c].surrendered)
+                && self.folk[c].carried_by.is_none()
+                && self.folk[g].pickup.is_none()
+                // (one its AI leaves alone, F038789, as Task_TakeIntruderOutside's put-down
+                // does for 20 s, F044546, is not taken up again meanwhile)
+                && !self.folk[g].ignored.iter().any(|i| i.0 == c)
+            {
                 if self.folk[c].surrendered {
                     // (assumption) one who gives up lies down to be taken
                     self.knock_out(c);
@@ -2582,7 +2592,7 @@ impl Sim {
         }
         if std::env::var("KENSHI_LAW_DEBUG").is_ok() && self.tick.is_multiple_of(600) {
             let with = |t: u16| (0..n).filter(|&i| self.has_goal(i, t)).count();
-            eprintln!("law view: goals 34 {} / 204 {} / 183 {} / 281 {}; targets {:?}; cages {}", with(LAW_ENFORCER), with(BOUNTY_HUNTING), with(WATCHING_SLAVES), with(PUT_CARRIED_DEAD_IN_CAGES), v.targets, v.cages.len());
+            eprintln!("law view: goals 34 {} / 204 {} / 183 {} / 281 {}; targets {:?}; cages {}", with(LAW_ENFORCER), with(BOUNTY_HUNTING), with(WATCHING_SLAVES), with(PUT_CARRIED_DEAD_IN_CAGES), v.targets.iter().collect::<std::collections::BTreeMap<_, _>>(), v.cages.len());
         }
         self.law_state.view = v;
     }
@@ -2804,6 +2814,9 @@ impl Sim {
                     let arrived = (at[0] - out[0]).hypot(at[2] - out[2]) < 20.0;
                     let p = &self.folk[me];
                     let stuck = !arrived && !p.pathing.pending && p.pathing.follow.is_none();
+                    if std::env::var("KENSHI_CARRY_DEBUG").is_ok() && (arrived || stuck) {
+                        eprintln!("law: {me} intruder out: arrived {arrived} stuck {stuck} inside {:?} at {:?} out {:?}", p.inside, at.map(|v| v as i32), out.map(|v| v as i32));
+                    }
                     if arrived || (stuck && p.inside.is_none()) {
                         put_down(self, true);
                         done(self);
@@ -2914,7 +2927,7 @@ mod tests {
         let pl = Noise { player: true, ..Default::default() };
         assert!(hear_roll(1, 2, 0.0, &pl, 999.0 * 999.0, &pl, |_| true));
         // the line of sight: clear with no solids
-        assert!(sight_line(&None, [0.0; 3], [100.0, 0.0, 0.0], false));
+        assert!(sight_line(&None, [0.0; 3], [100.0, 0.0, 0.0], false, false));
         assert!(!sight_cast(&me, &Noise::default()));
         assert!(sight_cast(&me, &pl));
     }
@@ -2928,11 +2941,11 @@ mod tests {
         let o = [1000.0, 0.0, 0.0];
         let obs: Obstacles = Some((std::sync::Arc::new(w), o));
         let at = |x: f32| [x + 1000.0, 0.0, 0.0];
-        assert!(sight_line(&obs, at(0.0), at(40.0), false));
-        assert!(!sight_line(&obs, at(0.0), at(100.0), false));
+        assert!(sight_line(&obs, at(0.0), at(40.0), false, false));
+        assert!(!sight_line(&obs, at(0.0), at(100.0), false, false));
         // the hit within 2 of the target does not block; nor the cage of a caged one
-        assert!(sight_line(&obs, at(0.0), at(49.0), false));
-        assert!(sight_line(&obs, at(0.0), at(60.0), true));
-        assert!(!sight_line(&obs, at(0.0), at(100.0), true));
+        assert!(sight_line(&obs, at(0.0), at(49.0), false, false));
+        assert!(sight_line(&obs, at(0.0), at(60.0), true, false));
+        assert!(!sight_line(&obs, at(0.0), at(100.0), true, false));
     }
 }

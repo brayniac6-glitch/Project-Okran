@@ -1,5 +1,6 @@
 //! The player's working buildings (port_map `base`): machines and crafting benches worked by
-//! their operators, research benches, farms, power, and the operators emptying full machines.
+//! their operators, research benches, farms and power. (Full machines are emptied on the AI
+//! planner: crate::jobs, docs/HAULING.md.)
 //!
 //! Specs:
 //! - F029390 / F029391 / F029392 (ProductionBuilding setup): the building's rate is "output rate"
@@ -19,11 +20,16 @@
 //! - F029370 / F046230: a research bench's operators add their rate (as above) to the research
 //!   rate; a research needs "time" x "research rate" x "research level increase rate" ^ (level
 //!   - 1) of it.
-//! - F022906 / F022907 / F022899 / F022900 / F022915 (FarmBuilding): water from rain and its
-//!   tank, growth by the hour over "growth time" scaled by the fertility (dry: x "drought
-//!   multiplier"), ripe for "harvest time" hours, then rotting over "death time"; drought kills
-//!   over "drought death time"; operators harvest at "harvest rate" a day (the crop's "amount"
-//!   plants x "output per plant") or clear a dead crop at "clear rate" a day.
+//! - F022906 / F022907 / F022888 / F022891 / F022899 / F022900 / F022903 / F022904 / F022915
+//!   (FarmBuilding, with ProductionBuilding's containers: its water "in1", its crop "out"):
+//!   rain outdoors tops the water's banked level up, the crop drinks it (F022888: a Water item
+//!   taken from its container as the level runs short), its plants (FARM_DATA "amount") grow by
+//!   the hour over "growth time" by the fertility (dry: x "drought multiplier"), ripe for
+//!   "harvest time" hours, then rotting over "death time"; drought kills over "drought death
+//!   time"; operators harvest plant by plant at "harvest rate" a day (each of a plant's "output
+//!   per plant" by the harvest chance, F022891) or clear a dead crop at "clear rate" a day; dead
+//!   or all taken off, it is replanted.
+//! - F047468: operators train their machine's "stat used" each frame they work it.
 //! - F029292 (WindGeneratorBuilding power: wind x output, none under 1), F029291
 //!   (GeneratorBuilding: (output + research "power increase") x its fuel efficiency).
 //!
@@ -32,14 +38,12 @@
 //! research frame value that divides research time (+0x14 of the frame's time
 //! block) is taken as hours per second, so research "time" is in research-rate hours; the wind
 //! is the weather's wind speed / 100 (the generator reads its head's spin, set from the wind);
-//! a fuel generator burns its "consumes" at its rate while there is draw; ground water ("water"
-//! resource) waters farms as rain does at full rain; a Water item tops a farm's tank up by a
-//! quarter; batteries ("power capacity") store spare power and give it back; every built
-//! consumer draws its "power output" all the time. A full machine is emptied by one of its
-//! operators carrying what fits to the nearest storage with room (Task_EmptyMachine's own rules
-//! are not read).
+//! a fuel generator burns its "consumes" at its rate while there is draw; batteries ("power
+//! capacity") store spare power and give it back; every built consumer draws its "power
+//! output" all the time (the town power manager, F048864, and the generators' operate are the
+//! next step). (assumption) A farm's plants grow alike (the layout's own places, F022913, are
+//! for show): its stage is the least of them; a farm is outdoors unless in a town's building.
 
-use crate::base::PlayerBuilding;
 use crate::sim::Sim;
 use kenshi_char::StatsEnumerated;
 use kenshi_char::inventory::{Inventory, Item};
@@ -61,23 +65,8 @@ pub const FUNCTION_TRAINING: i32 = 7;
 /// the furniture's index.
 pub const FURN_TARGET: usize = 1 << 26;
 const FUNCTION_WIND: i32 = 5;
-/// Storage (BUILDING_FUNCTIONALITY "function" 13, StorageBuilding).
-const FUNCTION_STORAGE: i32 = 13;
-
-/// A haul's `from` when it empties no machine: a character ditching what it carries
-/// (`routines`, "Ditch items").
-pub const DITCH: usize = usize::MAX;
-
-/// A carrier's errand emptying a full machine (Task_EmptyMachine), or ditching its own load.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Haul {
-    /// The machine emptied and the storage it goes to.
-    pub from: usize,
-    pub to: usize,
-    /// The item records carried.
-    pub items: Vec<String>,
-}
-
+/// Processing (BUILDING_FUNCTIONALITY "function" 4: the refineries, looms, stone processors).
+pub const FUNCTION_PROCESSING: i32 = 4;
 /// A building's BUILDING_FUNCTIONALITY record id, when it has one.
 pub fn functionality(b: &GameData) -> Option<&String> {
     b.refs("functionality").first().map(|(s, _)| s)
@@ -92,6 +81,49 @@ pub fn function_of<'a>(data: &'a GameDataContainer, b: &GameData) -> Option<(&'a
 /// Whether a building record is a farm (has "farm data").
 pub fn is_farm(b: &GameData) -> bool {
     !b.refs("farm data").is_empty()
+}
+
+/// The names of a machine's containers (F029392: "in" and the ingredient's number, "out"; the
+/// machine window's widgets of the same names show them, F024440).
+pub const INPUTS: [&str; 4] = ["in1", "in2", "in3", "in4"];
+pub const OUTPUT: &str = "out";
+
+/// @fn F029392
+///
+/// A ProductionBuilding's containers (setupFunctionality): for each "consumes" ingredient in
+/// order, "in1", "in2".. of the item's "inventory footprint width" x "height" taking only it, a
+/// stack of up to the ingredient's first value (InventorySection +0x88, its ingredient entry's
+/// +0x8 limit); for the first "produces", "out" likewise (F029412: the output entry's limit its
+/// first value). None for a building of another class (crate::base::BuildingClass), or with
+/// neither (F029411 makes it no inventory).
+pub fn machine_inventory(data: &GameDataContainer, b: &GameData) -> Option<Inventory> {
+    if !crate::base::BuildingClass::of(data, b).is_production() {
+        return None;
+    }
+    let (f, _) = function_of(data, b)?;
+    let container = |name: &'static str, record: &str, most: i32| -> Option<kenshi_char::inventory::Section> {
+        let item = Item::from_record(data.get(record)?, 1);
+        Some(kenshi_char::inventory::Section::container(name, item.w, item.h, record, most.max(0) as u32))
+    };
+    let mut sections: Vec<kenshi_char::inventory::Section> = f.refs("consumes").iter().zip(INPUTS).filter_map(|((r, v), name)| container(name, r, v[0])).collect();
+    if let Some((r, v)) = f.refs("produces").first() {
+        sections.extend(container(OUTPUT, r, v[0]));
+    }
+    (!sections.is_empty()).then_some(Inventory { sections })
+}
+
+/// @fn F029391
+///
+/// Whether a building needs an operator (+0x3a9, loadRates): its "max operators", else its
+/// functionality's when negative, is not none (both negative: none). A machine that needs
+/// none works on its own (F029366).
+pub fn needs_operator(b: &GameData, f: &GameData) -> bool {
+    let own = b.ints.get("max operators").copied().unwrap_or(-1);
+    if own >= 0 {
+        return own != 0;
+    }
+    let theirs = f.ints.get("max operators").copied().unwrap_or(1);
+    theirs > 0
 }
 
 fn num(r: &GameData, k: &str) -> f32 {
@@ -363,7 +395,7 @@ impl Sim {
         for id in 0..self.folk.len() {
             let p = &self.folk[id];
             let Some(b) = p.operate else { continue };
-            if p.down || p.haul.is_some() || !self.is_operated(b) || !self.at_building(id, b) {
+            if p.down || !self.is_operated(b) || !self.at_building(id, b) {
                 continue;
             }
             let Some(rec) = self.data.get(&self.buildings[b].record) else { continue };
@@ -382,11 +414,213 @@ impl Sim {
     /// One operator's rate at building `b` (F029326 without the frame time and the products):
     /// power efficiency x resource x rate x research improvement x production speed x skill.
     fn operator_rate(&self, id: usize, b: usize, stat: Option<StatsEnumerated>) -> f32 {
+        let level = stat.map(|s| self.arena.f[id].level(s));
+        self.machine_rate(b, skill_mult(level))
+    }
+
+    /// Building `b`'s rate worked at multiplier `mult` (an operator's skill, F047049; 1 for a
+    /// machine working on its own, F029366).
+    fn machine_rate(&self, b: usize, mult: f32) -> f32 {
         let pb = &self.buildings[b];
         let Some(rec) = self.data.get(&pb.record) else { return 0.0 };
         let Some((f, _)) = function_of(&self.data, rec) else { return 0.0 };
-        let level = stat.map(|s| self.arena.f[id].level(s));
-        self.power_efficiency(b) * self.building_resource(b) * building_rate(rec, f) * self.improvements(&pb.record).0 * PRODUCTION_SPEED * self.advanced.production * skill_mult(level)
+        self.power_efficiency(b) * self.building_resource(b) * building_rate(rec, f) * self.improvements(&pb.record).0 * PRODUCTION_SPEED * self.advanced.production * mult
+    }
+
+    /// The buildings built made their inventory as their class makes it
+    /// (`crate::base::building_inventory`: a machine's containers, F029392; a storage's section,
+    /// F037797 / F029410): what their storage held put in as far as it goes, the rest put down by
+    /// the building.
+    pub fn setup_inventories(&mut self) {
+        for b in 0..self.buildings.len() {
+            if self.buildings[b].containers_made || !self.buildings[b].done {
+                continue;
+            }
+            self.buildings[b].containers_made = true;
+            let Some(made) = self.data.get(&self.buildings[b].record).and_then(|r| crate::base::building_inventory(&self.data, r)) else { continue };
+            let old = std::mem::replace(&mut self.buildings[b].storage, made);
+            let mut rest = Vec::new();
+            for item in old.iter().flat_map(|i| i.sections.iter().flat_map(|s| s.items.iter().map(|p| p.item.clone()))) {
+                let mut one = item.clone();
+                one.quantity = 1;
+                for _ in 0..item.quantity {
+                    if !self.buildings[b].storage.as_mut().is_some_and(|into| into.add(one.clone(), false)) {
+                        rest.push(one.clone());
+                    }
+                }
+            }
+            let at = self.buildings[b].at;
+            for item in rest {
+                self.next_ground += 1;
+                self.ground.push(crate::loot::GroundItem { id: self.next_ground, item, at, yaw: 0.0 });
+            }
+        }
+    }
+
+    /// Machine `b`'s ingredients (its "consumes" in order: the container's section in its
+    /// storage, the item, its amount a unit of output, F029392's second value x 0.01) and its
+    /// output's container section, item and limit, for one made with containers.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn machine_parts(&self, b: usize) -> Option<(Vec<(usize, String, f32)>, Option<(usize, String, u32)>)> {
+        let pb = self.buildings.get(b).filter(|pb| pb.containers_made)?;
+        let inv = pb.storage.as_ref()?;
+        let rec = self.data.get(&pb.record)?;
+        if !crate::base::BuildingClass::of(&self.data, rec).is_production() {
+            return None;
+        }
+        let (f, _) = function_of(&self.data, rec)?;
+        let inputs = f
+            .refs("consumes")
+            .iter()
+            .zip(INPUTS)
+            .filter_map(|((r, v), name)| inv.section(name).map(|k| (k, r.clone(), v[1] as f32 * 0.01)))
+            .collect();
+        let output = inv.section(OUTPUT).map(|k| (k, inv.sections[k].only.first().cloned().unwrap_or_default(), inv.sections[k].stack));
+        Some((inputs, output))
+    }
+
+    /// @fn F029326
+    ///
+    /// ProductionBuilding::operate for machine `b` (made with containers) with `amount` of
+    /// work (its rate x the frame time): limited by its ingredients and its output's room
+    /// (F029360), the ingredients used (F029359) and the output made (F029325); its state
+    /// (+0x468): working, else full (1) when its output takes no more, else idle. Whether it
+    /// worked.
+    pub fn operate_machine(&mut self, b: usize, mut amount: f32) -> bool {
+        let Some((inputs, output)) = self.machine_parts(b) else { return false };
+        if inputs.is_empty() && output.is_none() {
+            return false;
+        }
+        let function = self.data.get(&self.buildings[b].record).and_then(|r| function_of(&self.data, r)).map_or(0, |(_, k)| k);
+        let product = output.as_ref().and_then(|(_, r, _)| self.data.get(r)).map(|r| Item::from_record(r, 1));
+        let pb = &mut self.buildings[b];
+        if pb.taken.len() < inputs.len() {
+            pb.taken.resize(inputs.len(), 0.0);
+        }
+        if pb.made.is_empty() {
+            pb.made.push(0.0);
+        }
+        let inv = pb.storage.as_mut().expect("containers");
+        // F029360: no more than the ingredients there are (banked and in their containers), nor
+        // than the output's room under its limit
+        for (k, (s, _, per)) in inputs.iter().enumerate() {
+            if *per == 0.0 {
+                continue;
+            }
+            let avail = pb.taken[k] + inv.sections[*s].items.first().map_or(0, |p| p.item.quantity) as f32;
+            if avail < per * amount {
+                amount = amount.min(avail / per);
+            }
+        }
+        let accepts = |inv: &Inventory, s: usize| inv.sections[s].items.first().is_none_or(|p| p.item.quantity < inv.sections[s].stack_of(&p.item));
+        match &output {
+            Some((s, _, most)) => {
+                let held = inv.sections[*s].items.first().map_or(0, |p| p.item.quantity);
+                amount = amount.min(*most as f32 - held as f32 - pb.made[0]);
+            }
+            // (a generator's power output instead: not here, `power_tick`)
+            None => amount = 0.0,
+        }
+        if amount <= 0.0 {
+            if let Some((s, ..)) = &output {
+                pb.full = !accepts(inv, *s);
+            }
+            self.missing_material = inputs.iter().find(|(s, _, per)| *per != 0.0 && inv.sections[*s].items.is_empty()).map(|(_, r, _)| r.clone());
+            return false;
+        }
+        pb.full = false;
+        // F029359: each ingredient's amount taken from its container one by one as needed
+        for (k, (s, _, per)) in inputs.iter().enumerate() {
+            if *per == 0.0 {
+                continue;
+            }
+            let need = per * amount;
+            while pb.taken[k] < need {
+                let sec = &mut inv.sections[*s];
+                let Some(first) = sec.items.first_mut() else { break };
+                if first.item.quantity < 2 {
+                    sec.items.remove(0);
+                } else {
+                    first.item.quantity -= 1;
+                }
+                pb.taken[k] += 1.0;
+            }
+            pb.taken[k] -= need;
+            if pb.taken[k] <= 0.001 && function != 6 {
+                pb.taken[k] = 0.0;
+            }
+        }
+        // F029325: the output's level; at 0.999 one made (its excess let go), each ingredient's
+        // banked level cut back to none or 1
+        let mut made = false;
+        if let Some((s, ..)) = &output {
+            pb.made[0] += amount;
+            while pb.made[0] >= 0.999 {
+                for (k, (_, _, per)) in inputs.iter().enumerate() {
+                    if *per <= 0.0 {
+                        continue;
+                    }
+                    let extra = if pb.made[0] >= 1.0 { (pb.made[0] as f64 - 1.0) * *per as f64 } else { 0.0 };
+                    if extra + pb.taken[k] as f64 <= 0.999 {
+                        if pb.taken[k] < 0.001 {
+                            pb.taken[k] = 0.0;
+                        }
+                    } else {
+                        pb.taken[k] = 1.0;
+                    }
+                }
+                if !accepts(inv, *s) {
+                    break;
+                }
+                let Some(item) = product.clone() else { break };
+                match inv.sections[*s].items.first_mut() {
+                    Some(p) => p.item.quantity += 1,
+                    None => inv.sections[*s].items.push(kenshi_char::inventory::Placed { item, x: 0, y: 0 }),
+                }
+                pb.made[0] = 0.0;
+                made = true;
+            }
+            if !accepts(inv, *s) {
+                pb.made[0] = 0.0;
+            }
+        }
+        let eff = self.power_efficiency(b).clamp(0.0, 1.0);
+        self.buildings[b].running = eff;
+        if made && std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
+            eprintln!("machine {b} made one {:?}", output.as_ref().map(|o| &o.1));
+        }
+        true
+    }
+
+    /// @fn F029366
+    ///
+    /// A machine's update each frame (made with containers): one needing no operator
+    /// (F029391's +0x3a9) works on its own (operate at a multiplier of 1); one full lets go of it
+    /// once its output has room.
+    fn machines_tick(&mut self, dt: f32) {
+        for b in 0..self.buildings.len() {
+            if !self.buildings[b].containers_made || !self.is_production(b) {
+                continue;
+            }
+            let Some(rec) = self.data.get(&self.buildings[b].record) else { continue };
+            // (a farm's update is its own, F022906: `farm_tick`)
+            if crate::base::BuildingClass::of(&self.data, rec) != crate::base::BuildingClass::Production {
+                continue;
+            }
+            let Some((f, _)) = function_of(&self.data, rec) else { continue };
+            if !needs_operator(rec, f) {
+                let amount = self.machine_rate(b, 1.0) * dt;
+                self.operate_machine(b, amount);
+                continue;
+            }
+            if self.buildings[b].full
+                && let Some((_, Some((s, ..)))) = self.machine_parts(b)
+                && let Some(inv) = self.buildings[b].storage.as_ref()
+                && inv.sections[s].items.first().is_none_or(|p| p.item.quantity < inv.sections[s].stack_of(&p.item))
+            {
+                self.buildings[b].full = false;
+            }
+        }
     }
 
     /// Clear the operating of characters whose building can no longer be operated.
@@ -405,7 +639,10 @@ impl Sim {
     /// The production buildings worked this tick (see the module notes); farms are worked in
     /// [`Sim::farm_tick`].
     pub fn production_tick(&mut self, dt: f32) {
+        self.setup_inventories();
         self.drop_operators();
+        self.refresh_full();
+        self.machines_tick(dt);
         // (a machine runs while it makes something, or burns fuel: its spinners turn,
         // `PlayerBuilding::running`; (assumption) one stopped winds down over two seconds)
         for b in self.buildings.iter_mut() {
@@ -421,6 +658,16 @@ impl Sim {
                 continue;
             }
             let Some((f, _)) = function_of(&data, rec) else { continue };
+            // a machine made with containers: Task_OperateMachine's update (F031350) works it at
+            // the operator's skill multiplier (ProductionBuilding::operate, F029326)
+            if self.buildings[b].containers_made && crate::base::BuildingClass::of(&data, rec) == crate::base::BuildingClass::Production {
+                if let Some(s) = stat {
+                    self.operator_train(id, s, dt);
+                }
+                let amount = self.operator_rate(id, b, stat) * dt;
+                self.operate_machine(b, amount);
+                continue;
+            }
             // a crafting bench makes its queue's first item
             let crafting = !f.refs("item crafts").is_empty();
             let products: Vec<(String, f32)> = if crafting {
@@ -482,8 +729,16 @@ impl Sim {
                 self.buildings[b].made[k] += amount * per;
                 while self.buildings[b].made[k] >= 0.999 {
                     let Some(r) = data.get(item) else { break };
+                    let mut made_item = Item::from_record(r, 1);
+                    // addFinishedCraftItem (F029664): a crafted weapon, armour, crossbow or limb
+                    // (Item vtable slot 88) takes its maker's name (+0x1f8)
+                    if crafting
+                        && matches!(made_item.kind, Some(kenshi_data::ItemType::Weapon | kenshi_data::ItemType::Armour | kenshi_data::ItemType::Crossbow | kenshi_data::ItemType::LimbReplacement))
+                    {
+                        made_item.crafter = Some(self.folk[id].name.clone());
+                    }
                     let Some(store) = self.buildings[b].storage.as_mut() else { break };
-                    if !store.add(Item::from_record(r, 1), false) {
+                    if !store.add(made_item, false) {
                         self.buildings[b].full = true;
                         break;
                     }
@@ -501,13 +756,12 @@ impl Sim {
                 }
             }
             if let Some(s) = stat {
-                self.arena.f[id].skills.train(s, dt * 0.05, 1.0);
+                self.operator_train(id, s, dt);
             }
             if !made.is_empty() && std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
                 eprintln!("{} made {:?}", rec.name, made);
             }
         }
-        self.haul_tick();
     }
 
     /// Research at the benches (F029370, F046230): the operators' rates summed into the
@@ -565,9 +819,9 @@ impl Sim {
         }
         self.research_message = None;
         self.research_progress += rate * self.advanced.research * dt / self.hour_secs as f32;
-        for (id, stat) in &workers {
+        for &(id, stat) in &workers {
             if let Some(s) = stat {
-                self.arena.f[*id].skills.train(*s, dt * 0.05, 1.0);
+                self.operator_train(id, s, dt);
             }
         }
         if self.research_progress >= research_time(r) {
@@ -581,128 +835,316 @@ impl Sim {
         }
     }
 
-    /// The fertility a farm's crop grows by at its place (F022900 x F022899): 1 - (1 - the
-    /// "farming" resource) x "fertility effect", none at or under "minimum fertility"; times
-    /// the crop's fit to the ground (the biome's "arid", "green" and "swamp" against the
-    /// crop's) when it has a fertility effect.
+    /// @fn F022900
+    ///
+    /// A farm's fertility (+0x554, set by F022914 from its place's resource level): 1 - (1 - the
+    /// "farming" resource) x "fertility effect", none at or under "minimum fertility".
     pub fn farm_fertility(&self, b: usize) -> f32 {
         let pb = &self.buildings[b];
         let Some(fd) = self.data.get(&pb.record).and_then(|r| r.refs("farm data").first().and_then(|(s, _)| self.data.get(s))) else { return 0.0 };
         let fert = self.resource_level(6, pb.at);
         let effect = num(fd, "fertility effect");
-        let mult = if fert <= num(fd, "minimum fertility") { 0.0 } else { 1.0 - (1.0 - fert) * effect };
-        let fit = match self.resources_at(pb.at[0], pb.at[2]) {
-            Some(res) if effect != 0.0 => num(res, "arid") * num(fd, "arid") + num(res, "green") * num(fd, "green") + num(res, "swamp") * num(fd, "swamp"),
-            _ => 1.0,
-        };
-        (mult * fit).max(0.0)
+        if fert <= num(fd, "minimum fertility") { 0.0 } else { (1.0 - (1.0 - fert) * effect).max(0.0) }
+    }
+
+    /// @fn F022899
+    ///
+    /// A farm's crop's fit to the ground, outdoors: the biome's "arid", "green" and "swamp"
+    /// against the crop's; in a building 1.
+    pub fn crop_fit(&self, b: usize) -> f32 {
+        let pb = &self.buildings[b];
+        if kenshi_world::interior::building_at(&self.inner, pb.at).is_some() {
+            return 1.0;
+        }
+        let Some(fd) = self.data.get(&pb.record).and_then(|r| r.refs("farm data").first().and_then(|(s, _)| self.data.get(s))) else { return 1.0 };
+        match self.resources_at(pb.at[0], pb.at[2]) {
+            Some(res) => num(res, "arid") * num(fd, "arid") + num(res, "green") * num(fd, "green") + num(res, "swamp") * num(fd, "swamp"),
+            None => 1.0,
+        }
+    }
+
+    /// @fn F022891
+    ///
+    /// A harvested plant's chance of each of its "output per plant": lerp(the operator's
+    /// farming / 100, 0.5, 2) held to 0 .. 1, times the crop's fit and the farm's fertility.
+    fn harvest_chance(&self, b: usize, farming: f32) -> f32 {
+        (0.5 + (2.0 - 0.5) * farming * 0.01).clamp(0.0, 1.0) * self.crop_fit(b) * self.farm_fertility(b)
+    }
+
+    /// @fn F022904
+    ///
+    /// A farm replanted: each of its plants (FARM_DATA "amount", the layout F022913's) at a
+    /// growth of rand x -0.2, the crop's stage the least of them, none harvested, its death and
+    /// clearing work none, its harvest none.
+    fn replant(&mut self, b: usize, plants: usize) {
+        let mut least = 0.0f32;
+        let mut v = Vec::with_capacity(plants);
+        for k in 0..plants {
+            let g = rand_unit((b as u32).wrapping_mul(7919) ^ (k as u32).wrapping_mul(104729) ^ self.tick as u32) * -0.2;
+            least = least.min(g);
+            v.push(g);
+        }
+        let pb = &mut self.buildings[b];
+        pb.plants = v;
+        pb.harvested = 0;
+        pb.death = 0.0;
+        pb.work = 0.0;
+        pb.stage = least;
+        if let Some(m) = pb.made.first_mut() {
+            *m = 0.0;
+        }
+    }
+
+    /// @fn F022888
+    ///
+    /// A farm's crop drinks `amount` (each ingredient its amount a unit, 1, times it): an
+    /// ingredient short with its container empty: dry (its level none); else each takes an item
+    /// from its container while its level is short (a unit each), then drinks. Whether it was
+    /// watered.
+    fn farm_drink(&mut self, b: usize, amount: f32) -> bool {
+        let Some((inputs, _)) = self.machine_parts(b) else { return false };
+        let pb = &mut self.buildings[b];
+        if pb.taken.len() < inputs.len() {
+            pb.taken.resize(inputs.len(), 0.0);
+        }
+        let Some(inv) = pb.storage.as_mut() else { return false };
+        for (k, (s, ..)) in inputs.iter().enumerate() {
+            if (pb.taken[k] < amount || pb.taken[k] <= 0.0) && inv.sections[*s].items.is_empty() {
+                pb.taken[k] = 0.0;
+                return false;
+            }
+        }
+        for (k, (s, ..)) in inputs.iter().enumerate() {
+            if pb.taken[k] < amount {
+                let sec = &mut inv.sections[*s];
+                let Some(first) = sec.items.first_mut() else { return false };
+                if first.item.quantity < 2 {
+                    sec.items.remove(0);
+                } else {
+                    first.item.quantity -= 1;
+                }
+                pb.taken[k] += 1.0;
+            }
+            pb.taken[k] -= amount;
+        }
+        true
     }
 
     /// @fn F022906
     ///
-    /// Farms each tick (see the module notes); their operators harvest or clear (F022907).
+    /// Farms each frame (FarmBuilding::update; F022915 reads its FARM_DATA): rain outdoors
+    /// tops up the water ingredient's level (rain x "consumption rate" a day x the biome's "farm
+    /// water usage" x 3, to 1); the crop drinks (F022888); it grows by the hours x its
+    /// fertility / "growth time" (dry: x "drought multiplier"; a farm with a "power output":
+    /// x its power factor): each plant not harvested, the stage the least of them; ripe at 1
+    /// for "harvest time" hours, then rotting at 2 over "death time"; drought kills over
+    /// "drought death time" (watered again: recovering under 0.6); dead or all harvested:
+    /// replanted (F022904). Its state (+0x468): working, idle (3 watered, 0 dry) or full (kept
+    /// only while its output is full). Its operators harvest (F022907).
     pub fn farm_tick(&mut self, dt: f32) {
         let hours = dt / self.hour_secs as f32;
         let data = self.data.clone();
         for b in 0..self.buildings.len() {
-            if !self.buildings[b].done {
+            if !self.buildings[b].done || !self.buildings[b].containers_made {
                 continue;
             }
             let Some(rec) = data.get(&self.buildings[b].record) else { continue };
             let Some(fd) = rec.refs("farm data").first().and_then(|(s, _)| data.get(s)) else { continue };
-            let consumption = num(fd, "consumption rate") / DAY;
             let at = self.buildings[b].at;
-            // water: rain and ground water fill the tank, a Water item tops it up, the crop drinks
-            let ground = self.resource_level(5, at).clamp(0.0, 1.0);
-            let fill = (self.rain + ground) * consumption * dt * 3.0;
-            let water_item = function_of(&data, rec).and_then(|(f, _)| f.refs("consumes").first().map(|(s, _)| s.clone()));
-            let pb = &mut self.buildings[b];
-            pb.water = (pb.water + fill).min(1.0);
-            if pb.water < 0.25
-                && let Some(w) = &water_item
-                && let Some(store) = pb.storage.as_mut()
-                && take_one(store, w)
-            {
-                pb.water += 0.25;
+            let usage = self.biome_at(at[0], at[2]).map_or(1.0, |r| r.floats.get("farm water usage").copied().unwrap_or(1.0));
+            let consumption = num(fd, "consumption rate") / DAY * usage;
+            let plants = num(fd, "amount").max(0.0) as usize;
+            if self.buildings[b].plants.len() != plants {
+                self.replant(b, plants);
             }
-            let drink = consumption * dt;
-            let watered = pb.water >= drink;
-            if watered {
-                pb.water -= drink;
+            // rain, outdoors: into the first ingredient's level
+            let inputs = self.machine_parts(b).map_or(0, |(i, _)| i.len());
+            if self.buildings[b].taken.len() < inputs {
+                self.buildings[b].taken.resize(inputs, 0.0);
             }
-            let fert = self.farm_fertility(b);
-            let pb = &mut self.buildings[b];
-            let mut grow = hours * fert / num(fd, "growth time").max(0.01);
+            if inputs > 0 && self.rain > 0.0 && kenshi_world::interior::building_at(&self.inner, at).is_none() {
+                let level = &mut self.buildings[b].taken[0];
+                *level = (*level + self.rain * consumption * dt * 3.0).min(1.0);
+            }
+            let watered = self.farm_drink(b, dt * consumption);
+            let mut growth = hours * self.farm_fertility(b) / num(fd, "growth time");
             if !watered {
-                grow *= num(fd, "drought multiplier");
+                growth *= num(fd, "drought multiplier");
             }
+            if num(rec, "power output") + self.improvements(&rec.string_id).1 != 0.0 {
+                growth *= self.power_efficiency(b);
+            }
+            let (harvest_time, death_time, ddt, threshold) = (num(fd, "harvest time").max(1e-6), num(fd, "death time"), num(fd, "drought death time"), num(fd, "death threshold"));
+            let pb = &mut self.buildings[b];
+            let mut changed = false;
             if pb.stage >= 1.0 {
                 if pb.stage >= 2.0 {
-                    // rotting
-                    pb.death += hours / num(fd, "death time").max(0.01);
+                    changed = true;
+                    pb.death += hours / death_time;
                 } else {
-                    pb.stage += hours / num(fd, "harvest time").max(0.01);
+                    pb.stage += hours / harvest_time;
                 }
-            } else if grow > 0.0 {
-                pb.stage = (pb.stage + grow).min(1.0);
+            } else if growth > 0.0 {
+                changed = true;
+                pb.stage = 1.0;
+                for g in pb.plants.iter_mut() {
+                    if *g < 1.0 && *g >= -1.0 {
+                        *g += growth;
+                        if *g < pb.stage {
+                            pb.stage = *g;
+                        }
+                    }
+                }
             }
-            if std::env::var("KENSHI_BUILD_DEBUG").is_ok() && self.tick % 300 == 0 {
-                eprintln!("farm {b}: stage {:.2}, death {:.2}, water {:.2}, fertility {fert:.2}, watered {watered}", pb.stage, pb.death, pb.water);
-            }
-            let ddt = num(fd, "drought death time");
             if ddt > 0.0 && pb.stage > 0.0 && pb.stage < 1.0 {
                 if !watered {
                     pb.death += hours / ddt;
-                } else if pb.death > 0.0 && pb.stage < 2.0 {
-                    pb.death = (pb.death - hours / ddt).max(0.0);
+                } else if pb.death > 0.0 && (pb.death as f64) < 0.6 && pb.stage < 2.0 {
+                    pb.death -= hours / ddt;
                 }
+                if pb.death > 0.0 {
+                    changed = true;
+                }
+            }
+            let _ = changed;
+            let all = pb.harvested as usize >= plants;
+            if pb.death >= 1.0 || pb.harvested as usize == plants {
+                self.replant(b, plants);
+            }
+            let pb = &mut self.buildings[b];
+            // its state: full kept only while the output takes no more (idle, 3 / 0, or
+            // working otherwise: not full)
+            if pb.stage < 1.0 || threshold <= pb.death || all {
+                pb.full = false;
+            } else if pb.full {
+                let still = pb.storage.as_ref().and_then(|inv| inv.section(OUTPUT).map(|s| &inv.sections[s])).is_some_and(|sec| sec.items.first().is_some_and(|p| p.item.quantity >= sec.stack_of(&p.item)));
+                pb.full = still;
+            }
+            pb.water = pb.taken.first().copied().unwrap_or(0.0);
+            if std::env::var("KENSHI_BUILD_DEBUG").is_ok() && self.tick % 300 == 0 {
+                let pb = &self.buildings[b];
+                eprintln!("farm {b}: stage {:.2}, death {:.2}, water {:.2}, harvested {}/{plants}, watered {watered}", pb.stage, pb.death, pb.water, pb.harvested);
             }
         }
         // F022907: operators harvest the ripe or clear the dead
         for (id, b, stat) in self.operators() {
             let Some(rec) = data.get(&self.buildings[b].record) else { continue };
             let Some(fd) = rec.refs("farm data").first().and_then(|(s, _)| data.get(s)) else { continue };
+            if !self.buildings[b].containers_made {
+                continue;
+            }
+            if let Some(s) = stat {
+                self.operator_train(id, s, dt);
+            }
             let level = stat.map(|s| self.arena.f[id].level(s));
-            let work = self.power_efficiency(b) * PRODUCTION_SPEED * skill_mult(level) * dt;
-            let threshold = num(fd, "death threshold");
-            let pb = &mut self.buildings[b];
-            if pb.stage >= 1.0 && pb.death < threshold {
-                pb.work += work * num(fd, "harvest rate") / DAY;
-                if pb.work >= 1.0 {
-                    let plants = num(fd, "amount") * num(fd, "output per plant");
-                    let product = function_of(&data, rec).and_then(|(f, _)| f.refs("produces").first().map(|(s, _)| s.clone()));
-                    let mut made = 0;
-                    if let (Some(p), Some(store)) = (product.and_then(|p| data.get(&p)), pb.storage.as_mut()) {
-                        // the whole plants, then the fraction by chance
-                        let whole = plants as u32;
-                        let extra = u32::from(rand_unit(b as u32 ^ self.tick as u32) < plants - whole as f32);
-                        for _ in 0..whole + extra {
-                            if !store.add(Item::from_record(p, 1), false) {
-                                pb.full = true;
-                                break;
-                            }
-                            made += 1;
-                        }
-                    }
-                    pb.work = 0.0;
-                    pb.stage = 0.0;
-                    pb.death = 0.0;
-                    if let Some(s) = stat {
-                        self.arena.f[id].skills.train(s, 1.0, 1.0);
-                    }
-                    if std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
-                        eprintln!("{} harvested {made}", rec.name);
-                    }
-                }
-            } else if pb.death >= threshold && pb.death > 0.0 {
-                pb.work += work * num(fd, "clear rate") / DAY;
+            self.farm_operate(b, fd, skill_mult(level) * dt, Some(id));
+        }
+    }
+
+    /// @fn F022907
+    ///
+    /// FarmBuilding::operate with `work` (the frame time x the operator's multiplier): not ripe,
+    /// dead (at its "death threshold"), all harvested or full: a dead crop cleared at its
+    /// "clear rate" a day (cleared: one plant taken off, F022903); else the harvest at its
+    /// "harvest rate" a day: at a whole one, its output full: full (state 1); else of each of
+    /// its "output per plant" (and the fraction's chance) one made with the harvest chance
+    /// (F022891, the operator's farming), one plant taken off (F022903).
+    fn farm_operate(&mut self, b: usize, fd: &GameData, work: f32, operator: Option<usize>) {
+        let plants = self.buildings[b].plants.len();
+        let threshold = num(fd, "death threshold");
+        let rate = self.power_efficiency(b) * PRODUCTION_SPEED * self.advanced.production * work;
+        let Some((_, Some((out, product, _)))) = self.machine_parts(b) else { return };
+        let pb = &self.buildings[b];
+        if pb.made.is_empty() {
+            self.buildings[b].made.push(0.0);
+        }
+        let pb = &self.buildings[b];
+        if pb.stage < 1.0 || threshold <= pb.death || pb.harvested as usize >= plants || pb.full {
+            if threshold <= pb.death {
+                let pb = &mut self.buildings[b];
+                pb.work += rate * num(fd, "clear rate") / DAY;
                 if pb.work >= 1.0 {
                     pb.work = 0.0;
-                    pb.stage = 0.0;
-                    pb.death = 0.0;
+                    self.harvest_plant(b, plants);
                 }
             }
+            return;
         }
+        self.buildings[b].made[0] += rate * num(fd, "harvest rate") / DAY;
+        if self.buildings[b].made[0] < 1.0 {
+            return;
+        }
+        let farming = operator.map_or(0.0, |id| self.arena.f[id].level(StatsEnumerated::StatFarming));
+        let chance = self.harvest_chance(b, farming);
+        let Some(item) = self.data.get(&product).map(|r| Item::from_record(r, 1)) else { return };
+        let per = num(fd, "output per plant");
+        let tick = self.tick as u32;
+        let pb = &mut self.buildings[b];
+        let Some(inv) = pb.storage.as_mut() else { return };
+        let room = |inv: &Inventory| inv.sections[out].items.first().is_none_or(|p| p.item.quantity < inv.sections[out].stack_of(&p.item));
+        if !room(inv) {
+            pb.full = true;
+            return;
+        }
+        let mut made = 0;
+        let add = |inv: &mut Inventory| match inv.sections[out].items.first_mut() {
+            Some(p) => p.item.quantity += 1,
+            None => inv.sections[out].items.push(kenshi_char::inventory::Placed { item: item.clone(), x: 0, y: 0 }),
+        };
+        let mut k = 0u32;
+        loop {
+            if rand_unit((b as u32) ^ tick.wrapping_add(k.wrapping_mul(2654435761))) < chance {
+                add(inv);
+                made += 1;
+            }
+            k += 1;
+            if (k as f32) >= per {
+                break;
+            }
+        }
+        let frac = per - (per as i32) as f32;
+        if frac > 0.0 && rand_unit((b as u32).wrapping_mul(31) ^ tick ^ 0x5bd1_e995) < frac {
+            add(inv);
+            made += 1;
+        }
+        pb.made[0] = 0.0;
+        self.harvest_plant(b, plants);
+        if std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
+            eprintln!("farm {b} harvested {made} (chance {chance:.2})");
+        }
+    }
+
+    /// @fn F022903
+    ///
+    /// One plant of a farm taken off (harvested or cleared): the next not taken marked so
+    /// (growth -10), one more harvested.
+    fn harvest_plant(&mut self, b: usize, plants: usize) {
+        let pb = &mut self.buildings[b];
+        let k = pb.harvested as usize;
+        if k == plants {
+            return;
+        }
+        if let Some(g) = pb.plants.get_mut(k) {
+            *g = -10.0;
+        }
+        pb.harvested += 1;
+    }
+
+    /// @fn F047468
+    ///
+    /// An operator's stat trained each frame of its work (Task_OperateMachine F031350, but on
+    /// training equipment): F047460 with the frame time at 0.5 (thieving and 37 0.1, turrets 1,
+    /// perception 3, 35 1.2, farming 0.75).
+    pub fn operator_train(&mut self, id: usize, stat: StatsEnumerated, dt: f32) {
+        let mult = match stat as i32 {
+            10 | 0x25 => 0.1,
+            0xb => 1.0,
+            0x18 => 3.0,
+            0x23 => 0.8 * 1.5,
+            0xc => 0.5 * 1.5,
+            _ => 0.5,
+        };
+        self.arena.f[id].skills.train(stat, dt, mult);
     }
 
     /// The base's power each tick: generators supply (F029292 wind: wind x output, none under 1;
@@ -715,7 +1157,8 @@ impl Sim {
         let (mut supply, mut demand, mut capacity) = (0.0f32, 0.0f32, 0.0f32);
         let mut fuelled = Vec::new();
         for k in 0..self.buildings.len() {
-            if !self.buildings[k].done {
+            // (switched off: neither drawn on nor giving, F029290 / F029341)
+            if !self.buildings[k].done || !self.buildings[k].switched_on {
                 continue;
             }
             let Some(rec) = data.get(&self.buildings[k].record) else { continue };
@@ -753,6 +1196,7 @@ impl Sim {
         self.power_supply = supply;
         self.power_demand = demand;
         self.power_eff = if demand <= 0.0 { 1.0 } else { ((supply + from_battery) / demand).min(1.0) };
+        self.power_eff_mains = if demand <= 0.0 { 1.0 } else { (supply / demand).min(1.0) };
         // fuel burnt while drawn on
         let load = if supply > 0.0 { (demand / supply).min(1.0) } else { 1.0 };
         let owner = self.folk.iter().find(|p| p.player).map(|p| p.id).unwrap_or(0);
@@ -773,10 +1217,31 @@ impl Sim {
         }
     }
 
-    /// Building `b`'s power efficiency: 1 when it draws none, else the base's (F037662).
+    /// Building `b`'s power efficiency: 1 when it draws none, else the base's (F037662): none
+    /// switched off, and for one that may not run off the batteries the mains' alone (F029341).
     pub fn power_efficiency(&self, b: usize) -> f32 {
-        let draws = self.buildings.get(b).and_then(|pb| self.data.get(&pb.record)).is_some_and(|r| num(r, "power output") < 0.0);
-        if draws { self.power_eff } else { 1.0 }
+        let Some(pb) = self.buildings.get(b) else { return 1.0 };
+        let draws = self.data.get(&pb.record).is_some_and(|r| num(r, "power output") < 0.0);
+        if !draws {
+            1.0
+        } else if !pb.switched_on {
+            0.0
+        } else if pb.on_battery {
+            self.power_eff
+        } else {
+            self.power_eff_mains
+        }
+    }
+
+    /// How many work building `b` now (Building +0x3e0, its operators: at most its "max
+    /// operators", F029341's share).
+    pub fn operators_on(&self, b: usize) -> usize {
+        self.operators().iter().filter(|o| o.1 == b).count()
+    }
+
+    /// The people operating building `b` (as operators_on counts them).
+    pub fn operator_ids(&self, b: usize) -> Vec<usize> {
+        self.operators().iter().filter(|o| o.1 == b).map(|o| o.0).collect()
     }
 
     /// Whether building `b` works for want of power.
@@ -784,114 +1249,26 @@ impl Sim {
         self.power_efficiency(b) > 0.0
     }
 
-    /// Task_EmptyMachine: an operator of a full machine takes what fits of its products and
-    /// carries them to the nearest built storage with room, then goes back to work.
-    fn haul_tick(&mut self) {
-        let data = self.data.clone();
-        // storage proper (StorageBuilding: "has inventory", its functionality storage, 13, or none)
-        let plain = |o: &PlayerBuilding| {
-            data.get(&o.record).is_some_and(|r| {
-                r.bools.get("has inventory").copied().unwrap_or(false) && function_of(&data, r).is_none_or(|(_, f)| f == FUNCTION_STORAGE)
-            })
-        };
-        // new errands: a full machine's operator; a machine with anything in it, its auto-hauler
-        // ("Auto-Haul", `orders`)
+    /// The machines' full state (+0x468, F029267) let go once the output has room again: as the
+    /// farm's update (F022906) keeps it only while its output container is full (F03d21c).
+    /// (assumption) The same for every machine: room for one more of its first product (a
+    /// bench's queued item).
+    fn refresh_full(&mut self) {
         for b in 0..self.buildings.len() {
-            let hauler = (0..self.folk.len()).find(|&i| self.folk[i].auto_haul == Some(b) && !self.folk[i].down && self.folk[i].haul.is_none() && self.at_building(i, b));
-            let has_output = self.buildings[b].storage.as_ref().is_some_and(|s| s.sections.iter().any(|x| !x.items.is_empty()));
-            if !self.buildings[b].full && !(hauler.is_some() && has_output) {
+            // (a machine made with containers: F029366, `machines_tick`)
+            if !self.buildings[b].full || self.buildings[b].containers_made {
                 continue;
             }
-            if self.folk.iter().any(|p| p.haul.as_ref().is_some_and(|h| h.from == b)) {
-                continue;
-            }
-            let Some(id) = hauler.or_else(|| (0..self.folk.len()).find(|&i| self.folk[i].operate == Some(b) && !self.folk[i].down && self.at_building(i, b))) else {
-                if std::env::var("KENSHI_BUILD_DEBUG").is_ok() && self.tick % 300 == 0 {
-                    eprintln!("building {b} full: no operator by it");
-                }
-                continue;
-            };
-            let at = self.buildings[b].at;
-            let to = (0..self.buildings.len())
-                .filter(|&k| k != b && self.buildings[k].done && self.buildings[k].storage.is_some() && plain(&self.buildings[k]))
-                .min_by(|&x, &y| {
-                    let d = |k: usize| (self.buildings[k].at[0] - at[0]).hypot(self.buildings[k].at[2] - at[2]);
-                    d(x).total_cmp(&d(y))
-                });
-            let Some(to) = to else {
-                if std::env::var("KENSHI_BUILD_DEBUG").is_ok() && self.tick % 300 == 0 {
-                    eprintln!("building {b} full: no storage");
-                }
-                continue;
-            };
-            // what fits in the carrier's inventory
-            let mut items = Vec::new();
-            if let Some(store) = self.buildings[b].storage.as_mut() {
-                for sec in &mut store.sections {
-                    let mut k = 0;
-                    while k < sec.items.len() {
-                        if self.folk[id].inventory.add(sec.items[k].item.clone(), false) {
-                            items.push(sec.items.remove(k).item.record);
-                        } else {
-                            k += 1;
-                        }
-                    }
-                }
-            }
-            if items.is_empty() {
-                continue;
-            }
-            self.buildings[b].full = false;
-            let dest = self.buildings[to].at;
-            self.order_move(&[id], dest);
-            if self.folk[id].auto_haul != Some(b) {
-                self.folk[id].operate = Some(b);
-            }
-            self.folk[id].haul = Some(Haul { from: b, to, items });
-        }
-        // errands arriving
-        for id in 0..self.folk.len() {
-            let Some(h) = self.folk[id].haul.clone() else { continue };
-            if self.folk[id].down || h.to >= self.buildings.len() {
-                self.folk[id].haul = None;
-                continue;
-            }
-            if !self.at_building(id, h.to) {
-                continue;
-            }
-            for record in &h.items {
-                // (from the worn backpack too)
-                let inv = &mut self.folk[id].inventory;
-                let item = match inv.sections.iter().enumerate().find_map(|(s, sec)| sec.items.iter().position(|p| p.item.record == *record).map(|k| (s, k))) {
-                    Some((s, k)) => inv.take(s, k),
-                    None => inv.bag_mut().and_then(|b| {
-                        let k = b.sections[0].items.iter().position(|p| p.item.record == *record)?;
-                        b.take(0, k)
-                    }),
-                };
-                let Some(item) = item else { continue };
-                if let Some(store) = self.buildings[h.to].storage.as_mut()
-                    && !store.add(item.clone(), false)
-                {
-                    let _ = self.folk[id].inventory.add(item, false);
-                }
-            }
-            self.folk[id].haul = None;
-            if h.from == DITCH {
-                if std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
-                    eprintln!("{id} ditched {} things into {}", h.items.len(), h.to);
-                }
-                continue;
-            }
-            if self.folk[id].auto_haul == Some(h.from) {
-                // an auto-hauler back to the machine to wait for more
-                let at = self.buildings[h.from].at;
-                self.order_move(&[id], at);
-            } else {
-                self.order_operate(&[id], h.from);
-            }
-            if std::env::var("KENSHI_BUILD_DEBUG").is_ok() {
-                eprintln!("{id} emptied building {} into {}", h.from, h.to);
+            let pb = &self.buildings[b];
+            let Some(rec) = self.data.get(&pb.record) else { continue };
+            let product = function_of(&self.data, rec).and_then(|(f, _)| pb.craft_queue.first().cloned().or_else(|| f.refs("produces").first().map(|(s, _)| s.clone())));
+            let Some(item) = product.and_then(|p| self.data.get(&p)).map(|r| Item::from_record(r, 1)) else { continue };
+            let room = pb.storage.as_ref().is_some_and(|inv| {
+                let mut trial = inv.clone();
+                trial.add(item, false)
+            });
+            if room {
+                self.buildings[b].full = false;
             }
         }
     }

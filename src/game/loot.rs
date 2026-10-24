@@ -74,27 +74,23 @@ impl Sim {
             }
         }
         self.spots_tick();
-        // the zones coming in now (F051437 runs as a zone loads)
-        let fresh: std::collections::HashSet<(i32, i32)> = self.zones.difference(&self.loot_zones).copied().collect();
-        self.loot_zones = self.zones.clone();
+        // each town of the zones in whose record's loot is not down yet (keyed by the town's
+        // level id and record; an older save's by the record alone)
         let due: Vec<(usize, String)> = (0..self.towns.len())
             .filter(|&t| self.zones.contains(&zone_of(self.towns[t].position)))
             .map(|t| (t, self.town_record(t)))
-            .filter(|(_, now)| !self.looted.contains(now))
+            .filter(|(t, now)| !self.looted.contains(&format!("{}|{now}", self.towns[*t].id)) && !self.looted.contains(now))
             .collect();
         for (t, record) in due {
             let centre = self.towns[t].position;
-            // F051436: a town now an override town: its zone starts afresh as it loads, the items
-            // lying in it cleared (but those on a building's item spot)
+            // F051436: a town now an override town (taken as its zone loaded): its zone started
+            // afresh, the items lying in it cleared (but those on a building's item spot)
             if record != self.towns[t].record {
                 let z = zone_of(centre);
-                if !fresh.contains(&z) {
-                    continue;
-                }
                 let on_spots: std::collections::HashSet<u64> = self.spots.iter().filter_map(|s| s.item).collect();
                 self.ground.retain(|g| zone_of(g.at) != z || on_spots.contains(&g.id));
             }
-            self.looted.insert(record.clone());
+            self.looted.insert(format!("{}|{record}", self.towns[t].id));
             let Some(town) = self.data.get(&record).cloned() else { continue };
             for (list, v) in town.refs("loot spawn") {
                 let Some(list) = self.data.get(list).cloned() else { continue };
@@ -288,9 +284,12 @@ impl Sim {
         }
         let Some(layouts) = self.layouts.as_ref() else { return };
         let found = kenshi_world::furniture::item_spots(&self.data, layouts, placed);
+        // each spot's building's town (F038257, `world::placement_towns`)
+        let at: Vec<[f32; 3]> = placed.iter().map(|p| [p.position[0], p.world_y.unwrap_or(p.position[1]), p.position[2]]).collect();
+        let towns = crate::world::placement_towns(&self.data, &self.towns, placed, &at);
         let first = self.spots.len();
         for s in found {
-            let town = kenshi_world::town::current_town(&self.towns, s.position, None);
+            let town = towns.get(s.placement).copied().flatten();
             let owner = town.filter(|&t| self.towns[t].kind != 4).and_then(|t| self.towns[t].faction.clone());
             let w = s.rotation[0].clamp(-1.0, 1.0);
             let yaw = 2.0 * w.acos() * if s.rotation[2] < 0.0 { -1.0 } else { 1.0 };
@@ -416,28 +415,33 @@ impl Sim {
                 let total: i32 = h.values().flatten().map(|x| x.2).sum();
                 eprintln!("artifacts handed out: {total} to {} towns", h.len());
                 for (t, list) in h.iter().take(6) {
-                    let name = self.data.get(t).map_or("?", |r| r.name.as_str());
+                    let name = self.towns.iter().find(|x| x.id == *t).map_or("?", |x| x.name.as_str());
                     eprintln!("  {name}: {:?}", list.iter().map(|(r, _, n, _)| (self.data.get(r).map_or("?".into(), |x| x.name.clone()), *n)).collect::<Vec<_>>());
                 }
             }
         }
         let due: Vec<usize> = (0..self.towns.len())
             .filter(|&t| {
-                let key = format!("art:{}", self.towns[t].record);
-                !self.looted.contains(&key) && self.zones.contains(&zone_of(self.towns[t].position))
+                // (an older save keyed them by the town's record)
+                let (key, old) = (format!("art:{}", self.towns[t].id), format!("art:{}", self.towns[t].record));
+                !self.looted.contains(&key) && !self.looted.contains(&old) && self.zones.contains(&zone_of(self.towns[t].position))
             })
             .collect();
         for t in due {
-            let (record, centre, radius) = (self.towns[t].record.clone(), self.towns[t].position, self.towns[t].radius());
-            self.looted.insert(format!("art:{record}"));
-            let given = self.artifacts.as_ref().and_then(|a| a.get(&record)).cloned().unwrap_or_default();
+            let (id, centre, radius) = (self.towns[t].id.clone(), self.towns[t].position, self.towns[t].radius());
+            self.looted.insert(format!("art:{id}"));
+            let given = self.artifacts.as_ref().and_then(|a| a.get(&id)).cloned().unwrap_or_default();
             if given.is_empty() {
                 continue;
             }
+            // the containers of the town's buildings (their town, F038257)
             let here: Vec<usize> = (0..self.boxes.len())
-                .filter(|&b| {
-                    let p = self.boxes[b].at.position;
-                    (p[0] - centre[0]).hypot(p[2] - centre[2]) < radius
+                .filter(|&b| match self.placed_town.get(self.boxes[b].at.placement) {
+                    Some(k) => *k == Some(t),
+                    None => {
+                        let p = self.boxes[b].at.position;
+                        (p[0] - centre[0]).hypot(p[2] - centre[2]) < radius
+                    }
                 })
                 .collect();
             // each container's weights from its building's residents
@@ -456,7 +460,9 @@ impl Sim {
                 for _ in 0..n {
                     let data = self.data.clone();
                     let rng = &mut self.rng;
-                    let Some(item) = crate::artifacts::artifact_item(&data, &sid, quality, &mut || rng.uniform()) else { continue };
+                    let Some(mut item) = crate::artifacts::artifact_item(&data, &sid, quality, &mut || rng.uniform()) else { continue };
+                    // F022232: an artifact handed out is one of a kind (Item +0x12a)
+                    item.unique = true;
                     let total: f32 = weights.iter().sum();
                     let pick = if total > 0.0 {
                         let mut x = self.rng.uniform() * total;

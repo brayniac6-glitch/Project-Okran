@@ -451,6 +451,55 @@ pub fn override_bones(r: &GameData) -> Vec<&'static str> {
     out
 }
 
+/// @fn F046697
+///
+/// The game's one-time preprocess of the ANIMATION records, before any skeleton loads: of the
+/// records sharing a clip (their "anim name", compared exactly) the first keeps it and each later
+/// one gets a copy of its own, "<clip>-<n>" (n counting every copy made, from 1), its "anim name
+/// original" keeping the shared name. The skeleton loader (F046693) clones the clip under each
+/// copy's name before the records' "delete ..." flags strip their tracks, so a clip played as an
+/// upper and a lower layer ("crouch walk", "ninjarun") keeps each half: stripped by name, the one
+/// clip would lose both. Returns the (shared clip, copy) pairs, as [`clip_copies`] lists them.
+/// (assumption) "first" is the load order (`of_type`): the original's list order is its own.
+pub fn split_shared_clips(data: &mut kenshi_data::GameDataContainer) -> Vec<(String, String)> {
+    let ids: Vec<String> = data
+        .of_type(kenshi_data::ItemType::Animation)
+        .map(|r| r.string_id.clone())
+        .collect();
+    let clip = |data: &kenshi_data::GameDataContainer, id: &str| {
+        data.get(id).and_then(|r| r.strings.get("anim name")).cloned()
+    };
+    let mut copies = Vec::new();
+    for (i, a) in ids.iter().enumerate() {
+        let Some(shared) = clip(data, a) else { continue };
+        for b in &ids[i + 1..] {
+            if clip(data, b).as_ref() != Some(&shared) {
+                continue;
+            }
+            let copy = format!("{shared}-{}", copies.len() + 1);
+            if let Some(r) = data.records.get_mut(b) {
+                r.strings.insert("anim name original".into(), shared.clone());
+                r.strings.insert("anim name".into(), copy.clone());
+            }
+            copies.push((shared.clone(), copy));
+        }
+    }
+    copies
+}
+
+/// The clip copies [`split_shared_clips`] made: (shared clip, copy) for each record it renamed,
+/// in load order.
+pub fn clip_copies(data: &kenshi_data::GameDataContainer) -> Vec<(String, String)> {
+    data.of_type(kenshi_data::ItemType::Animation)
+        .filter_map(|r| {
+            Some((
+                r.strings.get("anim name original")?.clone(),
+                r.strings.get("anim name")?.clone(),
+            ))
+        })
+        .collect()
+}
+
 /// @fn F040458
 ///
 /// The pain postures of a hurt body: for each part below its pain threshold (the "pain anim"
@@ -676,5 +725,30 @@ mod tests {
         let c = candidates(&all, &s, 1.0, false);
         assert_eq!(c.len(), 3);
         assert!((c[0].1 - 0.5).abs() < 1e-6 && (c[2].1 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shared_clips_get_copies() {
+        let mut data = kenshi_data::GameDataContainer::default();
+        for (id, clip) in [("a", "crouch walk"), ("b", "walk"), ("c", "crouch walk"), ("d", "crouch walk"), ("e", "walk")] {
+            let mut r = GameData {
+                kind: kenshi_data::ItemType::Animation as i32,
+                string_id: id.into(),
+                ..Default::default()
+            };
+            r.strings.insert("anim name".into(), clip.into());
+            data.order.push(id.into());
+            data.records.insert(id.into(), r);
+        }
+        let copies = split_shared_clips(&mut data);
+        let name = |id: &str| data.get(id).unwrap().strings["anim name"].clone();
+        assert_eq!(
+            [name("a"), name("b"), name("c"), name("d"), name("e")],
+            ["crouch walk", "walk", "crouch walk-1", "crouch walk-2", "walk-3"]
+        );
+        assert_eq!(copies, clip_copies(&data));
+        assert_eq!(copies[0], ("crouch walk".to_string(), "crouch walk-1".to_string()));
+        // a second pass finds nothing shared
+        assert!(split_shared_clips(&mut data).is_empty());
     }
 }

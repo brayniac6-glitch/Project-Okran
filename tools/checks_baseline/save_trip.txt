@@ -1,0 +1,65 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+31 town nodes (21 general)
+town The Hub at [-50978.8, 1533.1519, 2932.4766], type 2, radius 2500
+63 pieces of furniture, bars: ["Storm House"]
+21 interior volumes, 2 doors
+hub squatters at Snailhouse: 1 leader(s), 2 others, package Squatters
+hub squatters at Small Shack: 1 leader(s), 0 others, package Squatters
+hub squatters at Old Storm House: 1 leader(s), 0 others, package Squatters
+hub squatters at Storm House: 1 leader(s), 2 others, package Squatters
+hub squatters at Stationhouse: 1 leader(s), 1 others, package Squatters
+Bar blackmarket at Storm House: 1 leader(s), 4 others, package Shop-24hr
+hub squatters at Bughouse: 0 leader(s), 0 others, package Squatters
+hub squatters at Small Shack: 1 leader(s), 1 others, package Squatters
+player squad: 3
+20 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Holy Nation Outlaws: enemies here []
+faction Trade Ninjas: enemies here []
+faction Nameless: enemies here []
+world: 0 squads abroad, 304 towns
+t 2.0 homeless squad Wandering Assassin (1 people) spawned in zone 19.31 at [-57536.0, 1044.0, -3196.0]
+t 4.0 homeless squad Starving bandit big mob (9 people) spawned in zone 19.32 at [-56096.0, 935.0, 45.0]
+t 6.1 homeless squad Starving bandit mob aggressive (6 people) spawned in zone 19.33 at [-56567.0, 1372.0, 7325.0]
+t 8.1 homeless squad Escaped holy servants (1 people) spawned in zone 20.31 at [-53096.0, 579.0, -1567.0]
+t 10.1 homeless squad Dust Bandit Squad mild (6 people) spawned in zone 20.33 at [-55253.0, 871.0, 7126.0]
+saved 56 people, 1 zones, 330986 bytes
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+31 town nodes (21 general)
+town The Hub at [-50978.8, 1533.1519, 2932.4766], type 2, radius 2500
+63 pieces of furniture, bars: ["Storm House"]
+21 interior volumes, 2 doors
+hub squatters at Snailhouse: 1 leader(s), 2 others, package Squatters
+hub squatters at Small Shack: 1 leader(s), 0 others, package Squatters
+hub squatters at Old Storm House: 1 leader(s), 0 others, package Squatters
+hub squatters at Storm House: 1 leader(s), 2 others, package Squatters
+hub squatters at Stationhouse: 1 leader(s), 1 others, package Squatters
+Bar blackmarket at Storm House: 1 leader(s), 4 others, package Shop-24hr
+hub squatters at Bughouse: 0 leader(s), 0 others, package Squatters
+hub squatters at Small Shack: 1 leader(s), 1 others, package Squatters
+player squad: 3
+20 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Holy Nation Outlaws: enemies here []
+faction Trade Ninjas: enemies here []
+faction Nameless: enemies here []
+backpack after loading: ["Bread x3"]
+people 56 -> 56, differing 0; furniture 63 -> 63 (same: true); prisoners 0 -> 0; slaves 0 -> 0
+t 60.0 person 17 ate Bread (50), hunger 249
+world: 0 squads abroad, 304 towns
+t 100.4 person 48 is knocked out
+t 111.1 person 46 is knocked out
+t 115.2 person 45 is knocked out
+t 115.7 person 50 is knocked out
+after a minute more: 56 people (was 56); machine stock 0
+exit 0

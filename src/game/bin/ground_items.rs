@@ -82,7 +82,8 @@ pub fn update(
             })
             .clone();
         let at = Vec3::from(g.at) - origin;
-        let root = commands.spawn((GroundMark(g.id), Transform::from_translation(at).with_rotation(Quat::from_rotation_y(g.yaw)), Visibility::default())).id();
+        let turn = game.limb_turns.get(&g.id).copied().unwrap_or(Quat::from_rotation_y(g.yaw));
+        let root = commands.spawn((GroundMark(g.id), Transform::from_translation(at).with_rotation(turn), Visibility::default())).id();
         match look {
             Some((hs, mat)) => {
                 for h in hs {
@@ -97,6 +98,17 @@ pub fn update(
             }
         }
         items.shown.insert(g.id, root);
+    }
+}
+
+/// A severed limb lying as a physics body is drawn where its body is, as it lies (F043917).
+pub fn follow_bodies(game: Res<Game>, mut marks: Query<(&GroundMark, &mut Transform)>) {
+    let origin = game.zone.origin;
+    for (m, mut tr) in &mut marks {
+        let Some(&turn) = game.limb_turns.get(&m.0) else { continue };
+        let Some(g) = game.sim.ground.iter().find(|g| g.id == m.0) else { continue };
+        tr.translation = Vec3::from(g.at) - origin;
+        tr.rotation = turn;
     }
 }
 
@@ -135,11 +147,16 @@ pub struct DropLabel(pub u64);
 pub struct LabelLook {
     text: Option<Entity>,
     colour: Color,
+    /// Taking it is stealing (F024557's +0xc0).
+    stolen: bool,
 }
 
 /// kenshi_colours.xml's "DropItemLabelTextSelected" and "DropItemLabelBackSelected" (#66ff66):
 /// a label under the mouse (F024538).
 const LABEL_SELECTED: Color = Color::srgb(0.4, 1.0, 0.4);
+/// "DropItemLabelBackSelectedStealing" and "DropItemLabelTextSelectedStealing" (#ff6666): a
+/// stolen item's label's back, and its text too under the mouse (F024538 - F024540).
+const LABEL_STEALING: Color = Color::srgb(1.0, 0.4, 0.4);
 
 /// @fn F024557
 ///
@@ -148,10 +165,10 @@ const LABEL_SELECTED: Color = Color::srgb(0.4, 1.0, 0.4);
 /// than one, the count in brackets ("{1,num}"), the label as wide as its text; the items glow.
 /// Clicking a label (F024551) sends the first selected character to pick the item up.
 /// The label's text and its skin in the item's colour (F024557, F024540: `item_tip::item_colour`),
-/// under the mouse both #66ff66 (F024538). (not ported) An item someone owns (its owner not the
-/// player's faction nor "not real", F024557) is stolen if taken: its label's back #ff6666, its
-/// text #ff6666 under the mouse ("DropItemLabelBackSelectedStealing", "...TextSelectedStealing");
-/// the rewrite's ground items belong to no one. The glow is the object shader's emissive,
+/// under the mouse both #66ff66 (F024538). An item someone owns (its owner not the player's
+/// faction nor "not real", F024557) is stolen if taken: its label's back #ff6666, its text
+/// #ff6666 too under the mouse ("DropItemLabelBackSelectedStealing", "...TextSelectedStealing").
+/// The glow is the object shader's emissive,
 /// Kenshi's own highlight look not being ported.
 #[allow(clippy::too_many_arguments)]
 pub fn highlight(
@@ -173,11 +190,17 @@ pub fn highlight(
     // F024538 / F024540: a label under the mouse, its text and back in #66ff66, else in its
     // item's colour
     for (e, i, l) in &looks {
-        let c = if *i == Interaction::None { l.colour } else { LABEL_SELECTED };
+        let over = *i != Interaction::None;
+        let (text, back) = match (over, l.stolen) {
+            (false, false) => (l.colour, l.colour),
+            (false, true) => (l.colour, LABEL_STEALING),
+            (true, false) => (LABEL_SELECTED, LABEL_SELECTED),
+            (true, true) => (LABEL_STEALING, LABEL_STEALING),
+        };
         if let Some(t) = l.text {
-            commands.queue(kenshi_gui::SetTextColour(t, c));
+            commands.queue(kenshi_gui::SetTextColour(t, text));
         }
-        commands.queue(kenshi_gui::SetColour(e, c));
+        commands.queue(kenshi_gui::SetColour(e, back));
     }
     // a game loaded in the program: its own labels
     if game.is_added() {
@@ -234,8 +257,13 @@ pub fn highlight(
                     commands.queue(kenshi_gui::SetTextColour(t, colour));
                 }
                 let root = ui.roots[0];
-                commands.queue(kenshi_gui::SetColour(root, colour));
-                commands.entity(root).insert((DropLabel(g.id), LabelLook { text: name, colour }, Interaction::default(), Button, GlobalZIndex(4)));
+                // F024557: stolen when its owner (the item spot's town, else the item's own) is a
+                // faction not the player's nor "not real"
+                let owner = game.sim.spots.iter().find(|s| s.item == Some(g.id)).and_then(|s| s.owner.clone()).or_else(|| g.item.owner.clone());
+                let mine = game.sim.folk.iter().find(|p| p.player).and_then(|p| p.faction.clone()).unwrap_or_else(|| kenshi_game::sim::PLAYER_FACTION.to_string());
+                let stolen = owner.is_some_and(|f| f != mine && !game.sim.faction_not_real(&f));
+                commands.queue(kenshi_gui::SetColour(root, if stolen { LABEL_STEALING } else { colour }));
+                commands.entity(root).insert((DropLabel(g.id), LabelLook { text: name, colour, stolen }, Interaction::default(), Button, GlobalZIndex(4)));
                 root
             });
             if let Ok(mut n) = nodes.get_mut(e) {

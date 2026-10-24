@@ -24,7 +24,7 @@ use kenshi_data::{GameDataContainer, ItemType};
 use kenshi_world::town::Town;
 use std::collections::HashMap;
 
-/// Town record -> (item record, gear?, count, quality) given to it.
+/// Town (its level id, `Town::id`) -> (item record, gear?, count, quality) given to it.
 pub type Handout = HashMap<String, Vec<(String, bool, i32, f32)>>;
 
 /// An artifact entry as an item: armour at its list's quality, a weapon model as a weapon of
@@ -90,7 +90,8 @@ struct Art {
 }
 
 struct ArtTown {
-    record: String,
+    /// The town's level id (`Town::id`).
+    id: String,
     min: i32,
     max: i32,
     given: Vec<(usize, i32)>,
@@ -140,7 +141,7 @@ pub fn distribute(data: &GameDataContainer, towns: &[Town]) -> Handout {
         let r = data.get(&t.record)?;
         let i = |f: String| r.ints.get(&f).copied().unwrap_or(0);
         let max = i(format!("{k} artifacts max value"));
-        (max != 0).then(|| ArtTown { record: t.record.clone(), min: i(format!("{k} artifacts min value")), max, given: Vec::new() })
+        (max != 0).then(|| ArtTown { id: t.id.clone(), min: i(format!("{k} artifacts min value")), max, given: Vec::new() })
     };
     let mut item_towns: Vec<ArtTown> = towns.iter().filter_map(|t| range(t, "item")).collect();
     let mut gear_towns: Vec<ArtTown> = towns.iter().filter_map(|t| range(t, "gear")).collect();
@@ -218,7 +219,7 @@ pub fn distribute(data: &GameDataContainer, towns: &[Town]) -> Handout {
         for t in ts.iter() {
             for &(a, n) in &t.given {
                 if n > 0 {
-                    out.entry(t.record.clone()).or_default().push((arts[a].record.clone(), arts[a].gear, n, arts[a].quality));
+                    out.entry(t.id.clone()).or_default().push((arts[a].record.clone(), arts[a].gear, n, arts[a].quality));
                 }
             }
         }

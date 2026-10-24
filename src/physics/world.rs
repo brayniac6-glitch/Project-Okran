@@ -1,5 +1,8 @@
-//! What ragdolls collide with besides each other: the ground, the buildings' collision (their
-//! parts' "xml collision", PhysX NxuStream2 shapes) and the people standing about.
+//! What ragdolls collide with besides each other: the ground and the buildings' collision (their
+//! parts' "xml collision", PhysX NxuStream2 shapes). Not the people standing about: Kenshi gives
+//! them no PhysX actor (its PhysX entities are the building hulls and statics, doors, farm plots
+//! and ragdolls; StaticCapsuleEntity's maker, F036061, has no callers, and the PhysX character
+//! controller library is not linked).
 use glam::{Affine3A, Mat3, Vec3, Vec3A};
 use kenshi_io::nxu::{Shape, ShapeKind};
 use std::collections::HashMap;
@@ -16,6 +19,23 @@ pub enum Solid {
     /// Outward face planes (normal, offset: n . x = d).
     Convex(Vec<(Vec3, f32)>),
     Mesh(Arc<TriMesh>),
+}
+
+impl Solid {
+    /// The solid `s` times as large.
+    pub fn scaled(&self, s: f32) -> Solid {
+        match self {
+            Solid::Box(h) => Solid::Box(*h * s),
+            Solid::Sphere(r) => Solid::Sphere(r * s),
+            Solid::Capsule { half, radius } => Solid::Capsule { half: half * s, radius: radius * s },
+            Solid::Convex(planes) => Solid::Convex(planes.iter().map(|&(n, d)| (n, d * s)).collect()),
+            Solid::Mesh(m) => {
+                let verts: Vec<[f32; 3]> = m.tris.iter().flatten().map(|v| (*v * s).to_array()).collect();
+                let idx: Vec<[u32; 3]> = (0..m.tris.len() as u32).map(|k| [3 * k, 3 * k + 1, 3 * k + 2]).collect();
+                Solid::Mesh(Arc::new(TriMesh::new(&verts, &idx)))
+            }
+        }
+    }
 }
 
 /// Triangles binned on a ground-plane grid.
@@ -247,6 +267,8 @@ struct Placed {
     to_local: Affine3A,
     to_world: Mat3,
     solid: Solid,
+    /// Its PhysX collision group.
+    group: u8,
 }
 
 /// Placed solids binned on a ground-plane grid.
@@ -261,12 +283,26 @@ const CELL: f32 = 40.0;
 const MARGIN: f32 = 3.0;
 
 impl StaticWorld {
-    /// The solids of every (frame, collision) given.
+    /// The solids of every (frame, collision) given (collision group 9).
     pub fn new<'a>(parts: impl IntoIterator<Item = (Affine3A, &'a Solids)>) -> StaticWorld {
+        StaticWorld::grouped(parts.into_iter().map(|(f, s)| (f, s, 9)))
+    }
+
+    /// The solids of every (frame, collision, PhysX collision group) given.
+    pub fn grouped<'a>(parts: impl IntoIterator<Item = (Affine3A, &'a Solids, u8)>) -> StaticWorld {
         let mut w = StaticWorld::default();
-        for (frame, solids) in parts {
+        for (frame, solids, group) in parts {
             for (pose, solid, reach) in &solids.items {
                 let world = frame * *pose;
+                // a scaled frame (a foliage object's, a map feature's): the scale put into the
+                // solid, so the frame is rigid (the sphere and ray tests take it so)
+                let s = world.matrix3.x_axis.length();
+                let (world, solid, reach) = if (s - 1.0).abs() > 1e-4 && s > 1e-6 {
+                    (Affine3A::from_mat3_translation(Mat3::from(world.matrix3) * (1.0 / s), Vec3::from(world.translation)), solid.scaled(s), *reach * s)
+                } else {
+                    (world, solid.clone(), *reach)
+                };
+                let (solid, reach) = (&solid, &reach);
                 // the bounds of the solid's local box, placed
                 let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
                 for k in 0..8 {
@@ -286,6 +322,7 @@ impl StaticWorld {
                     to_local: world.inverse(),
                     to_world: Mat3::from(world.matrix3),
                     solid: solid.clone(),
+                    group,
                 });
                 let cell = |v: f32| ((v / CELL).floor()) as i32;
                 for cx in cell(lo.x - MARGIN)..=cell(hi.x + MARGIN) {
@@ -313,10 +350,18 @@ impl StaticWorld {
 
     /// Where a sphere at `p` of radius `r` overlaps a solid: the way out and how deep.
     pub fn touches(&self, p: Vec3, r: f32, out: &mut Vec<(Vec3, f32)>) {
+        self.touches_except(p, r, 0, out);
+    }
+
+    /// As `touches`, leaving out the solids whose collision group's bit is set in `ignored`.
+    pub fn touches_except(&self, p: Vec3, r: f32, ignored: u32, out: &mut Vec<(Vec3, f32)>) {
         let key = ((p.x / CELL).floor() as i32, (p.z / CELL).floor() as i32);
         let Some(list) = self.cells.get(&key) else { return };
         for &i in list {
             let s = &self.placed[i as usize];
+            if ignored & (1 << (s.group & 31)) != 0 {
+                continue;
+            }
             let q = Vec3::from(s.to_local.transform_point3a(Vec3A::from(p)));
             if let Some((n, d)) = sphere_in(&s.solid, q, r) {
                 out.push(((s.to_world * n).normalize_or(Vec3::Y), d));
@@ -361,6 +406,45 @@ impl StaticWorld {
             }
         }
         best
+    }
+
+    /// The distance along the ray to the first solid of the collision groups in `groups` (bits)
+    /// it enters within `len`: as `raycast`, the cells sampled along its run across the ground.
+    pub fn raycast_groups(&self, from: Vec3, dir: Vec3, len: f32, groups: u32) -> Option<f32> {
+        if self.placed.is_empty() || len <= 0.0 {
+            return None;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut best: Option<f32> = None;
+        let across = (dir.x * dir.x + dir.z * dir.z).sqrt() * len;
+        let steps = ((across / (CELL * 0.25)).ceil() as i32).max(1);
+        for k in 0..=steps {
+            let p = from + dir * (len * k as f32 / steps as f32);
+            let key = ((p.x / CELL).floor() as i32, (p.z / CELL).floor() as i32);
+            let Some(list) = self.cells.get(&key) else { continue };
+            for &i in list {
+                let s = &self.placed[i as usize];
+                if groups & (1 << (s.group & 31)) == 0 || !seen.insert(i) {
+                    continue;
+                }
+                if ray_box(from - (s.lo + s.hi) * 0.5, dir, (s.hi - s.lo) * 0.5, len).is_none() {
+                    continue;
+                }
+                let o = Vec3::from(s.to_local.transform_point3a(Vec3A::from(from)));
+                let d = Vec3::from(s.to_local.transform_vector3a(Vec3A::from(dir)));
+                if let Some(t) = ray_in(&s.solid, o, d, len).filter(|&t| 0.0 < t)
+                    && best.is_none_or(|b| t < b)
+                {
+                    best = Some(t);
+                }
+            }
+        }
+        best
+    }
+
+    /// [`StaticWorld::raycast_groups`] with plain arrays.
+    pub fn raycast_groups_at(&self, from: [f32; 3], dir: [f32; 3], len: f32, groups: u32) -> Option<f32> {
+        self.raycast_groups(Vec3::from(from), Vec3::from(dir), len, groups)
     }
 
     /// [`StaticWorld::raycast`] with plain arrays.
@@ -585,11 +669,22 @@ impl<F: Fn(f32, f32) -> f32> Surroundings for Ground<F> {
     fn touches(&self, _: Vec3, _: f32, _: &mut Vec<(Vec3, f32)>) {}
 }
 
-/// The ground, the buildings and people (as upright capsules: foot, head, radius).
+/// @fn F045103
+///
+/// The collision groups a ragdoll's bodies pass through (PhysicsActual::init's
+/// setGroupCollisionFlag pairs): in group 3 (outside, F038930) 0, 1, 5 (doors), 6, 7, 23 - 26
+/// (passable parts) and 28 - 31; in group 4 (inside a building, F039138; F044968 moves a ragdoll
+/// between the two as it goes in and out) also 2 and 14 (map features).
+pub fn ragdoll_ignores(inside: bool) -> u32 {
+    let outside: u32 = [0u32, 1, 5, 6, 7, 0x17, 0x18, 0x19, 0x1a, 0x1c, 0x1d, 0x1e, 0x1f].iter().fold(0, |m, g| m | 1 << g);
+    if inside { outside | 1 << 2 | 1 << 0xe } else { outside }
+}
+
+/// The ground and the buildings, less the collision groups in `ignored` (bits).
 pub struct Scene<'a, F: Fn(f32, f32) -> f32> {
     pub ground: F,
     pub statics: &'a StaticWorld,
-    pub people: &'a [(Vec3, Vec3, f32)],
+    pub ignored: u32,
 }
 
 impl<F: Fn(f32, f32) -> f32> Surroundings for Scene<'_, F> {
@@ -597,17 +692,7 @@ impl<F: Fn(f32, f32) -> f32> Surroundings for Scene<'_, F> {
         (self.ground)(x, z)
     }
     fn touches(&self, p: Vec3, r: f32, out: &mut Vec<(Vec3, f32)>) {
-        self.statics.touches(p, r, out);
-        for &(a, b, pr) in self.people {
-            let lo = a.y.min(b.y);
-            let hi = a.y.max(b.y);
-            let c = Vec3::new(a.x, p.y.clamp(lo + pr, (hi - pr).max(lo + pr)), a.z);
-            let d = p - c;
-            let dist = d.length();
-            if dist < r + pr && dist > 1e-6 {
-                out.push((d / dist, r + pr - dist));
-            }
-        }
+        self.statics.touches_except(p, r, self.ignored, out);
     }
 }
 
@@ -633,6 +718,36 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out[0].0.y > 0.99 && (out[0].1 - 0.1).abs() < 1e-4, "{out:?}");
     }
+
+    #[test]
+    fn a_scaled_frame_scales_its_solids() {
+        // a 2 x 1 x 2 box (half 1, 0.5, 1) at 5 up, placed three times as large: its top at 16.5
+        let s = Solids::new(&[Shape { pose: Pose { rows: Pose::IDENTITY.rows, pos: [0.0, 5.0, 0.0] }, kind: ShapeKind::Box([1.0, 0.5, 1.0]) }]);
+        let w = StaticWorld::grouped([(Affine3A::from_scale(Vec3::splat(3.0)), &s, 9)]);
+        let mut out = vec![];
+        w.touches(Vec3::new(2.0, 16.9, 0.0), 0.5, &mut out);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].0.y > 0.99 && (out[0].1 - 0.1).abs() < 1e-3, "{out:?}");
+        let t = w.raycast_groups(Vec3::new(2.0, 30.0, 0.0), Vec3::NEG_Y, 100.0, 1 << 9).unwrap();
+        assert!((t - 13.5).abs() < 1e-3, "{t}");
+        assert!(w.raycast_groups(Vec3::new(2.0, 30.0, 0.0), Vec3::NEG_Y, 100.0, 1 << 6).is_none());
+    }
+
+    #[test]
+    fn ragdolls_pass_through_their_ignored_groups() {
+        let s = Solids::new(&[Shape { pose: Pose { rows: Pose::IDENTITY.rows, pos: [0.0, 5.0, 0.0] }, kind: ShapeKind::Box([2.0, 1.0, 2.0]) }]);
+        let at = Vec3::new(0.5, 6.4, 0.0);
+        for (group, outside, inside) in [(9u8, true, true), (0x17, false, false), (DOOR, false, false), (0xe, true, false), (0x1b, true, true)] {
+            let w = StaticWorld::grouped([(Affine3A::IDENTITY, &s, group)]);
+            for (ins, hits) in [(false, outside), (true, inside)] {
+                let mut out = vec![];
+                w.touches_except(at, 0.5, ragdoll_ignores(ins), &mut out);
+                assert_eq!(!out.is_empty(), hits, "group {group} inside {ins}");
+            }
+        }
+    }
+
+    const DOOR: u8 = 5;
 
     #[test]
     fn rays_meet_solids() {

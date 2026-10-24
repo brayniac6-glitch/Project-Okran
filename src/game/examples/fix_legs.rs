@@ -8,6 +8,8 @@ fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let (zx, zy): (i32, i32) = (a[1].parse().unwrap(), a[2].parse().unwrap());
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &[]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     sim.step();
     let Some(id) = (0..sim.folk.len()).find(|&i| sim.folk[i].ai.jobs.iter().flatten().any(|j| j.task == FIXING_LEGS)) else {
         println!("no one here has Fixing Legs");

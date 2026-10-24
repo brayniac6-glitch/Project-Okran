@@ -11,6 +11,8 @@ fn main() {
     let seconds: f32 = a.get(3).map_or(5.0, |n| n.parse().unwrap());
     let only_uniques = a.get(4).is_some_and(|v| v == "1");
     let mut sim = Sim::load(install, zx, zy, 0, &["player:1".to_string()]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     while sim.t < seconds {
         sim.step();
     }

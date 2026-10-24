@@ -75,7 +75,8 @@ impl TradePrices {
     /// factor uniform in [1 - m, 1 + m], then held within (distance / 1e6) x m x 10 of every
     /// town set up before it.
     pub fn roll(data: &GameDataContainer, towns: &[[f32; 3]], margins: f32, rand: &mut dyn FnMut() -> f32) -> TradePrices {
-        let list = data.records.values().find(|r| r.item_type() == Some(ItemType::VendorList) && r.name == "all trade goods");
+        // (in load order: the records' map order is the hasher's, new each run)
+        let list = data.order.iter().filter_map(|s| data.get(s)).find(|r| r.item_type() == Some(ItemType::VendorList) && r.name == "all trade goods");
         let goods: Vec<String> = list.map(|l| l.refs("items").iter().map(|(s, _)| s.clone()).collect()).unwrap_or_default();
         let mut factor = HashMap::new();
         for (t, at) in towns.iter().enumerate() {
@@ -323,6 +324,9 @@ mod tests {
             model: None,
             uniform: None,
             owner: None,
+            buyback: 0,
+            crafter: None,
+            unique: false,
             contents: None,
             carry: 1.0,
         };

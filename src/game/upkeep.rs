@@ -161,16 +161,9 @@ impl Sim {
             pb.progress -= dt * rate * 4.0 * pb.speed;
             self.arena.f[id].skills.train(StatsEnumerated::StatEngineering, dt * 0.05, 1.0);
             if pb.progress <= 0.0 {
-                // the materials put in, back to the dismantler (else at their feet)
-                let mut back = Vec::new();
-                let mut left = pb.used;
-                for (m, n) in &pb.materials {
-                    let k = left.min(*n);
-                    left -= k;
-                    if k > 0 {
-                        back.push((m.clone(), k));
-                    }
-                }
+                // the materials put in (an upgrade's kept ones too), back to the dismantler
+                // (else at their feet)
+                let back: Vec<(String, u32)> = crate::upgrade::materials_in(pb).into_iter().filter(|(_, k)| *k > 0).collect();
                 self.remove_building(b);
                 for (m, n) in back {
                     let Some(rec) = self.data.get(&m).cloned() else { continue };
@@ -237,12 +230,14 @@ impl Sim {
                 interior: None,
                 exterior: None,
                 town: None,
+                inside: false,
                 squad: None,
                 residents: None,
                 locks: Vec::new(),
                 door_saved: Vec::new(),
                 destroyed: false,
                 power_on: None,
+                handle: None,
             };
             let data = self.data.clone();
             for door in kenshi_world::interior::doors(&data, &self.res, std::slice::from_ref(&place)) {

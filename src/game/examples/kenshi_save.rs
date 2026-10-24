@@ -4,6 +4,9 @@ fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let s = kenshi_game::kenshi_save::read(std::path::Path::new(&a[0])).expect("save");
     println!("day {} {:02}:{:02}, money {}, faction {:?}, version {:?}, zones {:?}, research {}", s.time.0, s.time.1, s.time.2, s.money, s.faction_name, s.version, s.zones, s.research.len());
+    if let Some((owner, known)) = &s.known {
+        println!("{owner} knows {} factions: {known:?}", known.len());
+    }
     for sq in &s.squads {
         println!("squad {} ({}, {} people) at {:?}", sq.id, sq.template, sq.characters.len(), sq.position.map(|v| v as i32));
         for c in &sq.characters {
@@ -17,5 +20,6 @@ fn main() {
         let people = |s: &kenshi_game::kenshi_save::KenshiSave| s.squads.iter().map(|q| q.characters.len()).sum::<usize>();
         let items = |s: &kenshi_game::kenshi_save::KenshiSave| s.squads.iter().flat_map(|q| &q.characters).map(|c| c.items.len()).sum::<usize>();
         println!("written and read back: {} squads / {}, {} people / {}, {} items / {}, money {} / {}", back.squads.len(), s.squads.len(), people(&back), people(&s), items(&back), items(&s), back.money, s.money);
+        println!("known read back: {:?} / {:?}", back.known.as_ref().map(|k| k.1.len()), s.known.as_ref().map(|k| k.1.len()));
     }
 }

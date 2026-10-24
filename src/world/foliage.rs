@@ -9,8 +9,10 @@
 //! [0, n] the tempered outputs masked to n's bits until one is no larger (F041775).
 //!
 //! The grass (F041797, PagedGeometry's GrassLoader) is `paint_grass` and `grass_blades` here, drawn
-//! by kenshi_render::zone. Not ported: FOLIAGE_BUILDINGs ("building type"),
-//! collision, sounds, navmesh cutting, "use accurate trace" (the terrain's height is taken), the
+//! by kenshi_render::zone, which also makes each object's "collision" (F041802, the physics only).
+//! An object of a FOLIAGE_MESH with a "building type" also makes that BUILDING where it stands
+//! (F041802 -> Building::create F038257; the simulation's, `kenshi_game::sim::add_zone`).
+//! Not ported: sounds, navmesh cutting, "use accurate trace" (the terrain's height is taken), the
 //! zone's own ground (F050506's zone lookup: the terrain's normal is taken), F041804's clearing of
 //! the overlay's grass for flagged zones.
 
@@ -36,6 +38,8 @@ pub struct FoliageMesh {
     pub grass_spot: f32,
     pub avoid_towns: bool,
     pub building_type: bool,
+    /// Its "building type": the BUILDING F041802 makes where an object of it stands.
+    pub building: Option<String>,
     /// (min, max) height: the scale is drawn from twice these, within 0.01 .. 10.
     pub height: (f32, f32),
     pub vertical_offset: (f32, f32),
@@ -156,6 +160,7 @@ impl Foliage {
                 grass_spot: fl("grass spot"),
                 avoid_towns: b("avoid towns"),
                 building_type: !r.refs("building type").is_empty(),
+                building: r.refs("building type").first().map(|(id, _)| id.clone()),
                 height: (fl("min height"), fl("max height")),
                 vertical_offset: (fl("vertical offset min"), fl("vertical offset max")),
                 children: Vec::new(),
@@ -524,7 +529,9 @@ fn place(
     // the yaw, in 255 steps
     let r = mt.range(0.0, 360.0);
     let yaw = (((r / 360.0) * 255.0) as i64 as u32 & 0xff) as f32 * (360.0 / 255.0);
-    if !blocked && !m.building_type {
+    // (one of a "building type" too: F041802 makes its building and places it all the same;
+    // a blocked one is not placed, 0x1406d2aae)
+    if !blocked {
         out.push(Placed { mesh: mi, layer, position: p, yaw, scale });
         reject(6);
     } else if blocked {
@@ -731,4 +738,262 @@ mod tests {
         assert_eq!(parse_int("3606-Newwworld.mod"), 3606);
         assert_eq!(parse_int("abc"), 0);
     }
+}
+
+/// The world's foliage as F041804 reads it for each zone: the records, the towns (for "avoid
+/// towns"), the terrain's biome blend (which biomes a zone is of) and the water's height.
+#[derive(Debug, Clone)]
+pub struct FoliageData {
+    pub foliage: Foliage,
+    pub towns: Vec<Town>,
+    pub blend: crate::terrain_biome::BlendInfo,
+    pub map: Option<crate::terrain_biome::BlendMap>,
+    /// BIOMES index -> record.
+    pub biomes: std::collections::HashMap<i32, String>,
+    pub water_level: f32,
+}
+
+impl FoliageData {
+    pub fn load(install: &std::path::Path, data: &GameDataContainer, water_level: f32) -> Option<FoliageData> {
+        Some(FoliageData {
+            foliage: Foliage::load(data),
+            towns: crate::town::towns(install, data),
+            blend: crate::terrain_biome::BlendInfo::load(install)?,
+            map: crate::terrain_biome::BlendMap::load(install),
+            biomes: crate::terrain_biome::terrain_biomes(data).into_iter().map(|b| (b.index, b.record)).collect(),
+            water_level,
+        })
+    }
+
+    /// The BIOMES index at world (x, z) (F051563: the blend cell's slot weighing most).
+    pub fn biome_index(&self, x: f32, z: f32) -> i32 {
+        let (cx, cy) = self.blend.cell_at(x, z);
+        let slot = self.map.as_ref().map_or(0, |m| m.dominant_slot(x, z));
+        self.blend.slots(cx, cy)[slot.min(4)]
+    }
+
+    /// The biome indices of a zone's blend cell (its slots, in slot order, the empty ones left out).
+    pub fn zone_slots(&self, zone: (i32, i32)) -> Vec<i32> {
+        let (x0, z0) = zone_corner(zone);
+        let (cx, cy) = self.blend.cell_at(x0 + crate::ZONE_SIZE / 2.0, z0 + crate::ZONE_SIZE / 2.0);
+        self.blend.slots(cx, cy).into_iter().filter(|&i| i != 0).collect()
+    }
+}
+
+/// A zone's world corner (x, z).
+pub fn zone_corner(zone: (i32, i32)) -> (f32, f32) {
+    (zone.0 as f32 * crate::ZONE_SIZE - crate::WORLD_SIZE / 2.0, zone.1 as f32 * crate::ZONE_SIZE - crate::WORLD_SIZE / 2.0)
+}
+
+/// The ground a zone's foliage reads: the terrain's heights (`heights`, world x, z) and its
+/// overlay tile.
+pub struct ZoneGround<'a, H: FnMut(f32, f32) -> f32> {
+    heights: H,
+    data: &'a FoliageData,
+    /// The overlay tile (BGRA as Ogre has it), its side in pixels and its first corner.
+    overlay: Vec<[u8; 4]>,
+    side: i32,
+    x0: f32,
+    z0: f32,
+    /// The zone's corner (world x, z): the origin of its slope grid.
+    zone_x0: f32,
+    zone_z0: f32,
+}
+
+/// The zone map's slope grid spacing (F045396).
+const SLOPE_CELL: f32 = 36.0;
+
+impl<'a, H: FnMut(f32, f32) -> f32> ZoneGround<'a, H> {
+    /// Zone `zone`'s ground, its overlay tile read from the install.
+    pub fn new(root: &std::path::Path, data: &'a FoliageData, zone: (i32, i32), heights: H) -> Self {
+        let (x0, z0) = zone_corner(zone);
+        let tile = (zone.0.div_euclid(8), zone.1.div_euclid(8));
+        let (side, overlay) = image::open(root.join(format!("data/newland/land/overlaymaps/new_overlay.{}.{}.png", tile.0, tile.1)))
+            .map(|i| {
+                let i = i.to_rgba8();
+                (i.width() as i32, i.pixels().map(|p| [p[2], p[1], p[0], p[3]]).collect())
+            })
+            .unwrap_or((1, Vec::new()));
+        ZoneGround {
+            heights,
+            data,
+            overlay,
+            side,
+            x0: tile.0 as f32 * crate::WORLD_SIZE / 8.0 - crate::WORLD_SIZE / 2.0,
+            z0: tile.1 as f32 * crate::WORLD_SIZE / 8.0 - crate::WORLD_SIZE / 2.0,
+            zone_x0: x0,
+            zone_z0: z0,
+        }
+    }
+
+    /// The overlay pixel (column, row) at world (x, z), held to the tile, and the pixel size.
+    pub fn cell(&self, x: f32, z: f32) -> (i32, i32, f32) {
+        let size = crate::WORLD_SIZE / 8.0;
+        let cell = size / self.side as f32;
+        let k = |v: f32, o: f32| {
+            let i = ((v - o) / cell) as i32;
+            if v < o {
+                0
+            } else if o + size < v {
+                self.side - 1
+            } else {
+                i
+            }
+        };
+        (k(x, self.x0), k(z, self.z0), cell)
+    }
+}
+
+impl<H: FnMut(f32, f32) -> f32> Ground for ZoneGround<'_, H> {
+    fn height(&mut self, x: f32, z: f32) -> f32 {
+        (self.heights)(x, z)
+    }
+    /// @fn F045396
+    ///
+    /// The zone map's slope (F050506 -> F051542 -> F045396): on the zone's height grid every 36
+    /// units from its corner, the grid point at or before (x, z); the larger of its height
+    /// difference to the point before it in x and to the next one in z (height units per 36,
+    /// the unit of the records' "min / max slope"). (assumption) The grid holds the terrain's
+    /// heights at its points; the grid's last row / column compare with themselves.
+    fn slope(&mut self, x: f32, z: f32) -> f32 {
+        let n = (crate::ZONE_SIZE / SLOPE_CELL) as i32;
+        let col = ((x - self.zone_x0) / SLOPE_CELL).clamp(0.0, n as f32) as i32;
+        let row = ((z - self.zone_z0) / SLOPE_CELL).clamp(0.0, n as f32) as i32;
+        let (zx, zz) = (self.zone_x0, self.zone_z0);
+        let mut at = |c: i32, r: i32| (self.heights)(zx + c as f32 * SLOPE_CELL, zz + r as f32 * SLOPE_CELL);
+        let h = at(col, row);
+        let left = if col > 0 { at(col - 1, row) } else { h };
+        let next = if row < n { at(col, row + 1) } else { h };
+        (h - left).abs().max((h - next).abs())
+    }
+    fn biome_index(&mut self, x: f32, z: f32) -> i32 {
+        self.data.biome_index(x, z)
+    }
+    fn overlay(&mut self, x: f32, z: f32) -> Option<[u8; 4]> {
+        let (c, r, _) = self.cell(x, z);
+        self.overlay_at(c, r)
+    }
+    fn overlay_cell(&mut self, x: f32, z: f32) -> Option<(i32, i32, f32)> {
+        (!self.overlay.is_empty()).then(|| self.cell(x, z))
+    }
+    fn overlay_at(&mut self, col: i32, row: i32) -> Option<[u8; 4]> {
+        if col < 0 || row < 0 || col >= self.side || row >= self.side {
+            return None;
+        }
+        self.overlay.get((row * self.side + col) as usize).copied()
+    }
+    fn overlay_centre(&mut self, col: i32, row: i32) -> Option<(f32, f32)> {
+        if col <= 0 || row <= 0 || col >= self.side - 1 || row >= self.side - 1 {
+            return None;
+        }
+        let cell = crate::WORLD_SIZE / 8.0 / self.side as f32;
+        Some(((col as f32 + 0.5) * cell + self.x0, (row as f32 + 0.5) * cell + self.z0))
+    }
+    fn set_overlay_green(&mut self, col: i32, row: i32, v: u8) {
+        self.set_overlay_channel(col, row, 1, v);
+    }
+    fn set_overlay_channel(&mut self, col: i32, row: i32, channel: usize, v: u8) {
+        if col >= 0 && row >= 0 && col < self.side && row < self.side {
+            self.overlay[(row * self.side + col) as usize][channel] = v;
+        }
+    }
+    fn pixel_world(&mut self, col: i32, row: i32) -> Option<(f32, f32)> {
+        if col < 0 || row < 0 || col >= self.side || row >= self.side {
+            return None;
+        }
+        let cell = crate::WORLD_SIZE / 8.0 / self.side as f32;
+        Some(((col as f32 + 0.5) * cell + self.x0, (row as f32 + 0.5) * cell + self.z0))
+    }
+    fn water_level(&self) -> f32 {
+        self.data.water_level
+    }
+}
+
+/// @fn F041804
+///
+/// A zone's foliage objects: the grass density painted into the overlay first (F041791: the
+/// layers' grass with reference value 0), then each of its biomes' foliage layers scattered over
+/// the zone. (assumption) The zone's biomes are its blend cell's slots, in slot order.
+pub fn zone_objects<H: FnMut(f32, f32) -> f32>(data: &FoliageData, ground: &mut ZoneGround<'_, H>, zone: (i32, i32)) -> Vec<Placed> {
+    let (x0, z0) = zone_corner(zone);
+    let rect = [x0, z0, x0 + crate::ZONE_SIZE, z0 + crate::ZONE_SIZE];
+    let slots = data.zone_slots(zone);
+    let (col0, row0, _) = ground.cell(x0, z0);
+    for &index in &slots {
+        let Some(record) = data.biomes.get(&index) else { continue };
+        let filter = (slots.len() > 1).then_some(index);
+        for u in data.foliage.biome_grass.get(record).into_iter().flatten() {
+            if u.channel == 2 {
+                paint_grass(&data.foliage.grass[u.grass], col0, row0, filter, ground);
+            }
+        }
+    }
+    let mut placed = Vec::new();
+    for &index in &slots {
+        let Some(record) = data.biomes.get(&index) else { continue };
+        let Some(layers) = data.foliage.biome_layers.get(record) else { continue };
+        let filter = (slots.len() > 1).then_some(index);
+        for &l in layers {
+            scatter_layer(&data.foliage, l, rect, filter, &data.towns, ground, &mut placed);
+        }
+    }
+    placed
+}
+
+/// @fn F041802
+///
+/// The buildings a zone's foliage makes: each object of a FOLIAGE_MESH with a "building type"
+/// (the resource rocks: "Iron Resource", "Copper Resource" and their small kin, mines of their
+/// "functionality") makes that BUILDING where it stands (Building::create F038257, its own
+/// orientation, not the object's turn), unless the FOLIAGE_MESH has no "collision" file (then
+/// F041802 only logs "has no physics file"). (assumption) F041802 hands Building::create the
+/// object's x and z at height 0; the building stands on the ground there, as its object does.
+pub fn zone_buildings<H: FnMut(f32, f32) -> f32>(
+    data: &FoliageData,
+    game: &GameDataContainer,
+    root: &std::path::Path,
+    zone: (i32, i32),
+    heights: H,
+) -> Vec<crate::Placement> {
+    // (only a zone of a biome with such meshes needs its scatter)
+    let slots = data.zone_slots(zone);
+    let any = slots.iter().filter_map(|i| data.biomes.get(i)).filter_map(|r| data.foliage.biome_layers.get(r)).flatten().any(|&l| {
+        fn has(f: &Foliage, m: usize, depth: u32) -> bool {
+            f.meshes[m].building.is_some() || (depth < 5 && f.meshes[m].children.iter().any(|&c| has(f, c, depth + 1)))
+        }
+        data.foliage.layers[l].meshes.iter().any(|&(m, _)| has(&data.foliage, m, 0))
+    });
+    if !any {
+        return Vec::new();
+    }
+    let mut ground = ZoneGround::new(root, data, zone, heights);
+    let placed = zone_objects(data, &mut ground, zone);
+    let mut out = Vec::new();
+    for p in placed {
+        let m = &data.foliage.meshes[p.mesh];
+        let Some(b) = m.building.as_ref().filter(|b| game.get(b).is_some()) else { continue };
+        let collision = game.get(&m.record).and_then(|r| r.files.get("collision")).is_some_and(|c| !c.is_empty());
+        if !collision {
+            continue;
+        }
+        let y = ground.height(p.position[0], p.position[2]);
+        out.push(crate::Placement {
+            building: b.clone(),
+            position: [p.position[0], y, p.position[2]],
+            rotation: [1.0, 0.0, 0.0, 0.0],
+            world_y: None,
+            interior: None,
+            exterior: None,
+            town: None,
+            inside: false,
+            squad: None,
+            residents: None,
+            locks: Vec::new(),
+            door_saved: Vec::new(),
+            destroyed: false,
+            power_on: None,
+            handle: None,
+        });
+    }
+    out
 }

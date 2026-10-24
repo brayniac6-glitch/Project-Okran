@@ -106,6 +106,9 @@ pub struct KenshiCharacterMaterial {
     /// Painted clothing's colour map (Skinned's colorMap: trilinear).
     #[texture(15)]
     pub color_map: Handle<Image>,
+    /// The shared main light (kenshi_render::light_buffer, kenshi_lighting.wgsl KenshiLight).
+    #[storage(70, read_only)]
+    pub light: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 impl Material for KenshiCharacterMaterial {
@@ -231,6 +234,7 @@ impl TerrainLook {
         params.world = Vec4::new(kenshi_world::WORLD_SIZE, 0.0, 0.0, 0.0);
         params.set_light(&self.light);
         KenshiCharacterMaterial {
+            light: crate::light_buffer::LIGHT,
             params,
             diffuse,
             normal,

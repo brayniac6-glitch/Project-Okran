@@ -10,6 +10,8 @@ fn main() {
     let seconds: f32 = a.get(1).map_or(120.0, |n| n.parse().unwrap());
     let extras = ["player:3".to_string(), "kit:1532935-rebirth.mod".to_string(), "spawn:-47334,-55623".to_string()];
     let mut sim = Sim::load(install, 21, 19, 0, &extras);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     let players: Vec<usize> = sim.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
     let mut last = vec![255u8; players.len()];
     let mut ordered = false;

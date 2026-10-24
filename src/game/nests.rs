@@ -1,11 +1,13 @@
 //! Nests in the simulation (kenshi_world::nest): BiomeManager keeps each biome's camps and dens
 //! up to its "num nests" (F048131, a nest a population tick), each at a random point of the
 //! biome away from towns and the player (F048115). A nest whose ground is loaded is built
-//! (F048909) and its "roaming squads" come to live there; one whose people are all dead is
-//! wiped out (F048878) and no longer counts, so another rises elsewhere in time.
+//! (F048909); its population manager (`nests_step`, one nest a step) brings its "roaming
+//! squads" to live there a squad at a time as its budget regrows, and finds it wiped out
+//! (F048779 / F048878) once it has none it can make and none left able to fight; a wiped out
+//! nest no longer counts, so another rises elsewhere in time.
 //!
 //! A biome whose nests stand at fixed markers only takes the level's nest markers (towns of
-//! kind 8). A nest's people are made once, when it is first built.
+//! kind 8).
 //!
 //! A nest is a town of its own (TownBase): its camp's buildings with a functionality (sitting
 //! spots and stools, camp beds, the campfire, torches) are its furniture (`register_camp`, as
@@ -23,6 +25,12 @@ use serde::{Deserialize, Serialize};
 /// A nest's furniture stands in no zone placement: its `placement` is this plus the nest's
 /// index.
 pub const NEST_PLACEMENT: usize = 1 << 40;
+
+/// A nest's radius (Nest vtable 0x2a0, F048767: 625 units; none for a type 8 one).
+pub const NEST_RADIUS: f32 = 625.0;
+
+/// The height Kenshi gives where it finds no ground (F050534: -99).
+pub const NO_HEIGHT: f32 = -99.0;
 
 
 /// A camp or den in the world.
@@ -52,6 +60,50 @@ pub struct Nest {
     pub furniture: Vec<usize>,
     #[serde(skip)]
     pub registered: bool,
+    /// Its population manager (Nest +0xe0).
+    #[serde(default)]
+    pub pop: NestPop,
+}
+
+/// @fn F048875
+/// @fn F048143
+///
+/// A nest's population manager (NestPopulationManager, BasePopulationManager's lists 1 and 2,
+/// saved as "pop" / "popd", "pop2" / "popd2", "ded", "started", F048149 / F048150): each list's
+/// target (+0x08) and budget (+0x0c) and when its budget last grew (its +0x00, game hours). The
+/// first list 0 and 0 for a nest; the second the record's "nest resident population", its
+/// budget 0.7 of that (F048875 over F048143's faction "roaming population").
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NestPop {
+    pub target: [i32; 2],
+    pub budget: [f32; 2],
+    pub stamp: [f64; 2],
+    pub dead: bool,
+    pub started: bool,
+    /// Made from the record (an older save's nests are made as they come up).
+    pub made: bool,
+}
+
+impl NestPop {
+    pub fn for_record(r: &kenshi_data::GameData) -> NestPop {
+        let n = nest_def(r).population;
+        NestPop { target: [0, n], budget: [0.0, n as f32 * 0.7], stamp: [0.0; 2], dead: false, started: false, made: true }
+    }
+
+    /// @fn F048096
+    ///
+    /// List `l`'s budget regrown: the game hours since its stamp x 3600 / 33 x 0.5, x 0.004,
+    /// added while under the target and held to it; the stamp now.
+    pub fn regrow(&mut self, l: usize, now: f64) {
+        let units = ((now - self.stamp[l]) * 3600.0 / 33.0 * 0.5) as f32;
+        self.stamp[l] = now;
+        if 0.0 <= units {
+            let target = self.target[l] as f32;
+            if self.budget[l] < target {
+                self.budget[l] = (units * 0.004 + self.budget[l]).min(target);
+            }
+        }
+    }
 }
 
 impl Sim {
@@ -81,29 +133,36 @@ impl Sim {
         let roll = self.rng.uniform();
         let Some(nest) = self.pick_nest(rec, roll) else {
             // a biome with nests to make but none to make them from: counted as made
-            self.nests.push(Nest { record: String::new(), name: String::new(), biome: b, at: [0.0; 3], pieces: vec![], loose: vec![], members: vec![], built: true, wiped: false, furniture: vec![], registered: false });
+            self.nests.push(Nest { record: String::new(), name: String::new(), biome: b, at: [0.0; 3], pieces: vec![], loose: vec![], members: vec![], built: true, wiped: false, furniture: vec![], registered: false, pop: NestPop::default() });
             return;
         };
-        let Some(at) = self.homeless_spawn_point(b) else { return };
+        let Some(mut at) = self.homeless_spawn_point(b) else { return };
+        // F048858: the nest's place on the ground there, when the ground is known
+        if let Some(h) = self.terrain.height_at(at[0], at[2]).ok().filter(|&h| h != NO_HEIGHT) {
+            at[1] = h;
+        }
         let name = data.get(&nest).map_or(String::new(), |r| r.name.clone());
         if std::env::var("KENSHI_NEST_DEBUG").is_ok() {
             eprintln!("nest {name} ({nest}) in {biome_name} at {:?}", at.map(|v| v as i32));
         }
-        self.nests.push(Nest { record: nest, name, biome: b, at, pieces: vec![], loose: vec![], members: vec![], built: false, wiped: false, furniture: vec![], registered: false });
+        self.nests.push(Nest { record: nest, name, biome: b, at, pieces: vec![], loose: vec![], members: vec![], built: false, wiped: false, furniture: vec![], registered: false, pop: NestPop::default() });
+        // F048805: a nest joins its faction's war manager list as it is made
+        self.war_town_moved(crate::world::Place::Nest(self.nests.len() - 1));
     }
 
     /// @fn F048115
     ///
-    /// A spawn point for biome `b`: up to 10 tries of a random zone of the biome that is not
-    /// one a player character stands in and holds no town, at a random point of its middle 80%;
-    /// else a random zone of the biome.
-    /// (stand-in) The point's placement, F048102 (pushed off towns, tried again on bad ground,
-    /// over water), is not ported.
+    /// A spawn point for biome `b`: up to 10 tries of a random zone of the biome (randInt over
+    /// its zones) that is not the camera's zone, not flagged as a town's (`zone_flagged`) and
+    /// with no town of its own (F048114), at a spawn point of it (F048102 with the camera kept
+    /// clear, towns' radius x 1.4 and other factions' nests' x 3); else a random zone of the
+    /// biome and its spawn point (towns' and nests' radius x 1), or its centre when it has none.
     ///
-    /// A biome with "nests at fixed markers only" (+0x04): one of its nest markers (F048808:
-    /// the towns of kind 8 in the biome, (assumption) by the zone they stand in) at random,
-    /// leaving out those with a town (other than a marker) or a nest within 2500 units
-    /// (F048793; (assumption) its second list, +0x88, the nests); none left: no nest.
+    /// A biome with "nests at fixed markers only" (+0x04): one of its nest markers at random
+    /// (F048808: the towns of kind 8 whose biome, Town +0x1a0, is it: the biome of the zone the
+    /// town stands in, set with its position, F048858), leaving out those with a town (other
+    /// than a marker) or a nest within 2500 units (F048793: TownList's towns, then its second
+    /// list, the TownBases that are no Town, F048868: the biomes' nests); none left: no nest.
     fn homeless_spawn_point(&mut self, b: usize) -> Option<[f32; 3]> {
         let at_markers = self.population.as_ref().and_then(|p| p.biomes.get(b)).is_some_and(|bio| bio.nests_at_markers);
         if at_markers {
@@ -129,32 +188,195 @@ impl Sim {
             if markers.is_empty() {
                 return None;
             }
-            let k = ((self.rng.uniform() * markers.len() as f32) as usize).min(markers.len() - 1);
+            let k = self.rand_int(0, markers.len() as i32 - 1) as usize;
             return Some(markers[k]);
         }
         let zones = self.biome_zones(b);
         if zones.is_empty() {
             return None;
         }
-        let players: Vec<(i32, i32)> = self.folk.iter().filter(|p| p.player).map(|p| {
-            let q = p.mover.position_units();
-            zone_at(q[0], q[2])
-        }).collect();
-        let towns: Vec<(i32, i32)> = self.towns.iter().map(|t| zone_at(t.position[0], t.position[2])).collect();
-        let mut pick = None;
+        let camera = self.camera_at().map(|c| zone_at(c[0], c[2]));
         for _ in 0..10 {
-            let z = zones[((self.rng.uniform() * zones.len() as f32) as usize).min(zones.len() - 1)];
-            if !players.contains(&z) && !towns.contains(&z) {
-                pick = Some(z);
-                break;
+            let z = zones[self.rand_int(0, zones.len() as i32 - 1) as usize];
+            if Some(z) != camera
+                && !self.zone_flagged(z)
+                && self.zone_town(z).is_none()
+                && let Some(p) = self.zone_spawn_point(z, true, None, 1.4, 3.0)
+            {
+                return Some(p);
             }
         }
-        let z = pick.unwrap_or(zones[((self.rng.uniform() * zones.len() as f32) as usize).min(zones.len() - 1)]);
+        let z = zones[self.rand_int(0, zones.len() as i32 - 1) as usize];
         let (cx, cz) = zone_centre(z.0, z.1);
-        let (dx, dz) = ((self.rng.uniform() - 0.5) * 0.8 * ZONE_SIZE, (self.rng.uniform() - 0.5) * 0.8 * ZONE_SIZE);
-        let (x, zz) = (cx + dx, cz + dz);
-        let y = self.terrain.height_at(x, zz).unwrap_or(0.0);
-        Some([x, y, zz])
+        Some(self.zone_spawn_point(z, true, None, 1.0, 1.0).unwrap_or([cx, 0.0, cz]))
+    }
+
+    /// @fn F050548
+    ///
+    /// randInt: a whole number from `lo` to `hi`, both in (clamped to them).
+    pub(crate) fn rand_int(&mut self, lo: i32, hi: i32) -> i32 {
+        if hi <= lo {
+            return lo;
+        }
+        (lo + (self.rng.uniform() * (hi - lo + 1) as f32) as i32).clamp(lo, hi)
+    }
+
+    /// Where the camera looks (the game's camera focus, world units). (harness) Run headless,
+    /// with no camera, the first player character stands for it.
+    pub(crate) fn camera_at(&self) -> Option<[f32; 3]> {
+        self.camera_focus.or_else(|| self.folk.iter().find(|p| p.player && !p.dead).map(|p| p.mover.position_units()))
+    }
+
+    /// @fn F048904
+    ///
+    /// A zone flagged as a town's (Zone +0x30): Town::setup flags the zone each town not of
+    /// type 4 or 9 stands in (its zone list is empty then: the zone at its position).
+    pub(crate) fn zone_flagged(&self, z: (i32, i32)) -> bool {
+        self.towns.iter().any(|t| t.kind != 4 && t.kind != 9 && zone_at(t.position[0], t.position[2]) == z)
+    }
+
+    /// @fn F048114
+    ///
+    /// A zone's own town: the town nearest its centre that stands in it, not a marker (type 8).
+    pub(crate) fn zone_town(&self, z: (i32, i32)) -> Option<usize> {
+        let (cx, cz) = zone_centre(z.0, z.1);
+        (0..self.towns.len())
+            .filter(|&t| self.towns[t].kind != 8 && zone_at(self.towns[t].position[0], self.towns[t].position[2]) == z)
+            .min_by(|&a, &b| {
+                let d = |t: usize| (self.towns[t].position[0] - cx).powi(2) + (self.towns[t].position[2] - cz).powi(2);
+                d(a).total_cmp(&d(b))
+            })
+    }
+
+    /// @fn F048099
+    ///
+    /// Whether a spawn point is good ground: the terrain there not below 95 (its height unknown,
+    /// -99, passes) and the areas map coloured there (ZoneManager's map, the pixel at the point
+    /// not black).
+    fn spawn_ground_ok(&mut self, p: [f32; 3]) -> bool {
+        let h = self.terrain.height_at(p[0], p[2]).unwrap_or(NO_HEIGHT);
+        if h < 95.0 && h != NO_HEIGHT {
+            return false;
+        }
+        self.population.as_ref().is_some_and(|pop| pop.map.colour_at(p[0], p[2]) != 0)
+    }
+
+    /// @fn F048792
+    ///
+    /// The nearest nest to `p` (TownList's second list: the biomes' nests, F048868), of
+    /// `faction` when given.
+    pub(crate) fn nearest_nest(&self, p: [f32; 3], faction: Option<&str>) -> Option<usize> {
+        (0..self.nests.len())
+            .filter(|&k| !self.nests[k].wiped && !self.nests[k].record.is_empty())
+            .filter(|&k| faction.is_none_or(|f| self.nest_faction(k).as_deref() == Some(f)))
+            .min_by(|&a, &b| {
+                let d = |k: usize| (self.nests[k].at[0] - p[0]).powi(2) + (self.nests[k].at[2] - p[2]).powi(2);
+                d(a).total_cmp(&d(b))
+            })
+    }
+
+    /// A nest's faction (its TOWN record's "faction", the Nest's +0x10).
+    pub(crate) fn nest_faction(&self, k: usize) -> Option<String> {
+        self.data.get(&self.nests[k].record).and_then(|r| r.refs("faction").first().map(|(f, _)| f.clone()))
+    }
+
+    /// Whether nest `k` holds `p` within its radius x `mult` (F048764 with the Nest's radius:
+    /// 625, none for a type 8 one, F048767).
+    fn nest_contains(&self, k: usize, p: [f32; 3], mult: f32) -> bool {
+        let kind = self.data.get(&self.nests[k].record).and_then(|r| r.ints.get("type").copied()).unwrap_or(0);
+        let r = if kind == 8 { 0.0 } else { NEST_RADIUS } * mult;
+        (self.nests[k].at[0] - p[0]).powi(2) + (self.nests[k].at[2] - p[2]).powi(2) < r * r
+    }
+
+    /// @fn F048102
+    /// @fn F048091
+    ///
+    /// Zone::spawnPoint: up to 4 random points of zone `z` (randRange over its square, z then
+    /// x, F050502), each tried 10 times: inside the nearest town (any but a marker, F048796)
+    /// within its radius x `town_mult` it is pushed out to that (F048091); else inside the
+    /// nearest nest (F048792) of another faction than `faction` it is pushed out to the nest's
+    /// radius x `nest_mult` (both only with `town_mult` over 0.01); else, with `avoid_camera`,
+    /// within 1382.4 units of the camera pushed out to that; else taken if on good ground
+    /// (F048099). The zone loaded: the point on the ground, out of a town it stands in (to the
+    /// town's radius), on the navmesh within 600 units (F032179); then, with `avoid_camera`,
+    /// none in a town (other than type 4); nor one whose gate code (F032176, `NavWorld::code_at`)
+    /// is above 0: inside a building's region.
+    pub(crate) fn zone_spawn_point(&mut self, z: (i32, i32), avoid_camera: bool, faction: Option<&str>, town_mult: f32, nest_mult: f32) -> Option<[f32; 3]> {
+        const CAMERA_CLEAR: f32 = 1382.4;
+        let lo = |k: i32| k as f32 * ZONE_SIZE - kenshi_world::WORLD_SIZE / 2.0;
+        let (x0, z0, x1, z1) = (lo(z.0), lo(z.1), lo(z.0 + 1), lo(z.1 + 1));
+        let camera = self.camera_at();
+        let push = |p: &mut [f32; 3], c: [f32; 3], d: f32| {
+            let (dx, dz) = (p[0] - c[0], p[2] - c[2]);
+            let l = dx.hypot(dz);
+            let (ux, uz) = if l > 0.0 { (dx / l, dz / l) } else { (0.0, 0.0) };
+            *p = [c[0] + ux * d, c[1], c[2] + uz * d];
+        };
+        let mut found = None;
+        'outer: for _ in 0..4 {
+            let pz = z0 + self.rng.uniform() * (z1 - z0);
+            let px = x0 + self.rng.uniform() * (x1 - x0);
+            let mut p = [px, NO_HEIGHT, pz];
+            for _ in 0..10 {
+                if town_mult > 0.01 {
+                    if let Some(t) = kenshi_world::town::nearest(&self.towns, p, 10, None)
+                        && self.towns[t].contains(p, town_mult)
+                    {
+                        let (c, r) = (self.towns[t].position, self.towns[t].radius() * town_mult);
+                        push(&mut p, c, r);
+                        continue;
+                    }
+                    if let Some(k) = self.nearest_nest(p, None)
+                        && (faction.is_none() || self.nest_faction(k).as_deref() != faction)
+                        && self.nest_contains(k, p, 1.0)
+                    {
+                        push(&mut p, self.nests[k].at, NEST_RADIUS * nest_mult);
+                        continue;
+                    }
+                }
+                if avoid_camera
+                    && let Some(c) = camera
+                    && (c[0] - p[0]).powi(2) + (c[1] - p[1]).powi(2) + (c[2] - p[2]).powi(2) < CAMERA_CLEAR * CAMERA_CLEAR
+                {
+                    push(&mut p, c, CAMERA_CLEAR);
+                    continue;
+                }
+                if self.spawn_ground_ok(p) {
+                    found = Some(p);
+                    break 'outer;
+                }
+            }
+        }
+        let mut p = found?;
+        // (Zone +0xb0: the zone loaded, `live_zones`)
+        if self.live_zones.contains_key(&z) {
+            p[1] = self.terrain.height_at(p[0], p[2]).unwrap_or(NO_HEIGHT);
+            if town_mult > 0.01
+                && let Some(t) = kenshi_world::town::nearest(&self.towns, p, 10, None)
+                && self.towns[t].contains(p, 1.0)
+            {
+                let (c, r) = (self.towns[t].position, self.towns[t].radius());
+                push(&mut p, c, r);
+            }
+            if !self.live_zones.contains_key(&zone_at(p[0], p[2])) {
+                return None;
+            }
+            if let Some((_, q)) = self.nav.closest_point(p.map(|v| v * kenshi_world::navmesh::METRES), 600.0 * kenshi_world::navmesh::METRES) {
+                p = q.map(|v| v / kenshi_world::navmesh::METRES);
+            }
+        }
+        if avoid_camera
+            && let Some(t) = kenshi_world::town::nearest(&self.towns, p, 10, None)
+            && self.towns[t].kind != 4
+            && self.towns[t].contains(p, 1.0)
+        {
+            return None;
+        }
+        // F032176: none behind a door (the gate code there above 0: a building's region)
+        if 0 < self.nav.code_at(p.map(|v| v * kenshi_world::navmesh::METRES)) {
+            return None;
+        }
+        Some(p)
     }
 
     /// The zones of biome `b` (the 64 x 64 grid), worked out once.
@@ -204,12 +426,8 @@ impl Sim {
         refs.last().map(|(s, _)| s.clone())
     }
 
-    /// The nests whose ground is loaded built and peopled (F048909); those whose people are all
-    /// dead wiped out (F048878). A nest's people: its population manager (F048875's
-    /// BasePopulationManager, its target the "nest resident population", F048832 topping
-    /// squads up within it) fills it from the "roaming squads", their first values the
-    /// weights; (assumption) at once, squads picked by weight until the people reach the
-    /// target (one of each when the record has none).
+    /// The nests whose ground is loaded built (F048909). Their people come from each nest's
+    /// population manager (`nests_step`), which also finds a nest wiped out.
     pub fn nests_tick(&mut self) {
         let data = self.data.clone();
         for k in 0..self.nests.len() {
@@ -220,13 +438,6 @@ impl Sim {
             if n.built {
                 if !n.registered {
                     self.register_camp(k);
-                }
-                let n = &self.nests[k];
-                if !n.members.is_empty() && n.members.iter().all(|&i| self.folk.get(i).is_none_or(|p| p.dead)) {
-                    let name = n.name.clone();
-                    self.nests[k].wiped = true;
-                    eprintln!("{name} has been wiped out");
-                    self.messages.push(format!("{name} has been wiped out"));
                 }
                 continue;
             }
@@ -242,43 +453,179 @@ impl Sim {
             let (pieces, loose) = kenshi_world::nest::camp(&data, &def, at, &mut |x, z| terrain.height_at(x, z).unwrap_or(at[1]), &mut |x, y, z| nav.closest_point([x * m, y * m, z * m], 6.0).is_some());
             if std::env::var("KENSHI_NEST_DEBUG").is_ok() {
                 eprintln!("nest {}: {} loose debris", def.name, loose.len());
-            }
-            let mut members = Vec::new();
-            let total: f32 = def.squads.iter().map(|(_, w)| *w as f32).sum();
-            let mut picks: Vec<String> = Vec::new();
-            if def.population <= 0 || total <= 0.0 {
-                picks = def.squads.iter().map(|(t, _)| t.clone()).collect();
-            }
-            let mut tries = 0;
-            while (def.population > 0 && total > 0.0 && (members.len() as i32) < def.population && tries < 64) || !picks.is_empty() {
-                tries += 1;
-                let t = match picks.pop() {
-                    Some(t) => t,
-                    None => {
-                        let mut r = self.rng.uniform() * total;
-                        def.squads.iter().find(|(_, w)| {
-                            r -= *w as f32;
-                            r < 0.0
-                        }).or(def.squads.last()).map(|(t, _)| t.clone()).unwrap_or_default()
-                    }
-                };
-                let a = self.rng.uniform() * std::f32::consts::TAU;
-                let d = self.rng.uniform() * def.radius * 0.3;
-                let (x, z) = (at[0] + a.cos() * d, at[2] + a.sin() * d);
-                let y = self.terrain.height_at(x, z).unwrap_or(at[1]);
-                if let Some(m) = self.spawn_template(&t, [x, y, z]) {
-                    members.extend(m);
-                }
-            }
-            if std::env::var("KENSHI_NEST_DEBUG").is_ok() {
-                eprintln!("nest {} built: {} buildings, {} people", def.name, pieces.len(), members.len());
+                eprintln!("nest {} built: {} buildings", def.name, pieces.len());
             }
             let n = &mut self.nests[k];
             n.pieces = pieces;
             n.loose = loose.into_iter().map(|d| (d.record, d.mesh, d.at, d.yaw, d.scale)).collect();
-            n.members = members;
             n.built = true;
             self.register_camp(k);
+        }
+    }
+
+    /// @fn F048870
+    ///
+    /// TownList::update's nests (its second list): one a step, in turn (0x142135438), has its
+    /// update (Nest vtable +0xe8, F048778): its population manager's (`nest_update`).
+    pub fn nests_step(&mut self) {
+        let list: Vec<usize> = (0..self.nests.len()).filter(|&k| !self.nests[k].record.is_empty()).collect();
+        if list.is_empty() {
+            return;
+        }
+        if list.len() <= self.nest_turn {
+            self.nest_turn = 0;
+        }
+        let k = list[self.nest_turn];
+        self.nest_turn += 1;
+        if !self.nests[k].pop.made
+            && let Some(r) = self.data.get(&self.nests[k].record)
+        {
+            let mut pop = NestPop::for_record(r);
+            // (an older save's nest: its people made at once as it was built)
+            pop.started = !self.nests[k].members.is_empty();
+            self.nests[k].pop = pop;
+        }
+        self.nest_update(k);
+    }
+
+    /// @fn F048117
+    /// @fn F048139
+    ///
+    /// A nest's population manager's update: its first list's budget regrown (F048096) and,
+    /// that one within 1 of its target, its second's; then with the nest's zone loaded (Zone
+    /// +0xb1, F051553: the port's zone in and its navmesh with it) and the nest of type 0 not
+    /// dead (+0x08), its second list topped up (F048138).
+    fn nest_update(&mut self, k: usize) {
+        let now = self.hours_gone();
+        let pop = &mut self.nests[k].pop;
+        pop.regrow(0, now);
+        if pop.budget[0] >= pop.target[0] as f32 - 1.0 {
+            pop.regrow(1, now);
+        }
+        let at = self.nests[k].at;
+        let z = zone_at(at[0], at[2]);
+        if !self.live_zones.contains_key(&z) || !self.nav.tiles.contains(&z) {
+            return;
+        }
+        let kind = self.data.get(&self.nests[k].record).and_then(|r| r.ints.get("type").copied()).unwrap_or(0);
+        if kind == 0 && !self.nests[k].pop.dead {
+            self.nest_top_up(k);
+        }
+    }
+
+    /// @fn F048138
+    /// @fn F048134
+    ///
+    /// A nest's second list topped up: its "roaming squads" (SpawnInfoList::load, F048166: the
+    /// ref's first value the weight, kept above 0; its second the least room it needs; the
+    /// template's faction, else 3943-gamedata.base) weighed (F048134, ratio and factor 1): one
+    /// whose world states hold, when the room (the budget less the people standing, F048121:
+    /// each squad's living, F044491) is at least its least, or over 4 with nobody left; its
+    /// weight less the squads of it its faction has loaded here not all down (F041595,
+    /// F044493), times the faction's spawn factor (1, F030216). None: unless one of its squads
+    /// can still fight (F044612) or one is gone, the nest is dead (F048779) and wiped out
+    /// (vtable +0x338, F048878). Else while the budget (floored) is above the people standing:
+    /// not with the camera within 1250 (squared, as Kenshi compares it) of the nest nor any of
+    /// the player's within 1250 units (F044287), one drawn by weight (randRange(0, total) along
+    /// the running sums) is made at the nest's centre, homed there (F038259, list 2).
+    fn nest_top_up(&mut self, k: usize) {
+        let data = self.data.clone();
+        let Some(rec) = data.get(&self.nests[k].record) else { return };
+        let entries: Vec<(String, i32, i32, String)> = rec
+            .refs("roaming squads")
+            .iter()
+            .filter(|(sq, v)| v[0] > 0 && data.get(sq).is_some_and(|t| t.item_type() == Some(kenshi_data::ItemType::SquadTemplate)))
+            .map(|(sq, v)| {
+                let faction = data.get(sq).and_then(|t| t.refs("faction").first().map(|(f, _)| f.clone())).unwrap_or_else(|| kenshi_world::biome::DEFAULT_SPAWN_FACTION.to_string());
+                (sq.clone(), v[0], v[1], faction)
+            })
+            .collect();
+        let members = self.nests[k].members.clone();
+        let mut platoons: Vec<usize> = members.iter().filter_map(|&m| self.folk.get(m).and_then(|p| p.platoon)).collect();
+        platoons.sort_unstable();
+        platoons.dedup();
+        let standing = members.iter().filter(|&&m| self.folk.get(m).is_some_and(|p| !p.dead)).count() as i32;
+        let budget = self.nests[k].pop.budget[1];
+        let room = (budget - standing as f32) as i32;
+        let first = standing == 0;
+        let mut candidates: Vec<(String, f32)> = Vec::new();
+        for (template, weight, least, faction) in &entries {
+            let Some(t) = data.get(template) else { continue };
+            if !self.template_states_hold(t) {
+                continue;
+            }
+            if !(*least <= room || (4 < room && first)) {
+                continue;
+            }
+            let folk = &self.folk;
+            let out = platoons
+                .iter()
+                .filter(|&&pid| {
+                    let of: Vec<usize> = members.iter().copied().filter(|&m| folk[m].platoon == Some(pid)).collect();
+                    self.squad_template.get(&pid) == Some(template)
+                        && of.iter().any(|&m| folk[m].faction.as_deref() == Some(faction.as_str()) && !folk[m].away)
+                        && of.iter().any(|&m| !folk[m].dead && !folk[m].down)
+                })
+                .count();
+            let w = (*weight as f32 - out as f32).max(0.0);
+            if 0.0 < w {
+                candidates.push((template.clone(), w));
+            }
+        }
+        if candidates.is_empty() {
+            if platoons.iter().any(|pid| self.cells.of.get(pid).is_some_and(|e| e.able)) {
+                return;
+            }
+            let name = self.nests[k].name.clone();
+            self.nests[k].pop.dead = true;
+            self.nests[k].wiped = true;
+            eprintln!("{name} has been wiped out");
+            self.messages.push(format!("{name} has been wiped out"));
+            return;
+        }
+        if budget.floor() <= standing as f32 {
+            return;
+        }
+        let at = self.nests[k].at;
+        if let Some(c) = self.camera_at()
+            && (c[0] - at[0]).powi(2) + (c[1] - at[1]).powi(2) + (c[2] - at[2]).powi(2) < 1250.0
+        {
+            return;
+        }
+        if self.folk.iter().any(|p| {
+            let q = p.mover.position_units();
+            p.player && !p.away && (q[0] - at[0]).hypot(q[2] - at[2]) <= 1250.0
+        }) {
+            return;
+        }
+        let pick = if candidates.len() == 1 {
+            0
+        } else {
+            let total: f32 = candidates.iter().map(|(_, w)| w).sum();
+            let r = self.rng.next() * total;
+            let mut run = 0.0;
+            candidates
+                .iter()
+                .position(|(_, w)| {
+                    run += w;
+                    r < run
+                })
+                .unwrap_or(candidates.len() - 1)
+        };
+        let template = candidates[pick].0.clone();
+        if let Some(made) = self.spawn_template(&template, at) {
+            if std::env::var("KENSHI_NEST_DEBUG").is_ok() {
+                eprintln!("nest {}: squad {template} ({} people)", self.nests[k].name, made.len());
+            }
+            let radius = nest_def(rec).radius;
+            let platoons: Vec<usize> = made.iter().filter_map(|&i| self.folk[i].platoon).collect();
+            for pl in platoons {
+                if let Some(Some(b)) = self.bar_states.get_mut(pl) {
+                    b.town = Some((at, radius));
+                }
+            }
+            self.nests[k].members.extend(made);
+            self.nests[k].pop.started = true;
         }
     }
 
@@ -375,7 +722,9 @@ impl Sim {
             None => self.pick_nest(rec, roll)?,
         };
         let name = data.get(&nest).map_or(String::new(), |r| r.name.clone());
-        self.nests.push(Nest { record: nest, name: name.clone(), biome: b, at, pieces: vec![], loose: vec![], members: vec![], built: false, wiped: false, furniture: vec![], registered: false });
+        self.nests.push(Nest { record: nest, name: name.clone(), biome: b, at, pieces: vec![], loose: vec![], members: vec![], built: false, wiped: false, furniture: vec![], registered: false, pop: NestPop::default() });
+        // F048805: a nest joins its faction's war manager list as it is made
+        self.war_town_moved(crate::world::Place::Nest(self.nests.len() - 1));
         Some(name)
     }
 }

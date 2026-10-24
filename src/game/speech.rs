@@ -43,10 +43,6 @@ pub const EV_BURNING: i32 = 69;
 /// F040920): EV_SCREAMING_TORTURE and the three EV_GET_UP_*.
 pub const DOWN_EVENTS: u32 = 0x0380_0800;
 
-/// (stand-in) Game hours a line is shown before its speaker says another (the dialogue's line
-/// timer, +0x230, not decompiled).
-const BARK_GAP: f64 = 0.05;
-
 impl Sim {
     /// Person `who` says `text` (shown over their head).
     pub fn say(&mut self, who: usize, text: String) {
@@ -57,34 +53,22 @@ impl Sim {
 
     /// @fn F040925
     ///
-    /// Person `who`'s dialogue raises `event` about `target`: none from the dead, none from the
-    /// knocked out but `DOWN_EVENTS`, none while it is still saying a line (`BARK_GAP`); else
-    /// the line `talk_on` picks, said aloud, or with replies to one of the player's
-    /// characters a conversation (`npc_talks`). Whether it spoke.
+    /// Person `who`'s dialogue raises `event` about `target` (crate::conversation: its
+    /// conversation played out line by line). Whether it spoke.
     pub fn bark(&mut self, who: usize, target: usize, event: i32) -> bool {
-        if who >= self.folk.len() || target >= self.folk.len() || self.folk[who].dead || self.folk[who].away {
+        if target >= self.folk.len() {
             return false;
         }
-        if self.folk[who].down && (DOWN_EVENTS >> (event & 31)) & 1 == 0 {
+        self.raise_event(who, Some(target), event, false)
+    }
+
+    /// `bark` cutting in on the conversation `who` is in even with the same event (F040925's
+    /// last argument).
+    pub fn bark_forced(&mut self, who: usize, target: usize, event: i32) -> bool {
+        if target >= self.folk.len() {
             return false;
         }
-        let now = self.hours_gone();
-        if self.bark_next.get(&who).is_some_and(|&t| now < t) {
-            return false;
-        }
-        let Some((mut conv, effects)) = self.talk_on(who, target, event, true) else { return false };
-        self.bark_next.insert(who, now + BARK_GAP);
-        if !conv.choices.is_empty() && self.folk[target].player && !self.folk[who].player {
-            self.npc_talks.push((conv, effects));
-            return true;
-        }
-        conv.choices.clear();
-        let text = std::mem::take(&mut conv.npc_text);
-        self.say(who, text);
-        if !effects.is_empty() {
-            self.npc_talks.push((conv, effects));
-        }
-        true
+        self.raise_event(who, Some(target), event, true)
     }
 
     /// Every second: people getting up say so; the player's characters newly in sight of
@@ -140,7 +124,9 @@ impl Sim {
                 }
             }
         }
-        let new: Vec<(usize, usize)> = seen.iter().copied().filter(|k| !self.dialog_memory.in_sight.contains(k)).collect();
+        // (in a fixed order: the set's own is the hasher's, and the sightings roll dice)
+        let mut new: Vec<(usize, usize)> = seen.iter().copied().filter(|k| !self.dialog_memory.in_sight.contains(k)).collect();
+        new.sort_unstable();
         self.dialog_memory.in_sight = seen;
         for (id, p) in new {
             self.sighted(id, p);
@@ -196,19 +182,20 @@ impl Sim {
     }
 
     /// Every second, those newly in a fight (CombatTask::engage, F050266):
-    /// - one speaking (F040924: a line still shown, or its dialogue begun within
-    ///   `ONE_AT_A_TIME_HOURS`), not in a fighting event (EV_I_SEE_ENEMY_PLAYER,
-    ///   EV_I_DEFEATED_SQUAD, EV_LAUNCH_ATTACK, EV_INTRUDER_FOUND, EV_GET_UP_FIGHT): its talk ends
-    ///   and it says EV_SPEECH_INTERRUPTED_ATTACKED_BY_TARGET at the one it talked to, or
-    ///   _BY_STRANGERS at another (the nobles' guards called on the player);
+    /// - one in a conversation (F040924, `Sim::interrupted`: its dialogue busy), not in a
+    ///   fighting event (EV_I_SEE_ENEMY_PLAYER, EV_I_DEFEATED_SQUAD, EV_LAUNCH_ATTACK,
+    ///   EV_INTRUDER_FOUND, EV_GET_UP_FIGHT): its talk ends and it says
+    ///   EV_SPEECH_INTERRUPTED_ATTACKED_BY_TARGET at the one it talked to, or _BY_STRANGERS at
+    ///   another (the nobles' guards called on the player);
     /// - one on a contract attacked by its hirer's side (Contract_HiredAlly, F029019): betrayed,
     ///   it says EV_BETRAYAL. (assumption) The contract ends there, the squad back on its own
     ///   package.
     ///   (assumption) Its attacker: the nearest fighter with it as target, else its own target.
     fn combat_events(&mut self) {
-        let now = self.hours_gone();
         let fighting: std::collections::HashSet<usize> = (0..self.folk.len()).filter(|&k| self.arena.f[k].active && !self.folk[k].dead && !self.folk[k].down).collect();
-        let new: Vec<usize> = fighting.iter().copied().filter(|k| !self.dialog_memory.fighting.contains(k)).collect();
+        // (in a fixed order: the set's own is the hasher's, and the barks roll dice)
+        let mut new: Vec<usize> = fighting.iter().copied().filter(|k| !self.dialog_memory.fighting.contains(k)).collect();
+        new.sort_unstable();
         self.dialog_memory.fighting = fighting;
         for id in new {
             let at = self.folk[id].mover.position_units();
@@ -233,21 +220,12 @@ impl Sim {
                             self.set_package(*m, p);
                         }
                     }
-                    self.bark_next.remove(&id);
-                    self.bark(id, attacker, EV_BETRAYAL);
+                    self.bark_forced(id, attacker, EV_BETRAYAL);
                     continue;
                 }
             }
-            // interrupted speaking
-            let running = self.dialog_memory.running.get(&id).and_then(|d| self.dialog_memory.spoken.get(&(id, d.clone()))).is_some_and(|&t| now < t + crate::dialogue::ONE_AT_A_TIME_HOURS);
-            let speaking = self.bark_next.get(&id).is_some_and(|&t| now < t) || running;
-            let event = self.dialog_memory.running_event.get(&id).copied().unwrap_or(0);
-            if speaking && ![EV_I_SEE_ENEMY_PLAYER, crate::dialogue::EV_I_DEFEATED_SQUAD, 16, 17, EV_GET_UP_FIGHT].contains(&event) {
-                let partner = self.talking_to(id);
-                self.dialog_memory.partner.remove(&id);
-                self.bark_next.remove(&id);
-                self.bark(id, attacker, if partner == Some(attacker) { EV_SPEECH_INTERRUPTED_ATTACKED_BY_TARGET } else { EV_SPEECH_INTERRUPTED_ATTACKED_BY_STRANGERS });
-            }
+            // interrupted speaking (F040924)
+            self.interrupted(id, attacker);
         }
     }
 

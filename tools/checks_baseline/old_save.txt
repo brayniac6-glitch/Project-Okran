@@ -1,0 +1,57 @@
+old save: version 1, zone (20, 32), t 60.0, 3 players, 35 people, 0 buildings, 40 ground items, 0 boxes, 1 zones
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+31 town nodes (21 general)
+town The Hub at [-50978.8, 1533.1519, 2932.4766], type 2, radius 2500
+63 pieces of furniture, bars: ["Storm House"]
+21 interior volumes, 2 doors
+hub squatters at Snailhouse: 1 leader(s), 2 others, package Squatters
+hub squatters at Small Shack: 1 leader(s), 0 others, package Squatters
+hub squatters at Old Storm House: 1 leader(s), 0 others, package Squatters
+hub squatters at Storm House: 1 leader(s), 2 others, package Squatters
+hub squatters at Stationhouse: 1 leader(s), 1 others, package Squatters
+Bar blackmarket at Storm House: 1 leader(s), 4 others, package Shop-24hr
+hub squatters at Bughouse: 0 leader(s), 0 others, package Squatters
+hub squatters at Small Shack: 1 leader(s), 1 others, package Squatters
+player squad: 3
+20 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Holy Nation Outlaws: enemies here []
+faction Trade Ninjas: enemies here []
+faction Nameless: enemies here []
+loaded: Counts { people: 35, players: 3, dead: 0, squads: 15, world_squads: 0, towns: 304, item_stacks: 288, item_quantity: 290, ground_items: 40, buildings: 0, placed: 110, destroyed: 21 }
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+31 town nodes (21 general)
+town The Hub at [-50978.8, 1533.1519, 2932.4766], type 2, radius 2500
+63 pieces of furniture, bars: ["Storm House"]
+21 interior volumes, 2 doors
+hub squatters at Snailhouse: 1 leader(s), 2 others, package Squatters
+hub squatters at Small Shack: 1 leader(s), 0 others, package Squatters
+hub squatters at Old Storm House: 1 leader(s), 0 others, package Squatters
+hub squatters at Storm House: 1 leader(s), 2 others, package Squatters
+hub squatters at Stationhouse: 1 leader(s), 1 others, package Squatters
+Bar blackmarket at Storm House: 1 leader(s), 4 others, package Shop-24hr
+hub squatters at Bughouse: 0 leader(s), 0 others, package Squatters
+hub squatters at Small Shack: 1 leader(s), 1 others, package Squatters
+player squad: 3
+20 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Holy Nation Outlaws: enemies here []
+faction Trade Ninjas: enemies here []
+faction Nameless: enemies here []
+round trip: Counts { people: 35, players: 3, dead: 0, squads: 15, world_squads: 0, towns: 304, item_stacks: 288, item_quantity: 290, ground_items: 40, buildings: 0, placed: 110, destroyed: 21 }
+check: people as saved: true
+check: players as saved: true
+check: buildings as saved: true
+check: ground items as saved: true
+check: round trip keeps the counts: true
+exit 0

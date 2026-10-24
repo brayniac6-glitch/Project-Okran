@@ -7,6 +7,22 @@
 #import bevy_pbr::mesh_view_types
 #import bevy_pbr::clustered_forward as clustering
 
+// The main light shared by the terrain, object, character and water materials
+// (kenshi_render::light_buffer: one buffer, bound at 70 in each).
+struct KenshiLight {
+    sun_direction: vec4<f32>,
+    sun_colour: vec4<f32>,
+    env_colour: vec4<f32>,
+    ambient_params: vec4<f32>,
+    sun_real: vec4<f32>,
+    horizon: vec4<f32>,
+    fog: vec4<f32>,
+    fog_colour: vec4<f32>,
+    // x exposure, y wetness, z rain amount, w gameTime (hours)
+    misc: vec4<f32>,
+    dust: vec4<f32>,
+}
+
 const PI: f32 = 3.14159265;
 const DIELECTRIC_SPEC: f32 = 0.04;
 

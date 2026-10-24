@@ -1,0 +1,139 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+136 town nodes (34 general)
+town Shark at [-47040.98, 120.94015, 48137.1], type 2, radius 2500
+417 pieces of furniture, bars: ["Swamp Dome", "Swamp Dome"]
+15 interior volumes, 15 doors
+swamper fish and drugs at Swamp Store: 1 leader(s), 0 others, package Shop
+Swamper Blackshifter at Swamp Shack: 1 leader(s), 4 others, package Guard building, residents
+the dancing skeleton at Swamp Dome: 1 leader(s), 4 others, package Shop-24hr
+swamp trade goods at Swamp House: 1 leader(s), 1 others, package Shop
+swamp travel shop at Swamp House: 1 leader(s), 1 others, package Shop
+swamper fish and drugs at Swamp Store: 1 leader(s), 0 others, package Shop
+swamp shop mechanical at Swamp Shack: 1 leader(s), 0 others, package Shop
+swamp smithy at Swamp House: 1 leader(s), 1 others, package Shop
+Swamper resident solo at Swamp Shack: 1 leader(s), 1 others, package worker fighter indie resident
+Swamper resident solo at Swamp Shack: 1 leader(s), 0 others, package worker fighter indie resident
+Swamper resident solo at Swamp House: 1 leader(s), 0 others, package worker fighter indie resident
+Swamper resident solo at Swamp House: 1 leader(s), 1 others, package worker fighter indie resident
+Swamper resident solo at Swamp Shack: 1 leader(s), 1 others, package worker fighter indie resident
+hound hq at Swamp Dome: 1 leader(s), 8 others, package Guard building, residents
+blsh casino guy at Swamp Dome: 1 leader(s), 5 others, package Shop-24hr
+player squad: 1
+player squad: 1
+44 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Swampers: enemies here []
+faction Blackshifters: enemies here []
+faction Hounds: enemies here []
+faction Nameless: enemies here []
+processor containers Some([("in1", 6, 4, 20), ("out", 6, 3, 10)]); storage holds 40 Raw Stone
+operator's jobs [87]
+world: 0 squads abroad, 304 towns
+jobs: 42 starts 92 on Store(1048577)
+jobs: 42 collects 2 from 1
+t 30: operator at [81, -14] queue [1, 93, 87]; input 0, output 0, storage 38
+jobs: 42 starts 93 on Building(0)
+jobs: 42 put 2 things into 0
+jobs: 42 starts 87 on Building(0)
+t 60: operator at [147, -2] queue [87]; input 1, output 0, storage 38
+t 90: operator at [147, -2] queue [87]; input 1, output 0, storage 38
+t 120: operator at [147, -2] queue [87]; input 1, output 0, storage 38
+t 150: operator at [147, -2] queue [87]; input 1, output 0, storage 38
+t 180: operator at [147, -2] queue [87]; input 1, output 0, storage 38
+t 210: operator at [147, -2] queue [87]; input 1, output 0, storage 38
+t 240: operator at [147, -2] queue [87]; input 1, output 0, storage 38
+t 270: operator at [147, -2] queue [87]; input 1, output 0, storage 38
+t 300: operator at [147, -2] queue [87]; input 1, output 0, storage 38
+t 330: operator at [147, -2] queue [87]; input 1, output 0, storage 38
+t 360: operator at [147, -2] queue [87]; input 0, output 0, storage 38
+t 390: operator at [147, -2] queue [87]; input 0, output 0, storage 38
+t 420: operator at [147, -2] queue [87]; input 0, output 0, storage 38
+t 450: operator at [147, -2] queue [87]; input 0, output 0, storage 38
+t 480: operator at [147, -2] queue [87]; input 0, output 0, storage 38
+t 510: operator at [147, -2] queue [87]; input 0, output 0, storage 38
+t 540: operator at [147, -2] queue [87]; input 0, output 0, storage 38
+t 570: operator at [147, -2] queue [87]; input 0, output 0, storage 38
+t 600: operator at [147, -2] queue [87]; input 0, output 0, storage 38
+t 630: operator at [59, -21] queue [1, 92, 94, 93, 87, 1]; input 0, output 1, storage 38
+jobs: 42 starts 92 on Store(1048577)
+jobs: 42 collects 2 from 1
+t 660: operator at [86, -15] queue [1, 93, 87]; input 0, output 1, storage 36
+jobs: 42 starts 93 on Building(0)
+jobs: 42 put 2 things into 0
+jobs: 42 starts 87 on Building(0)
+t 690: operator at [147, -4] queue [87]; input 1, output 1, storage 36
+t 720: operator at [147, -4] queue [87]; input 1, output 1, storage 36
+t 750: operator at [147, -4] queue [87]; input 1, output 1, storage 36
+t 780: operator at [147, -4] queue [87]; input 1, output 1, storage 36
+t 810: operator at [147, -4] queue [87]; input 1, output 1, storage 36
+t 840: operator at [147, -4] queue [87]; input 1, output 1, storage 36
+t 870: operator at [147, -4] queue [87]; input 1, output 1, storage 36
+t 900: operator at [147, -4] queue [87]; input 1, output 1, storage 36
+check: the operator fed the processor from the storage true (first fed at Some(33.64966); storage 36 Raw Stone left, input 1, made 1 Building Material, the next 0.42 made) and worked it true
+hauler's jobs [152, 124]; ore storage holds 30
+t 910: hauler at [-66, -33] queue [1, 92, 94, 124, 1]; refinery input 0, ore storage 30
+t 920: hauler at [-12, -170] queue [1, 92, 94, 124, 1]; refinery input 0, ore storage 30
+jobs: 43 starts 92 on Store(1048579)
+jobs: 43 collects 5 from 3
+t 930: hauler at [30, -86] queue [1, 93, 152]; refinery input 0, ore storage 25
+t 940: hauler at [48, 58] queue [1, 93, 152]; refinery input 0, ore storage 25
+jobs: 43 starts 93 on Building(2)
+jobs: 43 put 5 things into 2
+t 950: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 960: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 970: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 980: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 990: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1000: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1010: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1020: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1030: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1040: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1050: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1060: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1070: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1080: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1090: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1100: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1110: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1120: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1130: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1140: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1150: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1160: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1170: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1180: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+t 1190: hauler at [-0, 195] queue []; refinery input 5, ore storage 25
+check: the Auto-Haul job fed the refinery from the ore storage true (input 5, storage 25)
+2 Raw Stone lying loose; the processor's input 0
+t 1200: operator queue [(1, Item(143)), (92, Item(143)), (94, Building(0)), (93, Building(0)), (87, Building(0))]; loose 2, input 0
+t 1210: operator queue [(1, Item(143)), (92, Item(143)), (94, Building(0)), (93, Building(0)), (87, Building(0)), (1, Building(0))]; loose 2, input 0
+jobs: 42 starts 92 on Item(143)
+t 1220: operator queue [(1, Building(0)), (93, Building(0)), (87, Building(0))]; loose 1, input 0
+jobs: 42 starts 93 on Building(0)
+jobs: 42 put 1 things into 0
+jobs: 42 starts 87 on Building(0)
+t 1230: operator queue [(87, Building(0))]; loose 1, input 0
+t 1241: operator queue [(87, Building(0))]; loose 1, input 0
+t 1251: operator queue [(87, Building(0))]; loose 1, input 0
+t 1261: operator queue [(87, Building(0))]; loose 1, input 0
+t 1271: operator queue [(87, Building(0))]; loose 1, input 0
+t 1281: operator queue [(87, Building(0))]; loose 1, input 0
+t 1291: operator queue [(87, Building(0))]; loose 1, input 0
+t 1301: operator queue [(87, Building(0))]; loose 1, input 0
+t 1311: operator queue [(87, Building(0))]; loose 1, input 0
+t 1321: operator queue [(87, Building(0))]; loose 1, input 0
+t 1331: operator queue [(87, Building(0))]; loose 1, input 0
+t 1341: operator queue [(87, Building(0))]; loose 1, input 0
+t 1351: operator queue [(87, Building(0))]; loose 1, input 0
+t 1361: operator queue [(87, Building(0))]; loose 1, input 0
+t 1371: operator queue [(87, Building(0))]; loose 1, input 0
+t 1381: operator queue [(87, Building(0))]; loose 1, input 0
+t 1391: operator queue [(87, Building(0))]; loose 1, input 0
+check: the operator picked the loose Raw Stone up and fed the processor true (loose 1 of 2, input at most 1)
+exit 0

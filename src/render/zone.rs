@@ -107,6 +107,11 @@ pub struct ZoneScene {
     /// index) each is of.
     pub collision_door: Vec<bool>,
     pub collision_building: Vec<Option<usize>>,
+    /// Each one's PhysX collision group (`collision_group`, F037849 / F032039).
+    pub collision_group: Vec<u8>,
+    /// The foliage objects' collision (F041802), each where its object stands, and its group:
+    /// the physics only (the navmesh is not cut round them, as PhysX actors are not Havok's).
+    pub foliage_collision: Vec<(Transform, Arc<kenshi_physics::world::Solids>, u8)>,
     pub patch: Patch,
     /// Terrain pieces: (colour tile, blend cell, mesh).
     pub terrain: Vec<crate::TerrainPiece>,
@@ -139,6 +144,42 @@ pub fn part_meshes<'a>(
     b: &'a GameData,
 ) -> Vec<(&'a str, Option<&'a GameData>)> {
     part_meshes_of(data, b, false)
+}
+
+/// F032039: a map feature's "collision" is in PhysX collision group 14.
+pub const FEATURE_GROUP: u8 = 0xe;
+/// F041802: a foliage object's collision, unless "walkable" (then 14), is in group 6.
+pub const FOLIAGE_GROUP: u8 = 6;
+/// F037849: a door's parts (a Building whose +0x1a0 is set, made a door entity) are in group 5.
+pub const DOOR_GROUP: u8 = 5;
+
+/// @fn F037849
+///
+/// A building part's PhysX collision group: by its floor (its "building floor"; for furniture,
+/// "is exterior / interior furniture", the floor the furniture stands on, `floor`) 9 - 12 (a floor
+/// past 3 as 0); an "is unwalkable roof" part 27; "is stairs" 15 - 18; a "passable" part or any
+/// part of a building of "path mode" 0 (not cut from the navmesh) 23 - 26 by the building's
+/// floor, else furniture 19 - 22; 14 more while the building is unfinished (the zones' buildings
+/// are built). The groups say what collides with what (F045103: ragdolls pass through 23 - 26).
+pub fn part_group(part: Option<&GameData>, building: Option<&GameData>, floor: i32) -> u8 {
+    let flag = |r: Option<&GameData>, k: &str| r.is_some_and(|r| r.bools.get(k).copied().unwrap_or(false));
+    let furniture = flag(building, "is exterior furniture") || flag(building, "is interior furniture");
+    let part_floor = if furniture { floor } else { part.and_then(|r| r.ints.get("building floor").copied()).unwrap_or(0) };
+    let by = |base: u8, f: i32| if (1..=3).contains(&f) { base + f as u8 } else { base };
+    let mut group = by(9, part_floor);
+    if flag(part, "is unwalkable roof") {
+        group = 0x1b;
+    }
+    if flag(part, "is stairs") {
+        group = by(0xf, part_floor);
+    }
+    let path_mode = building.and_then(|b| b.ints.get("path mode").copied());
+    if flag(part, "passable") || path_mode == Some(0) {
+        group = by(0x17, floor);
+    } else if furniture {
+        group = by(0x13, floor);
+    }
+    group
 }
 
 /// @fn F037849
@@ -794,6 +835,8 @@ fn load_zone_at(
     let mut lights = Vec::new();
     let mut lights_inside = Vec::new();
     let mut effects_of = Vec::new();
+    // each placement's BUILDING (its collision groups, `part_group`)
+    let placed_records: Vec<String> = placed.iter().map(|p| p.building.clone()).collect();
     let placed_names: Vec<String> = placed.iter().map(|p| data.get(&p.building).map_or(p.building.clone(), |r| r.name.clone())).collect();
     for (bi, p) in placed.into_iter().enumerate() {
         let Some(b) = data.get(&p.building) else {
@@ -966,7 +1009,7 @@ fn load_zone_at(
             Some((m, x))
         })
         .collect();
-    collision_of.extend(feature_collision);
+    collision_of.extend(feature_collision.clone());
     // the doors' meshes (their collision is placed shut; people open doors, so they do not cut
     // the navmesh)
     let door_meshes: std::collections::HashSet<String> = data
@@ -974,12 +1017,29 @@ fn load_zone_at(
         .flat_map(|b| b.refs("doors").iter().filter_map(|(sid, _)| data.get(sid)).collect::<Vec<_>>())
         .flat_map(|d| record_meshes(data, d).into_iter().filter_map(|(m, _)| res.find(m)))
         .collect();
-    let (collision, marks): (Vec<_>, Vec<(bool, Option<usize>)>) = pieces
+    // each part mesh's BUILDING_PART (its flags for the collision group)
+    let part_of: HashMap<String, &GameData> = data
+        .of_type(kenshi_data::ItemType::BuildingPart)
+        .filter_map(|r| Some((r.files.get("phs or mesh").and_then(|m| res.find(m))?, r)))
+        .collect();
+    let group_of = |p: &Piece| -> u8 {
+        if feature_collision.contains_key(&p.mesh) {
+            return FEATURE_GROUP;
+        }
+        if door_meshes.contains(&p.mesh) {
+            return DOOR_GROUP;
+        }
+        let building = p.building.and_then(|b| placed_records.get(b)).and_then(|id| data.get(id));
+        part_group(part_of.get(&p.mesh).copied(), building, p.floor.unwrap_or(0))
+    };
+    let (collision, marks): (Vec<_>, Vec<(bool, Option<usize>, u8)>) = pieces
         .iter()
         .filter(|p| p.foliage_range.is_none())
-        .filter_map(|p| Some(((p.transform, solids(root, collision_of.get(&p.mesh)?)?), (door_meshes.contains(&p.mesh), p.building))))
+        .filter_map(|p| Some(((p.transform, solids(root, collision_of.get(&p.mesh)?)?), (door_meshes.contains(&p.mesh), p.building, group_of(p)))))
         .unzip();
-    let (collision_door, collision_building): (Vec<bool>, Vec<Option<usize>>) = marks.into_iter().unzip();
+    let collision_door: Vec<bool> = marks.iter().map(|m| m.0).collect();
+    let collision_building: Vec<Option<usize>> = marks.iter().map(|m| m.1).collect();
+    let collision_group: Vec<u8> = marks.iter().map(|m| m.2).collect();
     if std::env::var("KENSHI_COLLISION_DEBUG").is_ok() {
         let missing: std::collections::BTreeSet<&str> =
             pieces.iter().filter(|p| !collision_of.contains_key(&p.mesh)).map(|p| p.mesh.as_str()).collect();
@@ -1058,6 +1118,8 @@ fn load_zone_at(
         collision,
         collision_door,
         collision_building,
+        collision_group,
+        foliage_collision: Vec::new(),
         terrain: terrain_pieces_where(&patch, Some(origin), 512, 300.0, |_, _| true),
         patch,
         pieces,
@@ -1181,25 +1243,24 @@ pub fn foliage_ranges(
 
 /// What the zones' foliage reads (made once, shared with the loader threads).
 pub struct FoliageWorld {
-    pub foliage: kenshi_world::foliage::Foliage,
-    pub towns: Vec<kenshi_world::town::Town>,
-    pub blend: kenshi_world::terrain_biome::BlendInfo,
-    pub map: Option<kenshi_world::terrain_biome::BlendMap>,
-    /// BIOMES index -> record.
-    pub biomes: HashMap<i32, String>,
+    /// The records, towns and biome blend each zone's scatter reads (`kenshi_world::foliage`).
+    pub base: kenshi_world::foliage::FoliageData,
     /// Per FOLIAGE_MESH: its mesh file (found) and look.
     pub looks: Vec<(Option<String>, ObjectLook)>,
     /// Per FOLIAGE_MESH: its "leaves mesh" (found) and their look (F041798: the "leaves
     /// texture", "leaves normal" and "leaves alpha threshold" as an object material of type 4,
     /// cut out and double-sided).
     pub leaves: Vec<Option<(String, ObjectLook)>>,
-    pub water_level: f32,
     /// settings.cfg "foliage range", "grass range", "grass density".
     pub foliage_range: f32,
     pub grass_range: f32,
     pub grass_density: f32,
     /// Per GRASS: its sprite (found).
     pub sprites: Vec<Option<String>>,
+    /// Per FOLIAGE_MESH: its "collision" file (found) and whether its actors are in group 14 (it is
+    /// "walkable", or its objects make a building: F041802) rather than 6 (F041792 keeps the file;
+    /// F041802 makes it a static actor of each object).
+    pub collision: Vec<Option<(String, bool)>>,
 }
 
 impl FoliageWorld {
@@ -1210,7 +1271,8 @@ impl FoliageWorld {
         water_level: f32,
         settings: (f32, f32, f32),
     ) -> Option<FoliageWorld> {
-        let foliage = kenshi_world::foliage::Foliage::load(data);
+        let base = kenshi_world::foliage::FoliageData::load(install, data, water_level)?;
+        let foliage = &base.foliage;
         let sprites: Vec<Option<String>> = foliage.grass.iter().map(|g| res.find(&g.sprite)).collect();
         let looks = foliage
             .meshes
@@ -1253,131 +1315,35 @@ impl FoliageWorld {
                 ))
             })
             .collect();
+        let collision = foliage
+            .meshes
+            .iter()
+            .map(|m| {
+                let r = data.get(&m.record)?;
+                let file = r.files.get("collision").filter(|f| !f.is_empty()).and_then(|f| res.find(f))?;
+// walkable, or the object makes a building (its "building type" found): group 14
+                let building = r.refs("building type").first().is_some_and(|(b, _)| data.get(b).is_some());
+                Some((file, r.bools.get("walkable").copied().unwrap_or(false) || building))
+            })
+            .collect();
         Some(FoliageWorld {
-            foliage,
-            towns: kenshi_world::town::towns(install, data),
-            blend: kenshi_world::terrain_biome::BlendInfo::load(install)?,
-            map: kenshi_world::terrain_biome::BlendMap::load(install),
-            biomes: kenshi_world::terrain_biome::terrain_biomes(data)
-                .into_iter()
-                .map(|b| (b.index, b.record))
-                .collect(),
+            collision,
+            base,
             sprites,
             looks,
             leaves,
-            water_level,
             foliage_range: settings.0,
             grass_range: settings.1,
             grass_density: settings.2,
         })
     }
 
-    /// The BIOMES index at world (x, z) (F051563: the blend cell's slot weighing most).
-    fn biome_index(&self, x: f32, z: f32) -> i32 {
-        let (cx, cy) = self.blend.cell_at(x, z);
-        let slot = self.map.as_ref().map_or(0, |m| m.dominant_slot(x, z));
-        self.blend.slots(cx, cy)[slot.min(4)]
-    }
 }
 
-/// The ground a zone's foliage reads: its terrain patch and its overlay tile.
-struct ZoneGround<'a> {
-    patch: &'a Patch,
-    world: &'a FoliageWorld,
-    /// The overlay tile (BGRA as Ogre has it), its side in pixels and its first corner.
-    overlay: Vec<[u8; 4]>,
-    side: i32,
-    x0: f32,
-    z0: f32,
-    /// The zone's corner (world x, z): the origin of its slope grid.
-    zone_x0: f32,
-    zone_z0: f32,
-}
-
-/// The zone map's slope grid spacing (F045396).
-const SLOPE_CELL: f32 = 36.0;
-
-impl ZoneGround<'_> {
-    fn cell(&self, x: f32, z: f32) -> (i32, i32, f32) {
-        let size = WORLD_SIZE / 8.0;
-        let cell = size / self.side as f32;
-        let k = |v: f32, o: f32| {
-            let i = ((v - o) / cell) as i32;
-            if v < o {
-                0
-            } else if o + size < v {
-                self.side - 1
-            } else {
-                i
-            }
-        };
-        (k(x, self.x0), k(z, self.z0), cell)
-    }
-}
-
-impl kenshi_world::foliage::Ground for ZoneGround<'_> {
-    fn height(&mut self, x: f32, z: f32) -> f32 {
-        ground_on(self.patch, Vec3::ZERO, x, z)
-    }
-    /// @fn F045396
-    ///
-    /// The zone map's slope (F050506 -> F051542 -> F045396): on the zone's height grid every 36
-    /// units from its corner, the grid point at or before (x, z); the larger of its height
-    /// difference to the point before it in x and to the next one in z (height units per 36,
-    /// the unit of the records' "min / max slope"). (assumption) The grid holds the terrain's
-    /// heights at its points; the grid's last row / column compare with themselves.
-    fn slope(&mut self, x: f32, z: f32) -> f32 {
-        let n = (ZONE_SIZE / SLOPE_CELL) as i32;
-        let col = ((x - self.zone_x0) / SLOPE_CELL).clamp(0.0, n as f32) as i32;
-        let row = ((z - self.zone_z0) / SLOPE_CELL).clamp(0.0, n as f32) as i32;
-        let at = |c: i32, r: i32| {
-            ground_on(self.patch, Vec3::ZERO, self.zone_x0 + c as f32 * SLOPE_CELL, self.zone_z0 + r as f32 * SLOPE_CELL)
-        };
-        let h = at(col, row);
-        let left = if col > 0 { at(col - 1, row) } else { h };
-        let next = if row < n { at(col, row + 1) } else { h };
-        (h - left).abs().max((h - next).abs())
-    }
-    fn biome_index(&mut self, x: f32, z: f32) -> i32 {
-        self.world.biome_index(x, z)
-    }
-    fn overlay(&mut self, x: f32, z: f32) -> Option<[u8; 4]> {
-        let (c, r, _) = self.cell(x, z);
-        self.overlay_at(c, r)
-    }
-    fn overlay_cell(&mut self, x: f32, z: f32) -> Option<(i32, i32, f32)> {
-        (!self.overlay.is_empty()).then(|| self.cell(x, z))
-    }
-    fn overlay_at(&mut self, col: i32, row: i32) -> Option<[u8; 4]> {
-        if col < 0 || row < 0 || col >= self.side || row >= self.side {
-            return None;
-        }
-        self.overlay.get((row * self.side + col) as usize).copied()
-    }
-    fn overlay_centre(&mut self, col: i32, row: i32) -> Option<(f32, f32)> {
-        if col <= 0 || row <= 0 || col >= self.side - 1 || row >= self.side - 1 {
-            return None;
-        }
-        let cell = WORLD_SIZE / 8.0 / self.side as f32;
-        Some(((col as f32 + 0.5) * cell + self.x0, (row as f32 + 0.5) * cell + self.z0))
-    }
-    fn set_overlay_green(&mut self, col: i32, row: i32, v: u8) {
-        self.set_overlay_channel(col, row, 1, v);
-    }
-    fn set_overlay_channel(&mut self, col: i32, row: i32, channel: usize, v: u8) {
-        if col >= 0 && row >= 0 && col < self.side && row < self.side {
-            self.overlay[(row * self.side + col) as usize][channel] = v;
-        }
-    }
-    fn pixel_world(&mut self, col: i32, row: i32) -> Option<(f32, f32)> {
-        if col < 0 || row < 0 || col >= self.side || row >= self.side {
-            return None;
-        }
-        let cell = WORLD_SIZE / 8.0 / self.side as f32;
-        Some(((col as f32 + 0.5) * cell + self.x0, (row as f32 + 0.5) * cell + self.z0))
-    }
-    fn water_level(&self) -> f32 {
-        self.world.water_level
+impl std::ops::Deref for FoliageWorld {
+    type Target = kenshi_world::foliage::FoliageData;
+    fn deref(&self) -> &kenshi_world::foliage::FoliageData {
+        &self.base
     }
 }
 
@@ -1395,49 +1361,10 @@ impl ZoneScene {
         let z0 = zone.1 as f32 * ZONE_SIZE - WORLD_SIZE / 2.0;
         // the grass and foliage inside buildings' interiors are cut where they are drawn
         // (CLIP_INTERIOR, kenshi_render::interior_mask)
-        let rect = [x0, z0, x0 + ZONE_SIZE, z0 + ZONE_SIZE];
-        let tile = (zone.0.div_euclid(8), zone.1.div_euclid(8));
-        let (side, overlay) = image::open(root.join(format!(
-            "data/newland/land/overlaymaps/new_overlay.{}.{}.png",
-            tile.0, tile.1
-        )))
-        .map(|i| {
-            let i = i.to_rgba8();
-            (i.width() as i32, i.pixels().map(|p| [p[2], p[1], p[0], p[3]]).collect())
-        })
-        .unwrap_or((1, Vec::new()));
-        let mut ground = ZoneGround {
-            patch: &self.patch,
-            world,
-            overlay,
-            side,
-            x0: tile.0 as f32 * WORLD_SIZE / 8.0 - WORLD_SIZE / 2.0,
-            z0: tile.1 as f32 * WORLD_SIZE / 8.0 - WORLD_SIZE / 2.0,
-            zone_x0: x0,
-            zone_z0: z0,
-        };
-        let (cx, cy) = world.blend.cell_at(x0 + ZONE_SIZE / 2.0, z0 + ZONE_SIZE / 2.0);
-        let slots: Vec<i32> = world.blend.slots(cx, cy).into_iter().filter(|&i| i != 0).collect();
-        // the grass density painted first (F041791: the layers' grass with reference value 0)
-        let (col0, row0, _) = ground.cell(x0, z0);
-        for &index in &slots {
-            let Some(record) = world.biomes.get(&index) else { continue };
-            let filter = (slots.len() > 1).then_some(index);
-            for u in world.foliage.biome_grass.get(record).into_iter().flatten() {
-                if u.channel == 2 {
-                    kenshi_world::foliage::paint_grass(&world.foliage.grass[u.grass], col0, row0, filter, &mut ground);
-                }
-            }
-        }
-        let mut placed = Vec::new();
-        for &index in &slots {
-            let Some(record) = world.biomes.get(&index) else { continue };
-            let Some(layers) = world.foliage.biome_layers.get(record) else { continue };
-            let filter = (slots.len() > 1).then_some(index);
-            for &l in layers {
-                kenshi_world::foliage::scatter_layer(&world.foliage, l, rect, filter, &world.towns, &mut ground, &mut placed);
-            }
-        }
+        let patch = &self.patch;
+        let mut ground = kenshi_world::foliage::ZoneGround::new(root, &world.base, zone, |x: f32, z: f32| ground_on(patch, Vec3::ZERO, x, z));
+        let slots = world.zone_slots(zone);
+        let placed = kenshi_world::foliage::zone_objects(&world.base, &mut ground, zone);
         if std::env::var("KENSHI_FOLIAGE_DEBUG").is_ok() {
             let mut by: std::collections::BTreeMap<&str, usize> = Default::default();
             for p in &placed {
@@ -1533,6 +1460,21 @@ impl ZoneScene {
                     door: None,
                     content: false,
                 });
+            }
+            // @fn F041802
+            //
+            // an object of a FOLIAGE_MESH with a "collision" file: a static actor of it where the
+            // object stands (its place, turn and scale), in collision group 14 when "walkable",
+            // else 6 (ragdolls collide with 14 outdoors, never with 6: F045103); 14 too, linked to
+            // it, for one of a "building type", whose building F041802 makes first (the
+            // simulation's: `kenshi_game::sim::add_zone`)
+            if let Some(Some((file, walkable))) = world.collision.get(p.mesh)
+                && let Some(s) = solids(root, file)
+            {
+                let transform = Transform::from_translation(Vec3::from(p.position) - self.origin)
+                    .with_rotation(Quat::from_rotation_y(p.yaw.to_radians()))
+                    .with_scale(Vec3::splat(p.scale));
+                self.foliage_collision.push((transform, s, if *walkable { FEATURE_GROUP } else { FOLIAGE_GROUP }));
             }
             let (Some(mesh), mut look) = world.looks[p.mesh].clone() else { continue };
             look.foliage = true;

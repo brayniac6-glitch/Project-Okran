@@ -13,6 +13,8 @@ fn main() {
         extras.push("player:3".into());
     }
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &extras);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     let players: Vec<usize> = sim.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
     let mut next_hop = 2.0;
     // SPEECH_FREE=1: the first of the player's picks the lock of the first caged NPC's cage

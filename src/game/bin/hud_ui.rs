@@ -222,10 +222,33 @@ pub(super) struct Row {
     pub colour: Color,
     /// The line's hover tip (DataPanelLine's tooltip), none when empty.
     pub tip: String,
+    /// A button line (DataPanelLine_Button, F042415 / F042374); the value is its caption.
+    pub button: Option<LineButton>,
+}
+
+/// A datapanel line's button: the click's action (its widget is named "Datapanel:" and the
+/// action), its share of the line's width, its skin (Kenshi_Button2; a tick box's
+/// Kenshi_TickButton2, F042417) and, for a tick box, whether it is held down (StateSelected).
+#[derive(Clone, PartialEq)]
+pub(super) struct LineButton {
+    pub action: String,
+    pub width: f32,
+    pub skin: &'static str,
+    pub checked: Option<bool>,
 }
 
 pub(super) fn row(label: impl Into<String>, value: impl Into<String>) -> Row {
-    Row { label: label.into(), value: value.into(), colour: LIGHT, tip: String::new() }
+    Row { label: label.into(), value: value.into(), colour: LIGHT, tip: String::new(), button: None }
+}
+
+/// A text's leading MyGUI colour code ("#rrggbb"), and the text after it.
+pub(super) fn colour_code(s: &str) -> (Option<Color>, &str) {
+    let b = s.as_bytes();
+    if b.len() >= 7 && b[0] == b'#' && b[1..7].iter().all(u8::is_ascii_hexdigit) {
+        let v = u32::from_str_radix(&s[1..7], 16).unwrap_or(0);
+        return (Some(tag(v)), &s[7..]);
+    }
+    (None, s)
 }
 
 /// The marker on a datapanel's lines.
@@ -242,6 +265,7 @@ pub(super) struct SetRows {
     pub label_colour: Color,
     pub centre: bool,
 }
+
 
 impl Command for SetRows {
     type Out = ();
@@ -273,6 +297,7 @@ impl Command for SetRows {
                 TextColor(c),
             )
         };
+        let panel_w = world.get::<ComputedNode>(self.panel).map_or(0.0, |n| n.size().x * n.inverse_scale_factor());
         for r in self.rows {
             let line = world
                 .spawn(Node {
@@ -285,10 +310,55 @@ impl Command for SetRows {
             if !r.tip.is_empty() {
                 world.entity_mut(line).insert((Interaction::default(), super::inventory_ui::ItemTip(r.tip.clone())));
             }
-            let l = world.spawn(text(r.label, self.label_colour)).id();
+            // (MyGUI's colour codes: a text's leading "#rrggbb" colours it)
+            let (lc, label) = colour_code(&r.label);
+            let (vc, value) = colour_code(&r.value);
+            if let Some(LineButton { action, width: share, skin, checked }) = &r.button {
+                // F042374: the line 1.2 lines high, the button from 0.99 - its share of the
+                // datapanel's width to 0.99, its label hidden over 0.9 wide (F042415)
+                let h = (self.font.1 * 1.2).floor();
+                world.entity_mut(line).insert(Node { width: Val::Percent(100.0), height: Val::Px(h), flex_direction: FlexDirection::Row, align_items: AlignItems::Center, ..default() });
+                if *share <= 0.9 {
+                    let l = world.spawn(text(label.to_string(), lc.unwrap_or(self.label_colour))).id();
+                    world.entity_mut(line).add_child(l);
+                }
+                let w = (panel_w * share).floor().max(1.0);
+                let def = kenshi_gui::res::WidgetDef {
+                    kind: "Button".into(),
+                    skin: skin.to_string(),
+                    pos: kenshi_gui::res::Pos::Px([0.0, 0.0, w, h]),
+                    align: Default::default(),
+                    name: format!("Datapanel:{action}"),
+                    layer: None,
+                    // (its colour code kept: kenshi_gui colours the caption by it)
+                    props: vec![("Caption".into(), r.value.clone())],
+                    user: Vec::new(),
+                    children: Vec::new(),
+                };
+                let holder = world
+                    .spawn(Node { position_type: PositionType::Absolute, left: Val::Percent((0.99 - share) * 100.0), top: Val::Px(0.0), width: Val::Px(w), height: Val::Px(h), ..default() })
+                    .id();
+                world.entity_mut(line).add_child(holder);
+                let mut queue = bevy::ecs::world::CommandQueue::default();
+                let built = {
+                    let gui = world.resource::<kenshi_gui::GuiRes>().0.clone();
+                    let assets = world.resource::<AssetServer>().clone();
+                    let mut cmds = Commands::new(&mut queue, world);
+                    kenshi_gui::ui::spawn(&mut cmds, &gui, &assets, &[def], Some(holder), [w, h])
+                };
+                queue.apply(world);
+                if let Some(c) = checked {
+                    for e in &built.roots {
+                        world.entity_mut(*e).insert(kenshi_gui::ui::Checked(*c));
+                    }
+                }
+                world.entity_mut(column).add_child(line);
+                continue;
+            }
+            let l = world.spawn(text(label.to_string(), lc.unwrap_or(self.label_colour))).id();
             world.entity_mut(line).add_child(l);
-            if !r.value.is_empty() {
-                let v = world.spawn(text(r.value, r.colour)).id();
+            if !value.is_empty() {
+                let v = world.spawn(text(value.to_string(), vc.unwrap_or(r.colour))).id();
                 if self.centre {
                     // centred lines keep their value at the right edge (the hunger trend)
                     world.entity_mut(v).insert(Node { position_type: PositionType::Absolute, right: Val::Px(4.0), ..default() });
@@ -500,18 +570,69 @@ pub fn open(mut commands: Commands, gui: Res<GuiRes>, assets: Res<AssetServer>, 
 }
 
 /// One life bar's contents.
-struct Bar {
-    label: String,
-    value: String,
+pub(super) struct Bar {
+    pub label: String,
+    pub value: String,
     /// The trend shown after its label (F047087's arrows, in the "Alert" colour).
-    arrow: String,
+    pub arrow: String,
     /// Its tooltip (on its LifeBar<n>Tooltip widget).
-    tip: String,
+    pub tip: String,
     /// green, yellow, red, white (F042974's widths).
-    widths: [f32; 4],
-    robot: bool,
-    crushed: bool,
+    pub widths: [f32; 4],
+    pub robot: bool,
+    pub crushed: bool,
 }
+/// The medical panel's bars (LifeBar1..9, MedicalDatapanel's lines): each bar's widths, value,
+/// label and its tip; the bars past the last hidden.
+fn draw_bars(commands: &mut Commands, hud: &mut Hud, ui: &Built, nodes: &mut Query<&mut Node>, bars: &[Bar]) {
+    for k in 0..BARS {
+        let bar = bars.get(k);
+        for w in ["", "Value"] {
+            if let Some(e) = ui.get(&format!("LifeBar{}{w}", k + 1)) {
+                commands.queue(SetVisible(e, bar.is_some()));
+            }
+        }
+        let Some(b) = bar else { continue };
+        let [green, yellow, red, white] = b.widths;
+        for (suffix, show, width) in [
+            ("Red", true, red),
+            ("Yellow", true, yellow),
+            ("Green", true, green),
+            ("White", true, white),
+            ("Robot", b.robot, green),
+            ("Crushed", b.crushed, 1.0),
+        ] {
+            let Some(e) = ui.get(&format!("LifeBar{}{suffix}", k + 1)) else { continue };
+            commands.queue(SetVisible(e, show));
+            if let Ok(mut n) = nodes.get_mut(e) {
+                let full = hud.ui.sizes.get(&e).map_or(100.0, |s| s[0]);
+                n.width = Val::Px(full * width.clamp(0.0, 1.0));
+                // the skin's image is a child at the bar's full size: cut to the bar
+                if n.overflow != Overflow::clip() {
+                    n.overflow = Overflow::clip();
+                }
+            }
+        }
+        if let Some(e) = ui.get(&format!("LifeBar{}Value", k + 1)) {
+            commands.queue(SetCaption(e, b.value.clone()));
+        }
+        // (the arrows in the "Alert" colour, kenshi_colours.xml's #000000)
+        let label = vec![Row { label: b.label.clone(), value: b.arrow.clone(), colour: ALERT, tip: String::new(), button: None }];
+        let name = format!("LifeBar{}Datapanel", k + 1);
+        hud.rows(commands, &name, label, false, DARK, true);
+        // its tip (F043001 / F043002 onto the bar's tooltip widget)
+        if let Some(e) = ui.get(&format!("LifeBar{}Tooltip", k + 1))
+            && hud.tips.get(&e) != Some(&b.tip)
+        {
+            // (it takes the mouse from its first tip on)
+            if hud.tips.insert(e, b.tip.clone()).is_none() {
+                commands.entity(e).insert(Interaction::default());
+            }
+            commands.entity(e).insert(super::inventory_ui::ItemTip(b.tip.clone()));
+        }
+    }
+}
+
 
 /// @fn F047087
 ///
@@ -628,8 +749,10 @@ fn part_tip(q: &kenshi_char::medical::BodyPart, name: &str, robot_race: bool, ko
 /// The hunger rate's lines (a key and value each, the value its multiplier "{1,num=fix,p=2}x",
 /// F047082: over 1 in #59231a, under in #a8b774): "Racial hunger rate:" (the race's), "Age:"
 /// (an animal's growth, when not 1), "Encumbrance effect:" ((1 - load) x "encumbrance hunger
-/// rate" + 1), "Resting/KO state:" (in bed or out cold: "bed hunger rate"). (not ported) "Current
-/// work:" (CharStats +0x178, always 1 here) and "Idle:" (0.8, the AI's idle flag).
+/// rate" + 1), "Resting/KO state:" (in bed or out cold: "bed hunger rate"), then "Idle:" (0.8)
+/// while idle (the AI's current goal's +0x70 flag; (assumption) here no current task), else
+/// "Current work:" (CharStats +0x178) when not 1 (kenshi_char::hunger::CURRENT_WORK_RATE: its
+/// writer not traced, so never).
 fn hunger_rate_lines(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<String> {
     let p = &sim.folk[id];
     let f = &sim.arena.f[id];
@@ -645,6 +768,11 @@ fn hunger_rate_lines(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<String> {
     lines.push(mult("Encumbrance effect:", (1.0 - f.load) * enc + 1.0));
     if p.bed.is_some() || f.medical.knocked_out || f.medical.dead {
         lines.push(mult("Resting/KO state:", bed));
+    }
+    if p.ai.current.is_none() {
+        lines.push(mult("Idle:", 0.8));
+    } else if kenshi_char::hunger::CURRENT_WORK_RATE != 1.0 {
+        lines.push(mult("Current work:", kenshi_char::hunger::CURRENT_WORK_RATE));
     }
     lines
 }
@@ -814,7 +942,8 @@ fn status_line(sim: &kenshi_game::sim::Sim, id: usize) -> (&'static str, String)
 fn state_line(sim: &kenshi_game::sim::Sim, id: usize) -> (&'static str, String) {
     let p = &sim.folk[id];
     let m = &sim.arena.f[id].medical;
-    let faction = |f: &str| sim.data.get(f).map_or(f.to_string(), |r| r.name.clone());
+    // a faction's name (the player's as it was named, F035114)
+    let faction = |f: &str| if f == kenshi_game::sim::PLAYER_FACTION { sim.player_faction_name() } else { sim.data.get(f).map_or(f.to_string(), |r| r.name.clone()) };
     let looks = || {
         let seen = if p.disguise_blown > 0.0 { "Seen!" } else { "Undiscovered" };
         format!("\nLooks like a slave: {}%\nSituation: {seen}", (sim.looks_like_slave(id) * 100.0) as i32)
@@ -921,6 +1050,7 @@ fn extended_stats(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<Row> {
         value,
         colour: LIGHT,
         tip: lines.into_iter().chain(std::iter::once(about.to_string())).collect::<Vec<_>>().join("\n"),
+        button: None,
     };
     let mut rows = Vec::new();
     // Athletics XP (F047452)
@@ -1010,7 +1140,7 @@ fn extended_stats(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<Row> {
         lines.push(format!("Encumbrance:\t-{}%\tr", num(heavy as i64)));
     }
     lines.push(format!("Total speed:\t{} mph\tk", num((p.own_speed * 0.2237) as i64)));
-    rows.push(Row { label: "Run speed:".into(), value: speed, colour: if diff != 0 { PENALTY } else { LIGHT }, tip: lines.join("\n") });
+    rows.push(Row { label: "Run speed:".into(), value: speed, colour: if diff != 0 { PENALTY } else { LIGHT }, tip: lines.join("\n"), button: None });
     // Hunger Rate (F047009)
     let [_, _, bed, enc, race_rate] = sim.hunger_c;
     let activity = if p.down || p.bed.is_some() {
@@ -1100,6 +1230,14 @@ pub fn update(
     }
     game.sim.squads_ready();
     for c in clicks.read() {
+        // a datapanel button of the building picked (building_ui)
+        if let Some(action) = c.name.strip_prefix("Datapanel:") {
+            let Game { selected_building, sim, selected, dismantle_request, .. } = &mut *game;
+            if let Some(b) = selected_building.as_mut().and_then(|s| s.resolve(sim)) {
+                super::building_ui::act(sim, selected, b, action, dismantle_request);
+            }
+            continue;
+        }
         // a squad's tab: that squad shown, its people selected
         if c.name == "SquadTab"
             && let Some(k) = hud.tab.as_ref().and_then(|t| t.roots.iter().position(|&r| r == c.widget))
@@ -1263,16 +1401,44 @@ pub fn update(
         commands.queue(SetCaption(e, format!("Floor {f}")));
     }
     town_panel(&mut commands, &ui, &game, &boxes);
+    // a building picked (building_ui): its view in the main panel's datapanels
+    let building = {
+        let Game { selected_building, sim, .. } = &mut *game;
+        selected_building.as_mut().and_then(|s| s.resolve(sim))
+    };
+    if building.is_none() {
+        game.selected_building = None;
+    }
+    if let Some(b) = building {
+        let v = super::building_ui::view(&game.sim, b);
+        if let Some(e) = ui.get("HealthText") {
+            commands.queue(SetCaption(e, v.status.0.clone()));
+        }
+        tip(&mut commands, ui.get("StatusPanel"), &v.status.0, &v.status.1);
+        if let Some(panel) = ui.get("BountyPanel") {
+            commands.queue(SetVisible(panel, false));
+        }
+        draw_bars(&mut commands, &mut hud, &ui, &mut nodes, &v.bars);
+        hud.rows(&mut commands, "NameText", v.name, false, LIGHT, false);
+        hud.rows(&mut commands, "StateText", v.info, false, LIGHT, false);
+        hud.rows(&mut commands, "StatsText", v.stats, true, LIGHT, false);
+        hud.rows(&mut commands, "ExtendedStatsText", v.extended, false, LIGHT, false);
+    }
     // the selected character
-    if let Some(&id) = game.selected.first() {
+    if building.is_some() {
+    } else if let Some(&id) = game.selected.first() {
         let sim = &game.sim;
         let p = &sim.folk[id];
         let f = &sim.arena.f[id];
         let m = &f.medical;
         let name = sim.display_name(id);
-        let faction = p.faction.as_deref().and_then(|s| sim.data.get(s)).map_or(String::new(), |r| r.name.clone());
+        // (the player's faction by the name it was given, F035114)
+        let faction = match p.faction.as_deref() {
+            Some(kenshi_game::sim::PLAYER_FACTION) => sim.player_faction_name(),
+            f => f.and_then(|s| sim.data.get(s)).map_or(String::new(), |r| r.name.clone()),
+        };
         // the name, and its faction faded at the right
-        let name_row = vec![Row { label: name, value: faction, colour: FADED, tip: String::new() }];
+        let name_row = vec![Row { label: name, value: faction, colour: FADED, tip: String::new(), button: None }];
         // the medical state (F047087's status list), on the status box
         let (status, about) = status_line(sim, id);
         if let Some(e) = ui.get("HealthText") {
@@ -1344,8 +1510,8 @@ pub fn update(
             let n = total as i32;
             match bonus {
                 0 => row(label, n.to_string()),
-                b if b > 0 => Row { label: label.into(), value: format!("{n} (+{b})"), colour: BONUS, tip: String::new() },
-                b => Row { label: label.into(), value: format!("{n} ({b})"), colour: PENALTY, tip: String::new() },
+                b if b > 0 => Row { label: label.into(), value: format!("{n} (+{b})"), colour: BONUS, tip: String::new(), button: None },
+                b => Row { label: label.into(), value: format!("{n} ({b})"), colour: PENALTY, tip: String::new(), button: None },
             }
         };
         let mode = if f.wielded.category == kenshi_combat::WeaponCategory::SkillUnarmed {
@@ -1466,52 +1632,7 @@ pub fn update(
                 crushed: false,
             }
         });
-        for k in 0..BARS {
-            let bar = bars.get(k);
-            for w in ["", "Value"] {
-                if let Some(e) = ui.get(&format!("LifeBar{}{w}", k + 1)) {
-                    commands.queue(SetVisible(e, bar.is_some()));
-                }
-            }
-            let Some(b) = bar else { continue };
-            let [green, yellow, red, white] = b.widths;
-            for (suffix, show, width) in [
-                ("Red", true, red),
-                ("Yellow", true, yellow),
-                ("Green", true, green),
-                ("White", true, white),
-                ("Robot", b.robot, green),
-                ("Crushed", b.crushed, 1.0),
-            ] {
-                let Some(e) = ui.get(&format!("LifeBar{}{suffix}", k + 1)) else { continue };
-                commands.queue(SetVisible(e, show));
-                if let Ok(mut n) = nodes.get_mut(e) {
-                    let full = hud.ui.sizes.get(&e).map_or(100.0, |s| s[0]);
-                    n.width = Val::Px(full * width.clamp(0.0, 1.0));
-                    // the skin's image is a child at the bar's full size: cut to the bar
-                    if n.overflow != Overflow::clip() {
-                        n.overflow = Overflow::clip();
-                    }
-                }
-            }
-            if let Some(e) = ui.get(&format!("LifeBar{}Value", k + 1)) {
-                commands.queue(SetCaption(e, b.value.clone()));
-            }
-            // (the arrows in the "Alert" colour, kenshi_colours.xml's #000000)
-            let label = vec![Row { label: b.label.clone(), value: b.arrow.clone(), colour: ALERT, tip: String::new() }];
-            let name = format!("LifeBar{}Datapanel", k + 1);
-            hud.rows(&mut commands, &name, label, false, DARK, true);
-            // its tip (F043001 / F043002 onto the bar's tooltip widget)
-            if let Some(e) = ui.get(&format!("LifeBar{}Tooltip", k + 1))
-                && hud.tips.get(&e) != Some(&b.tip)
-            {
-                // (it takes the mouse from its first tip on)
-                if hud.tips.insert(e, b.tip.clone()).is_none() {
-                    commands.entity(e).insert(Interaction::default());
-                }
-                commands.entity(e).insert(super::inventory_ui::ItemTip(b.tip.clone()));
-            }
-        }
+        draw_bars(&mut commands, &mut hud, &ui, &mut nodes, &bars);
         hud.rows(&mut commands, "NameText", name_row, false, LIGHT, false);
         // the state box over the stats (StateText), the combat stats below (StatsText)
         hud.rows(&mut commands, "StateText", info, false, LIGHT, false);

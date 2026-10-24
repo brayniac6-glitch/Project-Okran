@@ -72,6 +72,16 @@ pub struct DialogMemory {
     /// Whether each (package, character, faction)'s packages answer sightings of others
     /// (`speech::answers_sightings`).
     pub sighting_packages: std::collections::HashMap<(Option<String>, Option<String>, Option<String>), bool>,
+    /// The dialogue events each NPC has delivered (the Dialogue's +0xf8 map, event -> its squad's
+    /// handles, filled as a conversation of the event ends, F040866, and read by
+    /// isDialogDelivered, F040852; never emptied while the Dialogue lives): recorded as its
+    /// conversation ends with no one handed on to (crate::conversation, F040866), for the
+    /// speaker itself; (stand-in) the player's window's as it opens (its close not kept here);
+    /// not saved.
+    pub delivered: std::collections::HashSet<(usize, i32)>,
+    /// When each NPC's conversation of each event last ended (game hours: the repetition
+    /// counter's time, F040866).
+    pub event_time: std::collections::HashMap<(usize, i32), f64>,
 }
 
 /// A squad hired on a line's "AI contract" (F028601): on the package for the ref's first value
@@ -95,9 +105,6 @@ pub struct Contract {
 /// not decompiled.
 pub const SHORT_TAG_HOURS: f64 = 24.0;
 
-/// (assumption) How long a squad's conversation counts as running for "one at a time" (game
-/// hours): its end is not kept here.
-pub const ONE_AT_A_TIME_HOURS: f64 = 0.05;
 
 /// EventTrigger EV_BOUGHT_ME_FROM_SLAVERY (bailed out too, F041464).
 pub const EV_BOUGHT_ME_FROM_SLAVERY: i32 = 51;
@@ -263,7 +270,7 @@ pub fn num_text(n: i32) -> String {
 }
 
 /// One of a line's text variants, at random.
-fn text(line: &GameData, rand: f32) -> String {
+pub(crate) fn text(line: &GameData, rand: f32) -> String {
     let variants: Vec<&String> = (0..).map_while(|i| line.strings.get(&format!("text{i}"))).filter(|t| !t.is_empty()).collect();
     if variants.is_empty() {
         return String::new();
@@ -296,7 +303,7 @@ impl Sim {
     /// What `holder`'s squad remembers of `of` (its platoon memory, PlatoonMemory +0x98: here
     /// each member's long-term tags together), and whether it has an entry for `of` at all (met,
     /// or tagged).
-    fn squad_tags(&self, holder: usize, of: usize) -> (u32, bool) {
+    pub(crate) fn squad_tags(&self, holder: usize, of: usize) -> (u32, bool) {
         let mut bits = 0;
         let mut any = false;
         for m in self.squad_of_any(holder) {
@@ -499,12 +506,9 @@ impl Sim {
             56 => eq(self.arena.f[subject].active),
             // DC_IM_UNARMED (F038618): no weapon
             48 => eq(!s.inventory.equipped().any(|i| i.kind == Some(kenshi_data::ItemType::Weapon))),
-            // DC_WITHIN_TOWN_WALLS (vtable 0x118, F044467: the walled area its navmesh region
-            // lies in). (stand-in) Within a town's radius (F048768, F048764) stands for the walls.
-            57 => {
-                let q = at(subject);
-                eq(self.towns.iter().any(|tw| (tw.kind == 1 || tw.kind == 2) && tw.contains(q, 1.0)))
-            }
+            // DC_WITHIN_TOWN_WALLS (vtable 0x118, F044467): the gate code it stands in is above
+            // 0 (a region behind a door or gate, crate::gate_codes)
+            57 => eq(self.area(subject) > 0),
             // DC_TOWN_WALLS_LOCKED_UP (the subject's town's vtable 0x300, F048825): its gates
             // all shut (one open, or with no door, no); no gates or in no town, no.
             // (assumption) The town's gates: those within its radius.
@@ -673,7 +677,7 @@ impl Sim {
     /// the speaker's personality to be one of the must ones and none of the must-nots, and its
     /// squad's memory of the one it talks to to have every must tag and no must-not (no memory:
     /// no must tags); the rest each F040880, of the speaker ("who" 0) or the one it talks to.
-    fn conditions_pass(&self, rec: &GameData, npc: usize, player: usize) -> bool {
+    pub(crate) fn conditions_pass(&self, rec: &GameData, npc: usize, player: usize) -> bool {
         let (mut tag_must, mut tag_not, mut pers_must, mut pers_not) = (0u32, 0u32, 0u32, 0u32);
         let mut rest: Vec<(i32, i32, i32, i32)> = Vec::new();
         for (sid, v) in rec.refs("conditions") {
@@ -733,7 +737,7 @@ impl Sim {
     /// (`score_for` the player's character), the passing ones of the best score, one of them at
     /// random. (assumption) The lines' order among equal scores as listed (the game's sort is
     /// not decompiled); its pass-through lines (a virtual call, not identified) not told apart.
-    fn choose_line(&mut self, refs: &[(String, [i32; 3])], npc: usize, player: usize) -> Option<GameData> {
+    pub(crate) fn choose_line(&mut self, refs: &[(String, [i32; 3])], npc: usize, player: usize) -> Option<GameData> {
         let mut lines: Vec<(i32, GameData)> = refs.iter().filter_map(|(sid, _)| self.data.get(sid)).map(|l| (self.score_for(l, player), l.clone())).collect();
         lines.sort_by(|a, b| b.0.cmp(&a.0));
         let mut best = -999;
@@ -832,13 +836,12 @@ impl Sim {
     /// 30 units of `npc` falling to 0 at 450 (squared 900 .. 202800, F050517), a tenth on
     /// another floor (not in the same building).
     fn interjectors(&self, l: &GameData, npc: usize, target: usize) -> Vec<(usize, f32)> {
-        let now = self.hours_gone();
         let at = self.folk[npc].mover.position_units();
         let named: Vec<&String> = l.refs("is character").iter().map(|(c, _)| c).collect();
         self.squad_of(npc)
             .into_iter()
             .filter(|&k| k != npc && k != target && !self.folk[k].down && !self.folk[k].dead && self.folk[k].race.is_none())
-            .filter(|&k| self.bark_next.get(&k).is_none_or(|&t| now >= t))
+            .filter(|&k| !self.saying(k))
             .filter(|&k| {
                 let dumb = self.folk[k].character.as_deref().and_then(|c| self.data.get(c)).is_some_and(|c| c.bools.get("dumb").copied().unwrap_or(false));
                 !dumb || self.folk[k].character.as_ref().is_some_and(|c| named.contains(&c))
@@ -857,7 +860,7 @@ impl Sim {
     }
 
     /// One of `interjectors` at random by weight (F041399 / F041256).
-    fn pick_interjector(&mut self, l: &GameData, npc: usize, target: usize) -> Option<usize> {
+    pub(crate) fn pick_interjector(&mut self, l: &GameData, npc: usize, target: usize) -> Option<usize> {
         let list = self.interjectors(l, npc, target);
         let total: f32 = list.iter().map(|x| x.1).sum();
         if total <= 0.0 {
@@ -1058,8 +1061,7 @@ impl Sim {
         self.dialog_memory.met.insert((who, of), now);
         match tag {
             LT_FREED_ME => {
-                self.bark_next.remove(&who);
-                self.bark(who, of, crate::speech::EV_UNLOCK_MY_CAGE_OR_SHACKLES);
+                self.bark_forced(who, of, crate::speech::EV_UNLOCK_MY_CAGE_OR_SHACKLES);
             }
             LT_MY_LIFESAVER if self.dialog_memory.healing.get(&of) != Some(&who) => {
                 // Task_FirstAid::start (F031287): the medic EV_HEALING_OTHER_START at its
@@ -1079,7 +1081,9 @@ impl Sim {
     /// caged) EV_BEING_HEALED_FINISHED back; a medic with no kit left (Task_FirstAidRig,
     /// F031288) EV_FIRSTAID_KIT_EMPTY, once.
     fn first_aid_events(&mut self) {
-        let pairs: Vec<(usize, usize)> = self.dialog_memory.healing.iter().map(|(&m, &p)| (m, p)).collect();
+        // (in a fixed order: the map's own is the hasher's, and the barks roll dice)
+        let mut pairs: Vec<(usize, usize)> = self.dialog_memory.healing.iter().map(|(&m, &p)| (m, p)).collect();
+        pairs.sort_unstable();
         for (medic, patient) in pairs {
             if medic >= self.folk.len() || patient >= self.folk.len() {
                 self.dialog_memory.healing.remove(&medic);
@@ -1151,8 +1155,8 @@ impl Sim {
             {
                 let custody = self.folk[d].prison.as_ref().is_some_and(|p| p.faction == PLAYER_FACTION || self.folk.iter().any(|q| q.player && q.faction.as_deref() == Some(p.faction.as_str())))
                     || self.folk[d].carried_by.is_some_and(|k| self.folk[k].player);
-                if (custody || attackers.iter().any(|&a| self.folk[a].player)) && self.world.involved.insert(c) {
-                    self.update_towns();
+                if custody || attackers.iter().any(|&a| self.folk[a].player) {
+                    self.world.involved.insert(c);
                 }
             }
             if attackers.is_empty() {
@@ -1362,7 +1366,8 @@ impl Sim {
             "PLAYERFACTION" => self.player_faction_name(),
             "COST" => num_text(cost),
             _ => {
-                let rec = self.data.records.values().find(|r| r.item_type() == Some(kenshi_data::ItemType::WordSwaps) && r.name == token).cloned();
+                // (in load order: the records' map order is the hasher's, new each run)
+                let rec = self.data.order.iter().filter_map(|s| self.data.get(s)).find(|r| r.item_type() == Some(kenshi_data::ItemType::WordSwaps) && r.name == token).cloned();
                 match rec {
                     Some(w) => {
                         let refs = w.refs("lines").to_vec();
@@ -1380,7 +1385,7 @@ impl Sim {
     ///
     /// A line's price, for its COST word: the value of its first DA_GIVE_MONEY or
     /// DA_TAKE_MONEY effect, else of its first DC_PLAYERMONEY condition, else 0.
-    fn line_cost(&self, l: &GameData) -> i32 {
+    pub(crate) fn line_cost(&self, l: &GameData) -> i32 {
         let first = |cat: &str, key: &str, want: &[i32]| {
             l.refs(cat).iter().find(|(sid, _)| self.data.get(sid).and_then(|r| r.ints.get(key).copied()).is_some_and(|k| want.contains(&k))).map(|(_, v)| v[0])
         };
@@ -1393,7 +1398,7 @@ impl Sim {
     /// its place, capitalised at the start of the text or after a sentence's end (".", "!" or
     /// "?" two characters before it, three with a space there), then the text again from the
     /// start, so a swap's own swaps are filled too. (A guard of 64 swaps a line.)
-    fn words(&mut self, said: &str, npc: usize, player: usize, cost: i32) -> String {
+    pub(crate) fn words(&mut self, said: &str, npc: usize, player: usize, cost: i32) -> String {
         let mut s = said.to_string();
         for _ in 0..64 {
             let Some(a) = s.find('/') else { break };
@@ -1499,6 +1504,34 @@ impl Sim {
 
     /// `talk_on` with `extra` dialogues listed under the event too.
     fn talk_event(&mut self, npc: usize, player: usize, event: i32, extra: &[String]) -> Option<(Conversation, Vec<Effect>)> {
+        // the NPC's last conversation counted; this one's event
+        if let Some(ev) = self.dialog_memory.running_event.remove(&npc) {
+            *self.dialog_memory.event_count.entry((npc, ev)).or_default() += 1;
+        }
+        self.dialog_memory.running_event.insert(npc, event);
+        let Some((d, line, player)) = self.pick_opening(npc, player, event, extra) else {
+            self.dialog_memory.running_event.remove(&npc);
+            return None;
+        };
+        let now = self.hours_gone();
+        self.dialog_memory.spoken.insert((npc, d.string_id.clone()), now);
+        self.dialog_memory.met.insert((npc, player), now);
+        self.dialog_memory.partner.insert(npc, player);
+        self.dialog_memory.running.insert(npc, d.string_id.clone());
+        self.dialog_memory.delivered.insert((npc, event));
+        let mut effects = self.effects(&line, npc);
+        let conv = self.at_line(&line, npc, player);
+        effects.append(&mut self.pending_effects);
+        Some((conv, effects))
+    }
+
+    /// @fn F040839
+    /// @fn F040892
+    ///
+    /// The dialogue `npc` opens on `event` with `player` (its lines for the event, F040839, and
+    /// of them the best, F040892) and its opening line, with whom of `player`'s squad it is
+    /// said to; `extra` dialogues listed under the event too.
+    pub(crate) fn pick_opening(&mut self, npc: usize, player: usize, event: i32, extra: &[String]) -> Option<(GameData, GameData, usize)> {
         // its dialogue packages (`packages_of`) and its squad's AI package
         let mut packages = self.packages_of(npc);
         if let Some(p) = self.folk[npc].package.as_deref().and_then(|p| self.data.get(p)) {
@@ -1517,11 +1550,6 @@ impl Sim {
         // every dialogue of the event whose conditions pass (its chance rolled), at the line it
         // would open with: the best `dialogue_score` is spoken, the first of equals (F045590)
         let mut best: Option<(i32, GameData, GameData, usize)> = None;
-        // the NPC's last conversation counted; this one's event
-        if let Some(ev) = self.dialog_memory.running_event.remove(&npc) {
-            *self.dialog_memory.event_count.entry((npc, ev)).or_default() += 1;
-        }
-        self.dialog_memory.running_event.insert(npc, event);
         // talked to while it has an interrupt: that dialogue
         let now = self.hours_gone();
         if event == EV_PLAYER_TALK_TO_ME
@@ -1596,24 +1624,11 @@ impl Sim {
                 }
             }
         }
-        if best.is_none() {
-            self.dialog_memory.running_event.remove(&npc);
+        let (_, d, line, player) = best?;
+        if std::env::var("KENSHI_MEET_DEBUG").is_ok() {
+            eprintln!("  chose dialogue {} ({})", d.name, d.string_id);
         }
-        if let Some((_, d, line, player)) = best {
-            if std::env::var("KENSHI_MEET_DEBUG").is_ok() {
-                eprintln!("  chose dialogue {} ({})", d.name, d.string_id);
-            }
-            let now = self.hours_gone();
-            self.dialog_memory.spoken.insert((npc, d.string_id.clone()), now);
-            self.dialog_memory.met.insert((npc, player), now);
-            self.dialog_memory.partner.insert(npc, player);
-            self.dialog_memory.running.insert(npc, d.string_id.clone());
-            let mut effects = self.effects(&line, npc);
-            let conv = self.at_line(&line, npc, player);
-            effects.append(&mut self.pending_effects);
-            return Some((conv, effects));
-        }
-        None
+        Some((d, line, player))
     }
 
     /// The player picks reply `choice` (a line id): its effects, then the NPC's answer (None:
@@ -1656,12 +1671,14 @@ impl Sim {
         if !self.type_ok(d, player) {
             return false;
         }
-        // "one at a time" (F040888 +0x27c): none other of its squad still running it
-        // (F040828). (assumption) Running: started within `ONE_AT_A_TIME_HOURS`.
-        let now = self.hours_gone();
+        // "one at a time" (F040888 +0x27c): none other of its squad still running it (its
+        // dialogue on it and not free, F040828, crate::conversation; or in the player's window
+        // on it)
         if flag("one at a time")
             && self.squad_of(npc).iter().any(|&k| {
-                k != npc && self.dialog_memory.running.get(&k) == Some(&d.string_id) && self.dialog_memory.spoken.get(&(k, d.string_id.clone())).is_some_and(|&t| now < t + ONE_AT_A_TIME_HOURS)
+                k != npc
+                    && ((!self.run_free(k) && self.runs.get(&k).is_some_and(|r| r.root.as_deref() == Some(d.string_id.as_str())))
+                        || (self.dialog_memory.running.get(&k) == Some(&d.string_id) && self.npc_talks.iter().any(|(c, _)| c.npc == k)))
             })
         {
             return false;
@@ -1696,7 +1713,7 @@ impl Sim {
     /// DIALOG_ACTION's "action name", the ref's value); then "change AI" / "AI contract". What
     /// the game does through its windows (trading, the slave and bail windows, the character
     /// editor) and the talk to a squad's leader are returned for the game to show.
-    fn effects(&mut self, line: &GameData, npc: usize) -> Vec<Effect> {
+    pub(crate) fn effects(&mut self, line: &GameData, npc: usize) -> Vec<Effect> {
         let running = self.dialog_memory.running.get(&npc).cloned();
         for (sid, _) in line.refs("unlocks") {
             self.dialog_memory.unlocked.insert((npc, sid.clone()));
@@ -1745,14 +1762,35 @@ impl Sim {
                 }
             }
         }
-        // "trigger campaign" (F050819): one of the list by a single roll over their chances (the
-        // refs' third values, `pick_campaign`), scheduled by the speaker's faction's war manager
-        // between the ref's first and second values of hours (F050814)
+        // "trigger campaign" (F040912 -> F050819): on a town, the one talked to's home town (its
+        // squad's, F044526 +0x30), the player's outpost nearest the speaker when it is one of
+        // the player's (F044512), with no one the town the speaker stands in (Character +0x1a0
+        // +0x88: the player's outpost it announces at); none, nothing.
+        // One of the list by a single roll over their chances (the refs' third values,
+        // `pick_campaign`), scheduled by the speaker's faction's war manager between the ref's
+        // first and second values of hours (F050814), from the speaker's squad's home, as a
+        // follow-up of the speaker's faction's
         let list: Vec<(String, Vec<i32>)> = line.refs("trigger campaign").iter().map(|(c, v)| (c.clone(), v.to_vec())).collect();
-        if let Some(f) = self.folk[npc].faction.clone()
+        // (a line said to no one, an announcement's (F040920 with no target): the port keeps
+        // the speaker as its partner)
+        let target = target.filter(|&t| t != npc);
+        let town = match target {
+            Some(t) if self.folk[t].player => {
+                let at = self.folk[npc].mover.position_units();
+                (0..self.outposts.len()).min_by(|&a, &b| (self.outposts[a][0] - at[0]).hypot(self.outposts[a][2] - at[2]).total_cmp(&(self.outposts[b][0] - at[0]).hypot(self.outposts[b][2] - at[2]))).map(crate::world::CampaignTarget::Outpost)
+            }
+            Some(t) => self.home_town(t).map(crate::world::CampaignTarget::Town),
+            None => self.speaker_town(npc),
+        };
+        if !list.is_empty() && std::env::var("KENSHI_WORLD_DEBUG").is_ok() {
+            eprintln!("world: {npc}'s line triggers a campaign on {town:?} (talking to {target:?}, its town {:?})", self.folk[npc].town);
+        }
+        if let Some(town) = town
+            && let Some(f) = self.folk[npc].faction.clone()
             && let Some((c, lo, hi)) = self.pick_campaign(&list)
         {
-            self.schedule_campaign(&c, &f, lo.max(0.0), hi.max(lo).max(0.0));
+            let home = self.home_town(npc).map(crate::world::Place::Town);
+            self.schedule_campaign(&c, &f, lo.max(0.0), hi.max(lo).max(0.0), true, town, home, Some(&f));
         }
         // (fcs.def's "lock campaign" / "unlock campaign" are never read by the game: nothing)
         let mut out = Vec::new();
@@ -1889,13 +1927,11 @@ impl Sim {
                 out.push(Effect::CharacterEditor);
                 return true;
             }
-            // DA_FORCE_SPEECH_TIMER (case 0xc): the dialogue's +0x234 set to the value, counted
-            // down by the dialogue's update (F040923, its frame time) before it goes on. (stand-in)
-            // The speaker says nothing more until then (`bark_next`); the conversation's own next
-            // line does not wait.
+            // DA_FORCE_SPEECH_TIMER (case 0xc): the dialogue's +0x234 set to the value (seconds),
+            // counted down by the dialogue's update (F040923, crate::conversation) before the
+            // conversation goes on
             12 => {
-                let at = self.hours_gone() + value.max(0) as f64 / self.hour_secs;
-                self.bark_next.insert(npc, at);
+                self.runs.entry(npc).or_default().wait = value as f32;
             }
             // DA_DECLARE_WAR (F041505) / DA_END_WAR (F041504): the speaker's faction and the
             // target's
@@ -2289,6 +2325,8 @@ impl Sim {
                 }
             }
             if !v.is_empty() {
+                // (in a fixed order: the tags' map order is the hasher's)
+                v.sort_unstable();
                 by_key.insert(*k, v);
             }
         }
@@ -2304,6 +2342,25 @@ impl Sim {
             .get(&self.memory_key(holder))
             .and_then(|m| m.tags(subject, squad))
             .is_some_and(|t| t.short_term.has(tag as i32) && now - t.time < SHORT_TAG_HOURS * 3600.0)
+    }
+
+    /// @fn F040881
+    ///
+    /// Whether `holder`'s squad memory tags `subject` with any of the short-term tags of `mask`
+    /// (bits by PerceptionShortTerm; the entry's +0x28), however long ago (one of the player's
+    /// as the whole player squad, as `tag_short` keeps them).
+    pub(crate) fn tagged_short_mask(&self, holder: usize, subject: usize, mask: u32) -> bool {
+        let squad = self.folk[subject].player.then_some(0u8);
+        self.platoon_memory.get(&self.memory_key(holder)).and_then(|m| m.tags(subject, squad)).is_some_and(|t| t.short_term.0 & mask != 0)
+    }
+
+    /// @fn F044487
+    ///
+    /// The leader of the player's platoon `platoon` (its active platoon's): its leader while
+    /// up and free, else the first of it up and free.
+    pub(crate) fn player_squad_leader(&self, platoon: usize) -> Option<usize> {
+        let free = |q: &crate::sim::Person| q.player && q.platoon == Some(platoon) && !q.dead && !q.down && !q.away && q.prison.is_none() && q.bed.is_none() && q.slave.is_none();
+        self.folk.iter().filter(|q| free(q)).find(|q| q.role == 5).or_else(|| self.folk.iter().find(|q| free(q))).map(|q| q.id)
     }
 
     /// Every second: squads whose temporary-ally tag on the player's has run out
@@ -2523,8 +2580,7 @@ impl Sim {
             })
             .map(|p| p.id);
         if let Some(b) = buyer {
-            self.bark_next.remove(&id);
-            self.bark(id, b, EV_BOUGHT_ME_FROM_SLAVERY);
+            self.bark_forced(id, b, EV_BOUGHT_ME_FROM_SLAVERY);
         }
         Some(price)
     }

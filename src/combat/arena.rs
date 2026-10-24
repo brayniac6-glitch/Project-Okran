@@ -70,10 +70,22 @@ pub struct Arena {
 
 /// The distance from `from` along the unit `dir` to the first building solid within `len`
 /// (world units), if any.
-pub fn wall_hit(obs: &Option<(std::sync::Arc<kenshi_physics::world::StaticWorld>, [f32; 3])>, from: [f32; 3], dir: [f32; 3], len: f32) -> Option<f32> {
+pub fn wall_hit(obs: &Option<(std::sync::Arc<kenshi_physics::world::StaticWorld>, [f32; 3])>, from: [f32; 3], dir: [f32; 3], len: f32, groups: u32) -> Option<f32> {
     let (w, o) = obs.as_ref()?;
-    w.raycast_at([from[0] - o[0], from[1] - o[1], from[2] - o[2]], dir, len)
+    w.raycast_groups_at([from[0] - o[0], from[1] - o[1], from[2] - o[2]], dir, len, groups)
 }
+
+/// @fn F033821
+///
+/// The line of fire's trace's PhysX collision groups (F033852 asks F033821 with its flag set):
+/// 0, 1, 2 (the terrain), 9 - 12 (floors), 15 - 22 (stairs, furniture) and 27 (roofs); not the
+/// map features' and foliage's 6 and 14, the doors' 5 or the passable parts' 23 - 26.
+pub const LINE_OF_FIRE_GROUPS: u32 = 0x87f_9e07;
+/// @fn F033856
+///
+/// A bolt's trace's groups (its ray query's +0x78): those of the line of fire and 6 and 14 (the
+/// map features and the foliage), but not 3 and 4 (the ragdolls).
+pub const BOLT_GROUPS: u32 = 0x87f_de47;
 
 /// A small deterministic generator (the original's rolls are uniform in [0, 1)).
 pub struct Rng(pub u64);
@@ -157,6 +169,9 @@ pub struct Fighter {
     pub mover: Mover,
     /// Collision radius (CombatClass +0x1a0): the race's footprint.
     pub radius: f32,
+    /// Those its mover pushes against (F024363): its sensor's proximity list (CharSensor +0x68,
+    /// F046548) less those that push no one (carried, seated); set by the game each tick.
+    pub near: Vec<usize>,
     pub medical: Medical,
     pub stats: Stats,
     pub wielded: Wielded,
@@ -1865,6 +1880,19 @@ impl Arena {
         self.f.len() - 1
     }
 
+    /// Fighter `i` attacks no one: the attacker slots it holds on others (CombatClass +0x10..,
+    /// taken by F040727) are let go, as its attack's end lets go of its target's
+    /// (`leave_attack`). For one knocked out, out of the fight, or running off through it.
+    pub fn release_slots(f: &mut [Fighter], i: usize) {
+        for o in 0..f.len() {
+            for s in &mut f[o].slots.slots {
+                if *s == Some(i) {
+                    *s = None;
+                }
+            }
+        }
+    }
+
     /// One tick: every standing fighter with an enemy runs its combat AI (CombatClass), then the
     /// animation layers move the bodies (root motion) or the fighters' orders do.
     pub fn step(&mut self, dt: f32) {
@@ -1892,6 +1920,8 @@ impl Arena {
                     f[i].act = None;
                 }
                 f[i].order = Order::Hold;
+                // (its attack broken off: the slot it held on its target let go)
+                Arena::release_slots(f, i);
                 continue;
             }
             // CharStats::update (F047065): the speeds by its load, body and water now
@@ -1977,12 +2007,14 @@ impl Arena {
                 );
             }
         }
-        // (assumption) a knocked-out fighter drops its target (setTarget to none, F040712)
+        // (assumption) a knocked-out fighter drops its target (setTarget to none, F040712), and
+        // with it the attacker slot it held
         for i in 0..f.len() {
             if f[i].down
                 && let Some(o) = f[i].combat.target.take()
             {
                 f[o].combat.engagers.retain(|&e| e != i);
+                Arena::release_slots(f, i);
             }
         }
         *tick += 1;
@@ -2062,16 +2094,17 @@ pub fn weapon_reach(f: &Fighter, attacks: &[CombatTechnique]) -> f32 {
 /// Standing fighters in the fight push off one another as Kenshi's mover does
 /// (`kenshi_char::movement::neighbour_push`): each takes its share of the deepest overlap of
 /// footprint radii, the smaller more, a fiftieth of it as they are in combat mode (Character
-/// +0xe0; (assumption) every active fighter is), and its next steer bends round it.
-/// (stand-in for the mover's nearby list) the fighters within 1.5 m of its height.
+/// +0xe0; (assumption) every active fighter is), and its next steer bends round it: those on
+/// its mover's nearby list (`Fighter::near`, the sensor's, F046548), fighting or not.
 fn separate(f: &mut [Fighter]) {
     let live: Vec<usize> = (0..f.len()).filter(|&i| f[i].active && !f[i].down).collect();
     let mut moves = Vec::new();
     for &i in &live {
         let p = f[i].mover.position;
-        let near: Vec<kenshi_char::movement::Neighbour> = live
+        let near: Vec<kenshi_char::movement::Neighbour> = f[i]
+            .near
             .iter()
-            .filter(|&&j| j != i && (f[j].mover.position[1] - p[1]).abs() <= 1.5)
+            .filter(|&&j| j != i && j < f.len())
             .map(|&j| kenshi_char::movement::Neighbour { position: f[j].mover.position, radius: f[j].radius * 0.1 })
             .collect();
         // (stand-in for rand()) a fixed draw per pair of places
@@ -2462,6 +2495,21 @@ pub fn skeleton_clips(res: &Resources, race: &GameData) -> Option<Clips> {
     Some((lengths, roots))
 }
 
+/// Add the clip copies the ANIMATION records were given (F046697,
+/// `kenshi_anim::select::split_shared_clips`) to a skeleton's clips: each as long as, and with
+/// the root track of, its shared clip.
+pub fn copy_clips(clips: &mut Clips, data: &GameDataContainer) {
+    for (shared, copy) in kenshi_anim::select::clip_copies(data) {
+        let (shared, copy) = (shared.to_lowercase(), copy.to_lowercase());
+        if let Some(&len) = clips.0.get(&shared) {
+            clips.0.entry(copy.clone()).or_insert(len);
+        }
+        if let Some(root) = clips.1.get(&shared).cloned() {
+            clips.1.entry(copy).or_insert(root);
+        }
+    }
+}
+
 /// GLOBAL CONSTANTS, a float (or an int as a float).
 fn global(data: &GameDataContainer, k: &str) -> Option<f32> {
     let gc = data.get("110-gamedata.quack")?;
@@ -2620,6 +2668,7 @@ impl Fighter {
             skills,
             mover,
             radius: rm.footprint_radius,
+            near: Vec::new(),
             medical,
             stats: Stats {
                 toughness: skill,
@@ -2918,7 +2967,7 @@ fn line_of_fire(f: &[Fighter], obstacles: &Option<(std::sync::Arc<kenshi_physics
     }
     let len = dist_sq(from, to).sqrt();
     let dir = normalise([to[0] - from[0], to[1] - from[1], to[2] - from[2]]);
-    if wall_hit(obstacles, from, dir, len).is_some() {
+    if wall_hit(obstacles, from, dir, len, LINE_OF_FIRE_GROUPS).is_some() {
         return Line::Blocked;
     }
     let first = bodies(f, me)
@@ -3081,7 +3130,7 @@ impl Arena {
             let list = bodies(f, shooter);
             let rng = &mut sh.rng;
             let walls = if bolts[k].mounted { &None } else { &*obstacles };
-            let hit = bolts[k].update_among(dt, &list, ground, &mut |p, d, l| wall_hit(walls, p, d, l), || rng.next());
+            let hit = bolts[k].update_among(dt, &list, ground, &mut |p, d, l| wall_hit(walls, p, d, l, BOLT_GROUPS), || rng.next());
             match hit {
                 Some(BoltHit::Character(v)) => {
                     let b = &bolts[k];

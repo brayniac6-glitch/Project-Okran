@@ -8,6 +8,8 @@ fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let (zx, zy): (i32, i32) = (a[1].parse().unwrap(), a[2].parse().unwrap());
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &["player:1".to_string()]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     while sim.t < 3.0 {
         sim.step();
     }
@@ -26,6 +28,8 @@ fn main() {
     println!("spot {k} at {:?}: item {:?}, due {:.1} h (now {:.1})", at.map(|v| v as i32), sim.spots[k].item, sim.spots[k].due, sim.hours_gone());
     let save = sim.snapshot((zx, zy), |_| None);
     let mut again = Sim::load(Path::new(&a[0]), zx, zy, 0, &["player:1".to_string()]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    again.no_spawns();
     again.restore(&save);
     let end = again.t + 3.0;
     while again.t < end {

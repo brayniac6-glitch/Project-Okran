@@ -208,7 +208,8 @@ impl NavWorld {
             return;
         }
         let base = self.cutters.iter().map(|c| c.group + 1).max().unwrap_or(0);
-        let mut touched = HashSet::new();
+        // (a BTreeSet: the sections are cut in a fixed order, not the hasher's)
+        let mut touched = std::collections::BTreeSet::new();
         let t_under = std::time::Instant::now();
         if std::env::var("KENSHI_NAV_DEBUG").is_ok() {
             let mut big: Vec<(f32, f32, f32, [f32; 2])> = keyed.iter().flat_map(|(_, cs)| cs.iter()).map(|c| (area(&c.outline), c.lo, c.hi, c.min)).collect();
@@ -260,7 +261,8 @@ impl NavWorld {
 
     /// Several keys' cutters taken away at once (`remove_cutters`).
     pub fn remove_cutters_many(&mut self, keys: &[(i64, i64)]) {
-        let mut touched = HashSet::new();
+        // (a BTreeSet: the sections are cut in a fixed order, not the hasher's)
+        let mut touched = std::collections::BTreeSet::new();
         for key in keys {
             self.cut_keys.remove(key);
             let Some(ids) = self.key_cutters.remove(key) else { continue };
@@ -418,6 +420,7 @@ impl NavWorld {
 
     /// A section's faces taken out of the grid.
     fn unindex(&mut self, uid: i64) {
+        self.touch();
         let Some(t) = self.sections.get(&uid) else { return };
         let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
         for v in &t.vertices {
@@ -429,8 +432,9 @@ impl NavWorld {
         }
         for gx in grid_cell(lo[0])..=grid_cell(hi[0]) {
             for gz in grid_cell(lo[1])..=grid_cell(hi[1]) {
+                // (the cell's bounds stay: still about all its faces)
                 if let Some(v) = self.grid.get_mut(&(gx, gz)) {
-                    v.retain(|(f, _, _)| f.section != uid);
+                    v.faces.retain(|(f, _, _)| f.section != uid);
                 }
             }
         }
@@ -438,6 +442,7 @@ impl NavWorld {
 
     /// Ground section `uid` cut by the cutters over it (from its faces as loaded).
     pub(crate) fn cut_section(&mut self, uid: i64) {
+        self.touch();
         let overlay = uid.wrapping_add(CUT_UID);
         // back to the faces as loaded
         if let Some(orig) = self.pristine.get(&uid).cloned() {
@@ -827,7 +832,8 @@ impl NavWorld {
     /// (testing) Faces reached from `f` across edges (any, up to `max`), and how many of `f`'s
     /// own edges lead anywhere.
     /// How many faces an agent of `radius` (metres) reaches from `f`, up to `max`: as `flood`,
-    /// but no gap between walls narrower than the agent (the path search's own rule).
+    /// but only across stretches the path search lets the agent's diameter through (its
+    /// clearance test).
     pub fn flood_wide(&self, f: FaceRef, max: usize, radius: f32) -> usize {
         let mut seen = HashSet::from([f]);
         let mut stack = vec![f];
@@ -838,7 +844,7 @@ impl NavWorld {
             let face = self.sections[&g.section].faces[g.face as usize];
             for e in face.start_edge..face.start_edge + face.num_edges {
                 for (n, (a, b)) in self.across(g, e) {
-                    let narrow = crate::navmesh::distance(a, b) < radius * 2.0 && self.gap(g, e);
+                    let narrow = self.clearance(g, e, n, a, b, radius).most < radius;
                     if !narrow && self.sections[&n.section].faces[n.face as usize].kind != FACE_BLOCKED && seen.insert(n) {
                         stack.push(n);
                     }

@@ -9,6 +9,8 @@ fn main() {
     let (zx, zy): (i32, i32) = (a[1].parse().unwrap(), a[2].parse().unwrap());
     let guard = a.get(3).is_some_and(|g| g == "guard");
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &["player:3".to_string()]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     let ids: Vec<usize> = sim.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
     let (lead, rest) = (ids[0], ids[1..].to_vec());
     sim.order_follow(&rest, lead, guard);

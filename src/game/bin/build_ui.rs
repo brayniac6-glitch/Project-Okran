@@ -1173,6 +1173,7 @@ pub fn script(
             pb.radius = half.length();
             if done {
                 pb.done = true;
+                pb.used = pb.total();
                 pb.progress = pb.total() as f32;
             }
             eprintln!("build script: placed {} at {w} ({} materials, est {:.1} h)", b.name, pb.total(), base::estimated_hours(b));

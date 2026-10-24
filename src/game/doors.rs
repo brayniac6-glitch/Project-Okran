@@ -144,13 +144,18 @@ impl Sim {
         s.door.always_locks || flag("is wall gate") || flag("is gateway") || flag("links together")
     }
 
-    /// The faction a door's building belongs to: its town's, else its squad's.
+    /// The faction a door's building belongs to: its town's (the building's, F038257: a fresh
+    /// zone's building takes its town's faction), else its squad's.
     pub fn door_owner(&self, d: usize) -> Option<String> {
         let s = &self.door_states[d];
         if s.player_building.is_some() {
             return Some(PLAYER_FACTION.to_string());
         }
-        if let Some(t) = kenshi_world::town::current_town(&self.towns, s.door.position, None)
+        let town = match self.placed_town.get(s.door.placement) {
+            Some(t) => *t,
+            None => kenshi_world::town::current_town(&self.towns, s.door.position, None),
+        };
+        if let Some(t) = town
             && let Some(f) = self.towns[t].faction.clone()
         {
             return Some(f);

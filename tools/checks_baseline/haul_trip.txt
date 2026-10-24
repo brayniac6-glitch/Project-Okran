@@ -1,0 +1,147 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+136 town nodes (34 general)
+town Shark at [-47040.98, 120.94015, 48137.1], type 2, radius 2500
+417 pieces of furniture, bars: ["Swamp Dome", "Swamp Dome"]
+15 interior volumes, 15 doors
+swamper fish and drugs at Swamp Store: 1 leader(s), 0 others, package Shop
+Swamper Blackshifter at Swamp Shack: 1 leader(s), 4 others, package Guard building, residents
+the dancing skeleton at Swamp Dome: 1 leader(s), 4 others, package Shop-24hr
+swamp trade goods at Swamp House: 1 leader(s), 1 others, package Shop
+swamp travel shop at Swamp House: 1 leader(s), 1 others, package Shop
+swamper fish and drugs at Swamp Store: 1 leader(s), 0 others, package Shop
+swamp shop mechanical at Swamp Shack: 1 leader(s), 0 others, package Shop
+swamp smithy at Swamp House: 1 leader(s), 1 others, package Shop
+Swamper resident solo at Swamp Shack: 1 leader(s), 1 others, package worker fighter indie resident
+Swamper resident solo at Swamp Shack: 1 leader(s), 0 others, package worker fighter indie resident
+Swamper resident solo at Swamp House: 1 leader(s), 0 others, package worker fighter indie resident
+Swamper resident solo at Swamp House: 1 leader(s), 1 others, package worker fighter indie resident
+Swamper resident solo at Swamp Shack: 1 leader(s), 1 others, package worker fighter indie resident
+hound hq at Swamp Dome: 1 leader(s), 8 others, package Guard building, residents
+blsh casino guy at Swamp Dome: 1 leader(s), 5 others, package Shop-24hr
+player squad: 1
+player squad: 1
+44 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Swampers: enemies here []
+faction Blackshifters: enemies here []
+faction Hounds: enemies here []
+faction Nameless: enemies here []
+Well full of 10 Water; storage Water Tank beside it
+world: 0 squads abroad, 304 towns
+t 10: operator at [-64, -4] queue [1, 92, 87]; machine, storage, full (10, 0, true)
+t 20: operator at [79, -18] queue [1, 92, 87]; machine, storage, full (10, 0, true)
+jobs: 42 starts 92 on Building(0)
+jobs: 42 collects 2 from 0
+t 30: operator at [123, -13] queue [1, 93, 113, 87, 1]; machine, storage, full (8, 0, false)
+t 40: operator at [-24, -29] queue [1, 93, 113, 87, 1]; machine, storage, full (8, 0, false)
+jobs: 42 starts 93 on Store(1048577)
+jobs: 42 put 2 things into 1
+t 50: operator at [-143, -10] queue [1, 87]; machine, storage, full (8, 2, false)
+t 60: operator at [4, -30] queue [1, 87]; machine, storage, full (8, 2, false)
+t 70: operator at [153, -8] queue [1, 87]; machine, storage, full (8, 2, false)
+jobs: 42 starts 87 on Building(0)
+t 80: operator at [186, -3] queue [87]; machine, storage, full (8, 2, false)
+t 90: operator at [186, -3] queue [87]; machine, storage, full (8, 2, false)
+t 100: operator at [186, -3] queue [87]; machine, storage, full (8, 2, false)
+t 110: operator at [186, -3] queue [87]; machine, storage, full (8, 2, false)
+t 120: operator at [186, -3] queue [87]; machine, storage, full (8, 2, false)
+t 130: operator at [186, -3] queue [87]; machine, storage, full (8, 2, false)
+t 140: operator at [186, -3] queue [87]; machine, storage, full (8, 2, false)
+t 150: operator at [186, -3] queue [87]; machine, storage, full (9, 2, false)
+t 160: operator at [186, -3] queue [87]; machine, storage, full (9, 2, false)
+t 170: operator at [186, -3] queue [87]; machine, storage, full (9, 2, false)
+t 180: operator at [186, -3] queue [87]; machine, storage, full (9, 2, false)
+t 190: operator at [186, -3] queue [87]; machine, storage, full (9, 2, false)
+t 200: operator at [186, -3] queue [87]; machine, storage, full (9, 2, false)
+jobs: 42 starts 92 on Building(0)
+jobs: 42 collects 2 from 0
+t 210: operator at [171, -5] queue [1, 93, 113, 87]; machine, storage, full (8, 2, false)
+t 220: operator at [24, -29] queue [1, 93, 113, 87, 1]; machine, storage, full (8, 2, false)
+t 230: operator at [-124, -13] queue [1, 93, 113, 87, 1]; machine, storage, full (8, 2, false)
+jobs: 42 starts 93 on Store(1048577)
+jobs: 42 put 2 things into 1
+t 240: operator at [-37, -29] queue [1, 87]; machine, storage, full (8, 4, false)
+t 250: operator at [113, -14] queue [1, 87]; machine, storage, full (8, 4, false)
+jobs: 42 starts 87 on Building(0)
+t 260: operator at [186, -3] queue [87]; machine, storage, full (8, 4, false)
+t 270: operator at [186, -3] queue [87]; machine, storage, full (8, 4, false)
+t 280: operator at [186, -3] queue [87]; machine, storage, full (8, 4, false)
+t 290: operator at [186, -3] queue [87]; machine, storage, full (8, 4, false)
+t 300: operator at [186, -3] queue [87]; machine, storage, full (8, 4, false)
+t 310: operator at [186, -3] queue [87]; machine, storage, full (8, 4, false)
+t 320: operator at [186, -3] queue [87]; machine, storage, full (8, 4, false)
+t 330: operator at [186, -3] queue [87]; machine, storage, full (9, 4, false)
+t 340: operator at [186, -3] queue [87]; machine, storage, full (9, 4, false)
+t 350: operator at [186, -3] queue [87]; machine, storage, full (9, 4, false)
+t 360: operator at [186, -3] queue [87]; machine, storage, full (9, 4, false)
+t 370: operator at [186, -3] queue [87]; machine, storage, full (9, 4, false)
+t 380: operator at [186, -3] queue [87]; machine, storage, full (9, 4, false)
+jobs: 42 starts 92 on Building(0)
+jobs: 42 collects 2 from 0
+t 390: operator at [171, -5] queue [1, 93, 113, 87]; machine, storage, full (8, 4, false)
+t 400: operator at [24, -29] queue [1, 93, 113, 87, 1]; machine, storage, full (8, 4, false)
+t 410: operator at [-124, -13] queue [1, 93, 113, 87, 1]; machine, storage, full (8, 4, false)
+jobs: 42 starts 93 on Store(1048577)
+jobs: 42 put 2 things into 1
+t 420: operator at [-36, -29] queue [1, 87]; machine, storage, full (8, 6, false)
+t 430: operator at [113, -14] queue [1, 87]; machine, storage, full (8, 6, false)
+jobs: 42 starts 87 on Building(0)
+t 440: operator at [186, -3] queue [87]; machine, storage, full (8, 6, false)
+t 450: operator at [186, -3] queue [87]; machine, storage, full (8, 6, false)
+t 460: operator at [186, -3] queue [87]; machine, storage, full (8, 6, false)
+t 470: operator at [186, -3] queue [87]; machine, storage, full (8, 6, false)
+t 480: operator at [186, -3] queue [87]; machine, storage, full (8, 6, false)
+t 490: operator at [186, -3] queue [87]; machine, storage, full (8, 6, false)
+t 500: operator at [186, -3] queue [87]; machine, storage, full (8, 6, false)
+t 510: operator at [186, -3] queue [87]; machine, storage, full (9, 6, false)
+t 520: operator at [186, -3] queue [87]; machine, storage, full (9, 6, false)
+t 530: operator at [186, -3] queue [87]; machine, storage, full (9, 6, false)
+t 540: operator at [186, -3] queue [87]; machine, storage, full (9, 6, false)
+t 550: operator at [186, -3] queue [87]; machine, storage, full (9, 6, false)
+t 560: operator at [186, -3] queue [87]; machine, storage, full (9, 6, false)
+jobs: 42 starts 92 on Building(0)
+jobs: 42 collects 2 from 0
+t 570: operator at [142, -10] queue [1, 93, 113, 87, 1]; machine, storage, full (8, 6, false)
+t 580: operator at [-5, -32] queue [1, 93, 113, 87, 1]; machine, storage, full (8, 6, false)
+jobs: 42 starts 93 on Store(1048577)
+jobs: 42 put 2 things into 1
+t 590: operator at [-153, -8] queue [1, 87]; machine, storage, full (8, 8, false)
+t 600: operator at [-7, -31] queue [1, 87]; machine, storage, full (8, 8, false)
+check: the operator emptied the full machine into the storage true (4 trips, the first at Some(48.916092); machine 10 -> 8, storage 8; back at work true)
+Well III full of 10 Water
+hauler's jobs [152, 124]
+t 610: hauler at [-83, 60] queue [1, 92, 94, 93, 152, 1]; machine, storage, full (10, 8, true)
+jobs: 43 starts 92 on Building(2)
+jobs: 43 collects 2 from 2
+t 620: hauler at [-25, 154] queue [1, 93, 242]; machine, storage, full (8, 8, false)
+t 630: hauler at [-138, 54] queue [1, 93, 242]; machine, storage, full (8, 8, false)
+jobs: 43 starts 93 on Store(1048577)
+jobs: 43 put 2 things into 1
+t 640: hauler at [-65, 37] queue [1, 221, 275]; machine, storage, full (8, 10, false)
+t 650: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 660: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 670: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 680: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 690: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 700: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 710: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 720: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 730: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 740: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 750: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 760: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 770: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 780: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 790: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 800: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 810: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 820: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 830: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+t 840: hauler at [5, 18] queue [221, 275]; machine, storage, full (8, 10, false)
+check: Auto-Haul took the output to the storage true (machine 10 -> 8, storage 8 -> 10, full false)
+exit 0

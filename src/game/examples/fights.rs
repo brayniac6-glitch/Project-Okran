@@ -12,6 +12,8 @@ fn main() {
     // `stance=<Block|Hold|Passive|Taunt|Ranged>` sets the player's people's stance
     let (stances, extras): (Vec<String>, Vec<String>) = a[4..].iter().cloned().partition(|e| e.starts_with("stance="));
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &extras);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     let players: Vec<usize> = sim.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
     for st in stances {
         use kenshi_game::orders::StanceOrder::*;
@@ -56,8 +58,38 @@ fn main() {
         Some([x.parse().ok()?, 0.0, z.parse().ok()?])
     });
     let mut retreated = false;
+    // FIGHTS_PACKAGE=<package name>[@seconds]: then (12 s by default) the first squad put down
+    // takes that AI_PACKAGE's goals, as a raid's retreat package is taken ("Retreat and
+    // refresh", "Normal Raid Retreat [passive]"); every 10 s how far its people are from where
+    // they stood then, and how many are up
+    let package: Option<(String, f32)> = std::env::var("FIGHTS_PACKAGE").ok().map(|v| match v.split_once('@') {
+        Some((n, s)) => (n.to_string(), s.parse().unwrap_or(12.0)),
+        None => (v, 12.0),
+    });
+    let mut packaged: Option<Vec<[f32; 3]>> = None;
     while sim.t < seconds {
         sim.step();
+        if let Some((name, at)) = &package
+            && packaged.is_none()
+            && sim.t > *at
+        {
+            let (_, m) = &platoons[0];
+            let pkg = data.records.values().find(|r| r.name == *name).map(|r| r.string_id.clone()).expect("package");
+            sim.take_package(m, &pkg);
+            packaged = Some(m.iter().map(|&i| sim.folk[i].mover.position_units()).collect());
+            println!("t {:.0}: {} take package {name}", sim.t, m.len());
+        }
+        if let Some(from) = &packaged
+            && sim.tick.is_multiple_of(600)
+        {
+            let (_, m) = &platoons[0];
+            let away: Vec<i32> = m.iter().zip(from).filter(|(i, _)| !sim.folk[**i].down).map(|(&i, f)| {
+                let q = sim.folk[i].mover.position_units();
+                (q[0] - f[0]).hypot(q[2] - f[2]) as i32
+            }).collect();
+            let tasks: Vec<u16> = m.iter().filter(|&&i| !sim.folk[i].down).filter_map(|&i| sim.folk[i].ai.current.as_ref().map(|c| c.task)).collect();
+            println!("t {:.0}: package squad up {} away {away:?} goals {tasks:?}", sim.t, away.len());
+        }
         if let Some(to) = retreat
             && !retreated
             && sim.t > 6.0
@@ -80,10 +112,36 @@ fn main() {
                 sim.order_attack(m, v);
             }
         }
+        // FIGHTS_OTHERS: every 20 s, each of the others in the fight: its plan, whether it runs
+        // off through it, its focus and how far that is
+        if std::env::var("FIGHTS_OTHERS").is_ok() && sim.tick.is_multiple_of(1200) {
+            for i in (0..sim.folk.len()).filter(|i| (std::env::var("FIGHTS_OTHERS").is_ok_and(|v| v == "all") || !ours.contains(i)) && sim.arena.f[*i].active) {
+                let p = &sim.folk[i];
+                let f = &sim.arena.f[i];
+                let at = p.mover.position_units();
+                let focus = f.focus.or(f.combat.target).map(|e| {
+                    let q = sim.folk[e].mover.position_units();
+                    format!("{e} at {:.0} down {}", (q[0] - at[0]).hypot(q[2] - at[2]), sim.folk[e].down)
+                });
+                println!(
+                    "  other {i} t {:.0} down {} goal {:?} q {:?} away {} focus {focus:?} combat {:?} desired {} waiting {} act {}",
+                    sim.t,
+                    p.down,
+                    p.ai.current.as_ref().map(|c| c.task),
+                    p.ai.queue.iter().map(|s| (s.task, s.target)).collect::<Vec<_>>(),
+                    f.ordered_away,
+                    f.combat.state,
+                    f.combat.desired,
+                    f.combat.waiting,
+                    f.act.is_some()
+                );
+            }
+        }
         // FIGHTS_VERBOSE: each one put down every second: where, its task and plan, whether it
         // fights, its weapon, its focus and how far that is
         if std::env::var("FIGHTS_VERBOSE").is_ok() && sim.tick.is_multiple_of(60) {
-            for &i in &ours {
+            let all: Vec<usize> = if std::env::var("FIGHTS_VERBOSE").is_ok_and(|v| v == "2") { (0..sim.folk.len()).filter(|&i| sim.arena.f[i].active).collect() } else { ours.clone() };
+            for &i in &all {
                 let p = &sim.folk[i];
                 let f = &sim.arena.f[i];
                 let at = p.mover.position_units();
@@ -92,7 +150,7 @@ fn main() {
                     format!("{e} at {:.0}", (q[0] - at[0]).hypot(q[2] - at[2]))
                 });
                 println!(
-                    "  {i} run {:.1} reach {:.1} t {:.0} at ({:.0},{:.0},{:.0}) task {:?} q {:?} active {} drawn {} down {} focus {:?} anim {:?}",
+                    "  {i} run {:.1} reach {:.1} t {:.0} at ({:.0},{:.0},{:.0}) task {:?} q {:?} active {} drawn {} down {} focus {:?} anim {:?} via {:?} path {} combat {:?} target {:?} attackers {:?} engagers {:?}",
                     f.run,
                     f.max_reach,
                     sim.t,
@@ -106,6 +164,12 @@ fn main() {
                     p.down,
                     focus,
                     f.act.as_ref().map(|a| format!("{:?}", a.kind)),
+                    f.via.map(|v| v.map(|c| c as i32)),
+                    p.fight_path.len(),
+                    f.combat.state,
+                    f.combat.target,
+                    f.combat.attackers,
+                    f.combat.engagers,
                 );
             }
         }

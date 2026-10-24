@@ -9,6 +9,8 @@ fn main() {
     let (zx, zy): (i32, i32) = (a[1].parse().unwrap(), a[2].parse().unwrap());
     let seconds: f32 = a.get(3).map_or(120.0, |s| s.parse().unwrap());
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &["player:3".to_string()]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     sim.step();
     let guards: Vec<usize> = (0..sim.folk.len()).filter(|&i| !sim.folk[i].dead && sim.folk[i].ai.jobs.iter().flatten().any(|j| j.task == GATE_GUARD)).collect();
     let gates: Vec<usize> = (0..sim.door_states.len()).filter(|&d| sim.is_gate(d)).collect();

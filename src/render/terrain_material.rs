@@ -202,6 +202,9 @@ pub struct KenshiTerrainMaterial {
     pub n34: Handle<Image>,
     #[texture(57)]
     pub n35: Handle<Image>,
+    /// The shared main light (kenshi_render::light_buffer, kenshi_lighting.wgsl KenshiLight).
+    #[storage(70, read_only)]
+    pub light: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 impl Material for KenshiTerrainMaterial {
@@ -249,12 +252,13 @@ impl Plugin for KenshiTerrainPlugin {
         app.add_plugins(MaterialPlugin::<crate::water_material::KenshiWaterMaterial>::default());
         app.add_plugins(crate::fog_volume::KenshiFogVolumePlugin);
         app.add_plugins(crate::interior_mask::InteriorMaskPlugin);
+        app.add_plugins(crate::light_buffer::LightBufferPlugin);
         app.add_systems(PostUpdate, crate::reflection::reflect_main_queue);
     }
 }
 
 /// The light the terrain is drawn under (deferred.hlsl main_fs uniforms).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MainLight {
     /// Toward the sun.
     pub sun_direction: Vec3,
@@ -503,6 +507,7 @@ impl TerrainLook {
         }
         let t = |i: usize| tex[i].clone();
         KenshiTerrainMaterial {
+            light: crate::light_buffer::LIGHT,
             params,
             overlay: self.image(
                 assets,
@@ -619,6 +624,7 @@ impl TerrainLook {
         params.set_light(&self.light);
         let or = |p: &Option<String>, d: &str| p.clone().unwrap_or_else(|| d.to_string());
         KenshiObjectMaterial {
+            light: crate::light_buffer::LIGHT,
             params,
             base: self.image_with(
                 assets,
@@ -690,18 +696,10 @@ impl TerrainLook {
         self.blood = Some((image, area));
     }
 
-    pub fn relight(
-        &mut self,
-        light: MainLight,
-        materials: &mut Assets<KenshiTerrainMaterial>,
-        objects: &mut Assets<KenshiObjectMaterial>,
-    ) {
+    /// The light the terrain, objects, characters and water are drawn under from now on:
+    /// kenshi_render::light_buffer writes it to their shared buffer (the materials themselves
+    /// are left as they are).
+    pub fn relight(&mut self, light: MainLight) {
         self.light = light;
-        for (_, m) in objects.iter_mut() {
-            m.params.set_light(&light);
-        }
-        for (_, m) in materials.iter_mut() {
-            m.params.set_light(&light);
-        }
     }
 }

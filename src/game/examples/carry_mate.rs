@@ -8,6 +8,8 @@ fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let (zx, zy): (i32, i32) = (a[1].parse().unwrap(), a[2].parse().unwrap());
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &["player:2".to_string()]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     let mine: Vec<usize> = sim.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
     if mine.len() < 2 {
         println!("need two player characters, have {}", mine.len());

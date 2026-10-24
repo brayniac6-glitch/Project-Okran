@@ -12,6 +12,8 @@ fn main() {
     let seconds: f32 = a.get(5).map_or(60.0, |s| s.parse().unwrap());
     let n: usize = a.get(6).map_or(2, |s| s.parse().unwrap());
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &[format!("player:{n}")]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     let animal = sim
         .data
         .records

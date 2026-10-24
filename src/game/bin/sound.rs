@@ -1316,27 +1316,45 @@ pub fn weather(mut s: ResMut<Sound>, weather: Option<Res<super::WeatherState>>, 
 /// (assumption) Armour without an "inventory sound" sounds as its material: cloth "Fabric",
 /// leather "Leather", chain "Steel_Bar", plate "Armor_Plating"; anything else "Tools".
 pub fn items(mut s: ResMut<Sound>, mut inv: ResMut<super::inventory_ui::InventoryWindow>, game: Res<Game>) {
+    for (lift, record) in std::mem::take(&mut inv.cues) {
+        let Some(r) = game.sim.data.get(&record) else { continue };
+        s.post_with(if lift { "Item_Lift" } else { "Item_Drop" }, None, &[("Inventory_Items", item_sound(r))], Channel::Ui);
+    }
+}
+
+/// An item's Inventory_Items switch: an ITEM's "inventory sound" (enum InventorySound), a
+/// weapon's "material" (Metal, Wood), armour by its material (see `items`).
+fn item_sound(r: &kenshi_data::GameData) -> &'static str {
     const INVENTORY: [&str; 20] = [
         "Backpack", "Building_Material", "Fabric", "Flour", "Food", "Kits", "Leather", "Luxury", "Narcotics", "Ore", "Potato",
         "Robotic_Component", "Rum", "Steel_Bar", "Tools", "Water", "Wheat", "Armor_Plating", "BLUEPRINTS", "Meat",
     ];
-    for (lift, record) in std::mem::take(&mut inv.cues) {
-        let Some(r) = game.sim.data.get(&record) else { continue };
-        let int = |k: &str| r.ints.get(k).copied();
-        let kind = match r.item_type() {
-            Some(kenshi_data::ItemType::Weapon) => if int("material") == Some(1) { "Weapon_Wood" } else { "Weapon_Metal" },
-            _ => match int("inventory sound") {
-                Some(k) => INVENTORY.get(k as usize).copied().unwrap_or("Tools"),
-                None => match int("material type") {
-                    Some(0) => "Fabric",
-                    Some(1) => "Leather",
-                    Some(2) => "Steel_Bar",
-                    Some(3) => "Armor_Plating",
-                    _ => "Tools",
-                },
+    let int = |k: &str| r.ints.get(k).copied();
+    match r.item_type() {
+        Some(kenshi_data::ItemType::Weapon) => if int("material") == Some(1) { "Weapon_Wood" } else { "Weapon_Metal" },
+        _ => match int("inventory sound") {
+            Some(k) => INVENTORY.get(k as usize).copied().unwrap_or("Tools"),
+            None => match int("material type") {
+                Some(0) => "Fabric",
+                Some(1) => "Leather",
+                Some(2) => "Steel_Bar",
+                Some(3) => "Armor_Plating",
+                _ => "Tools",
             },
-        };
-        s.post_with(if lift { "Item_Lift" } else { "Item_Drop" }, None, &[("Inventory_Items", kind)], Channel::Ui);
+        },
+    }
+}
+
+/// A loose item picked up by Task_Pickup (F031289 -> F039184 / F039186): the picker's
+/// "Character_Pick_Up_Ground" with the item's Inventory_Items.
+pub fn ground_pickups(mut s: ResMut<Sound>, mut game: ResMut<Game>, _ready: Res<WorldReady>) {
+    if game.sim.ground_pickups.is_empty() {
+        return;
+    }
+    for (who, record) in std::mem::take(&mut game.sim.ground_pickups) {
+        let (Some(p), Some(r)) = (game.sim.folk.get(who), game.sim.data.get(&record)) else { continue };
+        let at = Some(Vec3::from(p.mover.position_units()) - game.zone.origin);
+        s.post_with("Character_Pick_Up_Ground", at, &[("Inventory_Items", item_sound(r))], Channel::Sfx);
     }
 }
 
@@ -1508,4 +1526,37 @@ pub fn creatures(mut s: ResMut<Sound>, game: Res<Game>, time: Res<Time>, mut nex
         let u = s.rand();
         next.insert(p.id, now + u * 40.0 + 20.0);
     }
+}
+
+/// @fn F029299
+///
+/// @fn F037659
+///
+/// A door's lock turned (the building panel's "Security:" button): "Building_Lock_Unlock" with
+/// its "Build_Lock" switch set first by the lock wanted before the turn, "Lock_Building" while
+/// it was wanted, else "Unlock_Building".
+pub fn door_locks(mut s: ResMut<Sound>, game: Res<Game>, mut was: Local<Vec<bool>>, _ready: Res<WorldReady>) {
+    let now: Vec<bool> = game.sim.door_states.iter().map(|d| d.wants_lock).collect();
+    if was.len() == now.len() {
+        for (before, after) in was.iter().zip(&now) {
+            if before != after {
+                s.post_with("Building_Lock_Unlock", None, &[("Build_Lock", if *before { "Lock_Building" } else { "Unlock_Building" })], Channel::Ui);
+            }
+        }
+    }
+    *was = now;
+}
+
+/// A machine's power switched on or off (the building panel's "Power" tick): "UI_Generator"
+/// with its "Generator" switch "On" or "Off".
+pub fn machines(mut s: ResMut<Sound>, game: Res<Game>, mut was: Local<Vec<(String, [f32; 3], bool)>>, _ready: Res<WorldReady>) {
+    let now: Vec<(String, [f32; 3], bool)> = game.sim.buildings.iter().map(|b| (b.record.clone(), b.at, b.switched_on)).collect();
+    for (r, at, on) in &now {
+        if let Some((_, _, before)) = was.iter().find(|(r2, a2, _)| r2 == r && a2 == at)
+            && before != on
+        {
+            s.post_with("UI_Generator", None, &[("Generator", if *on { "On" } else { "Off" })], Channel::Ui);
+        }
+    }
+    *was = now;
 }

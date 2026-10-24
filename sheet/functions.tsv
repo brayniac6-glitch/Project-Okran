@@ -21901,7 +21901,7 @@ F021899	1400a91f0	182	FUN_1400a91f0		unk				raw
 F021900	1400a92e0	12	FUN_1400a92e0	boost::exception_detail::clone_impl<boost::exception_detail::error_info_injector<boost::lock_error>_>	thirdparty				skip		
 F021901	1400a92f0	12	FUN_1400a92f0	boost::exception_detail::clone_impl<boost::exception_detail::error_info_injector<boost::lock_error>_>	thirdparty				skip		
 F021902	1400a9300	192	FUN_1400a9300		unk				raw		
-F021903	1400a93f0	127	FUN_1400a93f0		unk				raw		
+F021903	1400a93f0	127	GameData::hasRefs		unk				named		(category): the record's reference list of that category is not empty
 F021904	1400a9490	69	FUN_1400a9490		unk				raw		
 F021905	1400a94f0	160	FUN_1400a94f0		unk				raw		
 F021906	1400a95c0	130	FUN_1400a95c0		unk				raw		
@@ -22646,7 +22646,7 @@ F022644	1400d2d20	34	FUN_1400d2d20		unk				raw
 F022645	1400d2da0	24	FUN_1400d2da0		unk				raw		
 F022646	1400d2dd0	152	FUN_1400d2dd0		unk				raw		
 F022647	1400d2f20	81	FUN_1400d2f20		unk				raw		
-F022648	1400d2fa0	148	FUN_1400d2fa0		unk				raw		
+F022648	1400d2fa0	148	hash<hand>		unk				named	world	boost hash_combine over container, index, serial, container serial, then + type; type 11: 0x9e3779c4
 F022649	1400d3090	186	FUN_1400d3090		unk				raw		
 F022650	1400d3180	11	FUN_1400d3180	BlueprintItem	econ				raw		
 F022651	1400d3190	3	FUN_1400d3190	BlueprintItem	econ				raw		
@@ -23166,7 +23166,7 @@ F023164	1400f6be0	3	FUN_1400f6be0	Building	build				raw
 F023165	1400f6bf0	3	FUN_1400f6bf0	Building	build				raw		
 F023166	1400f6c00	3	FUN_1400f6c00	Building	build				raw		
 F023167	1400f6c10	13	FUN_1400f6c10	Building	build				raw		
-F023168	1400f6c20	127	FUN_1400f6c20	Building	build				raw		
+F023168	1400f6c20	127	Building::getTown	Building	build				named	world	the root building's town handle (type 0xd / 0x55) resolved; else TownManager::nearest of its position (any type but 8)
 F023169	1400f6cc0	8	FUN_1400f6cc0	Building	build				raw		
 F023170	1400f6cd0	3	FUN_1400f6cd0	UseableStuff	build				raw		
 F023171	1400f6ce0	3	FUN_1400f6ce0	UseableStuff	build				raw		
@@ -24348,21 +24348,21 @@ F024346	1401442a0	131	FUN_1401442a0		unk				raw
 F024347	140144330	195	FUN_140144330		unk				raw		
 F024348	140144400	58	FUN_140144400		unk				raw		
 F024349	140144440	239	FUN_140144440		unk				raw		
-F024350	140144540	129	FUN_140144540		unk				raw		
-F024351	1401445d0	1783	FUN_1401445d0		unk				raw		
+F024350	140144540	129	AICharacter::gatherWalls	AICharacter	char				named	pathfinding	the walls kept round the mover (+0x150 centre, +0x160 reach, +0x164 again, +0x168 list): kept unless +0x164 or the squared distance from the centre exceeds 0.8 x the reach; else NavMeshManager F032187 from the face +0x14 (none or not loaded: kept as they are)
+F024351	1401445d0	1783	AICharacter::sweepWalls	AICharacter	char				named	character	circle (radius) at pos moved by d against the gathered walls (+0x168, 0x20 each: a, b, b.w = 1/len): walls with n.dir <= -1e-5 only; the leading point (pos - r n) line meets the wall line at t: t < -0.5 r/|d| -> no touch (circle that deep in passes), else max(t, 0); wall param u must be in (-r/len, 1 + r/len) and t < 1, height gap <= 1 m; off the ends circle vs end point (root < 0.02 -> none, behind -> 0); out t (from 1) and normal = start - touch point flattened, w = that distance; returns the wall index or -1
 F024352	140144cd0	1609	FUN_140144cd0		unk				raw		
 F024353	140145320	1361	FUN_140145320		unk				raw		
 F024354	140145880	818	FUN_140145880		unk				raw		
 F024355	140145bc0	289	FUN_140145bc0		unk				raw		
 F024356	140145cf0	339	AICharacter::setGoal	AICharacter	char				named	pathfinding	path request (0xa0, as F032235 consumes): goal +0x50 = dest * 0.1, start +0x40 = mover position +0x20, radius +0x30 = +0x70, water cost +0x34 = +0x74, start face +0x38 = +0x14, ids +0x10..+0x20 = +0xa0..+0xb0; queued on the navmesh manager; mover state +0x90 = 4 (5 when +0x88 == 2), +0x88 1 -> 0
 F024357	140145e50	1014	AICharacter::setPosition	AICharacter	char				named	pathfinding	teleport: position +0x20 = p * 0.1, face +0x14 = closest face within 500 m (manager); while +0x88 == 2 state +0x90 = 6, else last position +0x40 = position; arrived +0x80 = 1; logs a warning when the snapped position is more than 1 m off
-F024358	140146250	683	FUN_140146250		unk				raw		
+F024358	140146250	683	AICharacter::unstickFailed	AICharacter	char				named	pathfinding	+0x180 1: F032179 within 1000 then setPosition; else the walls (F024350, radius + 6), F024354 out to radius + 0.01, state 6; then isStuck F032186 (position, face) -> 0.5 m (in the camera view, F041469) or 3 m toward the goal, state 6; +0x180 = 0
 F024359	140146510	898	FUN_140146510		unk				raw		
 F024360	1401468a0	431	AICharacter::AICharacter	AICharacter	char				named	character	mover in metres: +0x70 radius * 0.1, +0x74 water cost 1, +0x78 acceleration (as given, m/s^2), +0x7c max speed 0; snaps to the navmesh (within 30)
 F024361	140146a60	2234	AICharacter::pathHeading	AICharacter	char				named	pathfinding	edge path following: no edges left (+0x18 index >= count +0x8) -> heading = goal +0x40 - position +0x20 (normalised); else string-pull from the position through the edges from the current one (0x40 each: left +0x0, right +0x10, clearances +0x28/+0x2c, flag +0x30), merging following edges that share a corner while their clearance <= radius +0x70 + 0.5; returns the edge to advance to and the heading; epsilon 0.001 for equal corners; up = (0, 1, 0)
 F024362	140147320	968	FUN_140147320		unk				raw		
-F024363	1401476f0	1439	FUN_1401476f0		unk				raw		
-F024364	140147ca0	809	AICharacter::steer	AICharacter	char				named	character	desired = max speed +0x7c * direction, bent by Havok local avoidance; dv = desired - velocity +0x30, clamped to length dt * acceleration +0x78; velocity += dv
+F024363	1401476f0	1439	AICharacter::neighbourPush	AICharacter	char				named	pathfinding	the deepest overlap among the sensor proximity list (+0x100 = CharSensor, list +0x68, 0x28 hands): not seated (+0x1a0 +0xb8), active (+0x1a9), not carried (+0x3d4); depth (R - d)(0.5 + (Ro - Rm) / R) held to 0..1; exactly on one: rand01 way, max(radii) x 0.1; combat x 0.02; path state 2 with the neighbour on the goal: state 1
+F024364	140147ca0	809	AICharacter::steer	AICharacter	char				named	character	desired = max speed +0x7c x direction; with a neighbour push (F024363): the walls gathered when never yet (centre +0x150 at 0, F024350), the push swept (F024351, the answer unused) and the position moved by all of it, the desired bent off the push; dv = desired - velocity +0x30, clamped to dt x acceleration +0x78; velocity += dv
 F024365	140147fd0	2791	AICharacter::step	AICharacter	char				named	character	per tick: following a path (state 2), when |v| > 0 and (distance left along the heading - 0.1) < v^2 / (2 * acceleration) it brakes (desired speed sqrt-limited); steer (F024364); on the last path segment a step longer than the distance left lands on the goal, velocity 0, arrived +0x80; long steps are split into pieces of at most 3 m
 F024366	140148ac0	675	FUN_140148ac0		unk				raw		
 F024367	140148d70	472	FUN_140148d70		unk				raw		
@@ -24381,8 +24381,8 @@ F024379	14014cb00	1132	FUN_14014cb00		unk				raw
 F024380	14014d090	96	FUN_14014d090		unk				raw		
 F024381	14014d110	201	FUN_14014d110		unk				raw		
 F024382	14014d280	66	FUN_14014d280		unk				raw		
-F024383	14014d2e0	247	FUN_14014d2e0		unk				raw		
-F024384	14014d420	250	FUN_14014d420		unk				raw		
+F024383	14014d2e0	247	AICharacter::edgeCornerFirst	AICharacter	char				named	character	first corner of path edge (+0x0) as seen from pos: when its clearance +0x28 < radius and +0x30 > 0, moved (radius - clearance) along up x (corner - pos), normalised; else the corner itself
+F024384	14014d420	250	AICharacter::edgeCornerSecond	AICharacter	char				named	character	second corner of path edge (+0x10) as seen from pos: when its clearance +0x2c < radius and +0x30 < 1, moved (radius - clearance) along (corner - pos) x up, normalised; else the corner itself
 F024385	14014d560	96	FUN_14014d560		unk				raw		
 F024386	14014d600	99	FUN_14014d600		unk				raw		
 F024387	14014d680	80	FUN_14014d680		unk				raw		
@@ -29194,7 +29194,7 @@ F029192	140291800	3	FUN_140291800	Package_HangAroundBar	ai				raw
 F029193	140291810	136	FUN_140291810	Package_HangAroundBar	ai				raw		
 F029194	1402919d0	145	FUN_1402919d0		unk				raw		
 F029195	140291aa0	88	FUN_140291aa0		unk				raw		
-F029196	140291bf0	145	FUN_140291bf0		unk				raw		
+F029196	140291bf0	145	HandMap::minBuckets		unk				named	world	power of two above size / load factor + 1, at least 4
 F029197	140291cb0	88	FUN_140291cb0		unk				raw		
 F029198	140291ef0	217	FUN_140291ef0	Package_HangAroundBar	ai				raw		
 F029199	140292020	61	FUN_140292020		unk				raw		
@@ -29216,13 +29216,13 @@ F029214	140292c90	265	FUN_140292c90		unk				raw
 F029215	140292de0	644	FUN_140292de0		unk				raw		
 F029216	140293110	120	FUN_140293110		unk				raw		
 F029217	1402931b0	105	FUN_1402931b0		unk				raw		
-F029218	140293240	105	FUN_140293240		unk				raw		
+F029218	140293240	105	HandMap::rehash		unk				named	world	walk the list: a node of an empty bucket stays and marks it, others move after their bucket's previous node
 F029219	1402932d0	741	Package_HangAroundBar::setup	Package_HangAroundBar	ai				named	ai	the squad town (F029191), its buildings of designation BD_BAR (Town vtable +0x2d0, 3) from a random start (F050548): bar hand +0x28, its building +0xb0
 F029220	140293670	140	FUN_140293670		unk				raw		
-F029221	140293720	140	FUN_140293720		unk				raw		
+F029221	140293720	140	HandMap::reserveForInsert		unk				named	world	buckets made on first insert (at least the 16 asked); past the max load grow to minBuckets(max(1.5 x size, size + 1))
 F029222	1402937d0	529	FUN_1402937d0		unk				raw		
 F029223	140293a70	279	FUN_140293a70		unk				raw		
-F029224	140293bd0	469	FUN_140293bd0		unk				raw		
+F029224	140293bd0	469	HandMap::emplace		unk				named	world	boost::unordered insert: mix the hash, an empty bucket's node to the list front, else after its bucket's previous node
 F029225	140293e30	18	FUN_140293e30		unk				raw		
 F029226	140293e50	23	FUN_140293e50		unk				raw		
 F029227	140293e70	29	FUN_140293e70		unk				raw		
@@ -30214,22 +30214,22 @@ F030212	1402dd320	82	FUN_1402dd320		unk				raw
 F030213	1402dd390	82	FUN_1402dd390		unk				raw		
 F030214	1402dd400	137	FUN_1402dd400		unk				raw		
 F030215	1402dd520	3	FUN_1402dd520		unk				raw		
-F030216	1402dd530	9	Faction::spawnFactor		ai				named	zones	returns 1.0
+F030216	1402dd530	9	Faction::spawnFactor		ai				named	zones	Faction::spawnFactor: returns 1.0 (a stub)
 F030217	1402dd550	157	FUN_1402dd550		unk				raw		
-F030218	1402dd660	19	FUN_1402dd660		unk				raw		
-F030219	1402dd680	147	FUN_1402dd680		unk				raw		
+F030218	1402dd660	19	FactionUniqueSquadManager::squadToSpawn	FactionUniqueSquadManager	world				named	world	returns none (a stub): no special squad is ever handed out
+F030219	1402dd680	147	FactionUniqueSquadManager::update	FactionUniqueSquadManager	world				named	world	(dt): prosperity += dt*0.1 while under its max; rows' replacement timers down while > 0, stopping at the first due row with fewer squads than its number; spawns nothing
 F030220	1402dd720	167	FUN_1402dd720		unk				raw		
 F030221	1402dd7d0	637	FUN_1402dd7d0		unk				raw		
 F030222	1402dda60	547	FUN_1402dda60		unk				raw		
-F030223	1402ddc90	1650	FUN_1402ddc90		unk				raw		
+F030223	1402ddc90	1650	FactionUniqueSquadManager::init	FactionUniqueSquadManager	world				named	world	(faction, record): prosperity from max prosperity; a row (template, val0 number, timer 0, squads) per special squads ref of type 77
 F030224	1402de310	1690	FUN_1402de310		unk				raw		
-F030225	1402de9b0	405	FUN_1402de9b0		unk				raw		
+F030225	1402de9b0	405	FactionUniqueSquadManager::squadGone	FactionUniqueSquadManager	world				named	world	(platoon): out of its row; the row's timer = a game day's seconds x replacement time / 24
 F030226	1402deb50	643	FUN_1402deb50		unk				raw		
-F030227	1402dede0	171	FUN_1402dede0		unk				raw		
-F030228	1402deea0	527	FUN_1402deea0		unk				raw		
-F030229	1402df0c0	722	FUN_1402df0c0		unk				raw		
+F030227	1402dede0	171	FactionUniqueSquadManager::reset	FactionUniqueSquadManager	world				named	world	rows cleared and set up again (F030223)
+F030228	1402deea0	527	FactionUniqueSquadManager::save	FactionUniqueSquadManager	world				named	world	each row: sq<i> template, sqtime<i> timer, <i>:sq list squads; the prosperity
+F030229	1402df0c0	722	FactionUniqueSquadManager::load	FactionUniqueSquadManager	world				named	world	the rows and prosperity back from sq<i> / sqtime<i> / <i>:sq list
 F030230	1402df3a0	888	FUN_1402df3a0		unk				raw		
-F030231	1402df720	146	FUN_1402df720		unk				raw		
+F030231	1402df720	146	FactionUniqueSquadManager::FactionUniqueSquadManager	FactionUniqueSquadManager	world				named	world	prosperity 0 of 1000, no rows
 F030232	1402df7c0	586	FUN_1402df7c0		unk				raw		
 F030233	1402e0380	11	FUN_1402e0380		unk				raw		
 F030234	1402e03c0	11	FUN_1402e03c0		unk				raw		
@@ -30247,7 +30247,7 @@ F030245	1402e07c0	77	FUN_1402e07c0	lektor<FactionUniqueSquadManager::UniqueSpawn
 F030246	1402e0820	41	FUN_1402e0820		unk				raw		
 F030247	1402e0860	79	FUN_1402e0860		unk				raw		
 F030248	1402e08d0	377	FUN_1402e08d0		unk				raw		
-F030249	1402e0ab0	173	FUN_1402e0ab0		unk				raw		
+F030249	1402e0ab0	173	FactionProsperity::init		world				named	world	(faction record): max = max prosperity; value = max
 F030250	1402e0b90	156	FUN_1402e0b90		unk				raw		
 F030251	1402e0c60	80	FUN_1402e0c60		unk				raw		
 F030252	1402e0cd0	109	FUN_1402e0cd0	FactionUniqueSquadManager	ai				raw		
@@ -31578,11 +31578,11 @@ F031576	1403709d0	2449	FUN_1403709d0	TownBase	world				raw
 F031577	140371370	577	FUN_140371370	Town	world				raw		
 F031578	1403715c0	3333	FUN_1403715c0	Town	world				raw		
 F031579	1403722d0	635	FUN_1403722d0		unk				raw		
-F031580	140372560	846	FUN_140372560		unk				raw		
+F031580	140372560	846	Town::loadState		unk				named	save	a save's town state: replacementTown -> +0x338 (F051428), public, ...
 F031581	1403728c0	398	FUN_1403728c0		unk				raw		
 F031582	140372a60	1151	FUN_140372a60		unk				raw		
 F031583	140372ef0	4105	FUN_140372ef0		unk				raw		
-F031584	140373f00	4598	FUN_140373f00		unk				raw		
+F031584	140373f00	4598	SaveManager::loadGame		unk				named		sets ZoneManager +0x08 (a save loading: no town overrides) among the rest of the load
 F031585	140375100	265	FUN_140375100		unk				raw		
 F031586	140375210	324	FUN_140375210		unk				raw		
 F031587	140375360	6160	FUN_140375360		unk				raw		
@@ -32176,16 +32176,16 @@ F032174	1403a2fa0	224	FUN_1403a2fa0		unk				raw
 F032175	1403a3090	77	FUN_1403a3090		unk				raw		
 F032176	1403a30f0	1070	FUN_1403a30f0		unk				raw		
 F032177	1403a3530	493	FUN_1403a3530		unk				raw		
-F032178	1403a3730	894	FUN_1403a3730		unk				raw		
+F032178	1403a3730	894	NavMeshManager::pushOffEdges	NavMeshManager	ai				named	pathfinding	push a point out to radius from each listed boundary edge in turn (ground plane): on the edge -> along its normal (e.z, 0, -e.x) by radius; on the inner side or off its ends -> out along the line from the nearest point; beyond the line within its ends -> over to the radius inside; returns how many pushed
 F032179	1403a3ac0	49	FUN_1403a3ac0		unk				raw		
 F032180	1403a3b00	937	FUN_1403a3b00		unk				raw		
-F032181	1403a3eb0	1289	FUN_1403a3eb0		unk				raw		
+F032181	1403a3eb0	1289	NavMeshManager::boundaryEdgesNear	NavMeshManager	ai				named	pathfinding	flood from a face: each edge whose nearest point is within radius of pos (horizontal) leads into its opposite face unless that is missing or blocked (data 5), in which case the edge key (section << 22 | edge) is collected
 F032182	1403a43c0	370	FUN_1403a43c0		unk				raw		
 F032183	1403a4540	151	FUN_1403a4540		unk				raw		
 F032184	1403a45e0	193	FUN_1403a45e0		unk				raw		
-F032185	1403a46b0	1986	NavMeshManager::placeGoal	NavMeshManager	ai				named	pathfinding	goal face: closest within 30 m (arg 5), else within 500 m (F032163); face data & 0xf != 0 -> vertical search 1 m else 500 m; collects boundary edges within the radius (+0.05) round the goal and pushes the goal clear of them (tries candidate points along the edges, sorted by distance), re-snapping to the mesh
+F032185	1403a46b0	1986	NavMeshManager::placeGoal	NavMeshManager	ai				named	pathfinding	goal placement (placeGoal): out = closest point within arg 5 (else face within 500 m, F032163); boundary edges within the radius (F032181) push it out once (F032178); re-faced (F032163 1 m, else snapped within the radius); still edges within radius - 0.01 -> the end points of the edges within radius + 2, sorted by distance to the wanted goal, each snapped within arg 5, pushed three times from the edges within radius + 1 (F032181), taken when the third push moves nothing and a face lies under it (1 m up); none -> Havok fallback, face within 500 m
 F032186	1403a4e80	328	FUN_1403a4e80		unk				raw		
-F032187	1403a4fd0	1153	FUN_1403a4fd0		unk				raw		
+F032187	1403a4fd0	1153	NavMeshManager::gatherWalls	NavMeshManager	ai				named	pathfinding	face key valid (section loaded, index in range): the boundary edges near (F032181) from the face within the reach into the mover wall list (ends, length, 1 / flat length), centre and reach stored; +0x164 = a gathered edge has an opposite edge
 F032188	1403a5460	628	FUN_1403a5460		unk				raw		
 F032189	1403a56e0	434	FUN_1403a56e0		unk				raw		
 F032190	1403a58a0	647	FUN_1403a58a0		unk				raw		
@@ -32200,9 +32200,9 @@ F032198	1403a6f40	4355	FUN_1403a6f40		unk				raw
 F032199	1403a8050	1866	FUN_1403a8050		unk				raw		
 F032200	1403a87a0	906	FUN_1403a87a0		unk				raw		
 F032201	1403a8b30	2168	FUN_1403a8b30		unk				raw		
-F032202	1403a93b0	2211	FUN_1403a93b0		unk				raw		
+F032202	1403a93b0	2211	NavMeshManager::edgeClearances	NavMeshManager	ai				named	pathfinding	clearances of a path edge from the section's Havok clearance cache (+0x1b0): both vertex clearances and the edge's value (+0x30 of the path edge); seeds the cache for the face when missing (Havok code)
 F032203	1403a9c60	1005	FUN_1403a9c60		unk				raw		
-F032204	1403aa060	526	FUN_1403aa060		unk				raw		
+F032204	1403aa060	526	NavMeshManager::buildEdgePath	NavMeshManager	ai				named	pathfinding	path search output -> AICharacter edges (0x40 each): edge end points (F030504) +0x0/+0x10, opposite face +0x20, edge key +0x24, vertex clearances +0x28/+0x2c and edge value +0x30 (default 0.5) from F032202
 F032205	1403aa280	1819	FUN_1403aa280		unk				raw		
 F032206	1403aa9b0	214	FUN_1403aa9b0		unk				raw		
 F032207	1403aaa90	660	NavMeshManager::lineOfSight	NavMeshManager	ai				named	pathfinding	straight-line check start -> goal on the mesh: agent diameter = 2 x radius, edge filter = static WaterEdgeFilter (arg 6 false) or the manager filter +0x288; on a hit within 1 m of the goal, accepts; else retries from 500 m above (raycast down) and accepts when the faces match
@@ -37783,12 +37783,12 @@ F037781	1405505d0	3267	FUN_1405505d0		unk				raw
 F037782	1405512a0	943	FUN_1405512a0	Layout	build				raw		
 F037783	140551660	788	FUN_140551660		unk				raw		
 F037784	140551980	409	FUN_140551980		unk				raw		
-F037785	140551b20	717	FUN_140551b20	Building	build				raw		
+F037785	140551b20	717	Building::registerWithTown	Building	build				named	world	vtable 0x450: a building not a gateway (0x3d8 none) with 0x2c8 and +0x1f0, or is gateway, into its town's gate map
 F037786	140551e00	820	FUN_140551e00	LocationNode	world				raw		
 F037787	140552140	463	FUN_140552140		unk				raw		
 F037788	140552320	2111	FUN_140552320	Building	build				raw		
 F037789	140552b70	1611	FUN_140552b70	Building	build				raw		
-F037790	1405531d0	56	FUN_1405531d0	GatewayBuilding	build				raw		
+F037790	1405531d0	56	GatewayBuilding::registerWithTown	GatewayBuilding	build				named	world	vtable 0x450: F037785, then its town's addGate with its own handle (+0x58)
 F037791	140553210	724	FUN_140553210		unk				raw		
 F037792	1405534f0	888	FUN_1405534f0		unk				raw		
 F037793	140553870	860	Building::setupInteriorMask	Building	world				named	ai	the "interior mask" BUILDING_PART mesh, placed with the building position and orientation, becomes a trigger volume (type 0xd): a character overlapping it is inside (RootObject +0x80)
@@ -38147,7 +38147,7 @@ F038145	140577600	162	FUN_140577600		unk				raw
 F038146	1405776d0	133	FUN_1405776d0		unk				raw		
 F038147	140577780	210	FUN_140577780		unk				raw		
 F038148	140577890	48	FUN_140577890		unk				raw		
-F038149	1405778d0	116	FUN_1405778d0		unk				raw		
+F038149	1405778d0	116	WeightedList::add		unk				named		item with weight above 0: total, map, the heaviest kept (+0x54 / +0x58)
 F038150	140577970	82	FUN_140577970		unk				raw		
 F038151	1405779e0	87	FUN_1405779e0		unk				raw		
 F038152	140577a50	35	FUN_140577a50		unk				raw		
@@ -38253,9 +38253,9 @@ F038251	14057bf90	84	FUN_14057bf90		unk				raw
 F038252	14057c030	1354	FUN_14057c030		unk				raw		
 F038253	14057c580	34	FUN_14057c580		unk				raw		
 F038254	14057c5b0	305	FUN_14057c5b0		unk				raw		
-F038255	14057c6f0	357	FUN_14057c6f0		unk				raw		
+F038255	14057c6f0	357	Faction::makePlatoon		unk				named	world	a UniquePlatoon for a UNIQUE_SQUAD_TEMPLATE (type 0x4d) or a saved platoon flagged special, else a plain platoon
 F038256	14057c860	1021	FUN_14057c860		unk				raw		
-F038257	14057cc70	9473	FUN_14057cc70		unk				raw		
+F038257	14057cc70	9473	Building::create		unk				named	world	a placed building's creation; its town: in a fresh zone the state's town handle only for the player's towns, else TownManager::findTown, else for one with an interior (or a parent) the nearest non-player town within 10000; takes its town's faction
 F038258	14057f1f0	711	FUN_14057f1f0		unk				raw		
 F038259	14057f4c0	849	FUN_14057f4c0		unk				raw		
 F038260	14057f820	1293	FUN_14057f820		unk				raw		
@@ -39124,7 +39124,7 @@ F039122	1405c8240	138	FUN_1405c8240		unk				raw
 F039123	1405c82d0	61	FUN_1405c82d0		unk				raw		
 F039124	1405c8320	8	FUN_1405c8320		unk				raw		
 F039125	1405c8330	109	FUN_1405c8330		unk				raw		
-F039126	1405c83b0	21	FUN_1405c83b0		unk				raw		
+F039126	1405c83b0	21	Character::radius	Character	char				named	character	the movement object (+0x640) F040603: its +0x3a8 vtable 0x390 x +0x364; 0 without one
 F039127	1405c83d0	48	FUN_1405c83d0	CharacterHuman	char				raw		
 F039128	1405c8410	11	FUN_1405c8410	CharacterHuman	char				raw		
 F039129	1405c8430	40	FUN_1405c8430	CharacterHuman	char				raw		
@@ -40785,7 +40785,7 @@ F040783	14066cc10	21	FUN_14066cc10		unk				raw
 F040784	14066cc30	28	FUN_14066cc30		unk				raw		
 F040785	14066cc60	11	FUN_14066cc60		unk				raw		
 F040786	14066cc80	175	FUN_14066cc80		unk				raw		
-F040787	14066cd50	9	FUN_14066cd50		unk				raw		
+F040787	14066cd50	9	gameDaySeconds		unk				named		returns 2618.18 (a game day in seconds)
 F040788	14066cd60	68	FUN_14066cd60		unk				raw		
 F040789	14066cdd0	65	FUN_14066cdd0		unk				raw		
 F040790	14066ce20	21	FUN_14066ce20		unk				raw		
@@ -40809,9 +40809,9 @@ F040807	140670ea0	38	FUN_140670ea0	SkyXController	thirdparty				skip
 F040808	140670ed0	496	FUN_140670ed0		unk				raw		
 F040809	140671140	48	FUN_140671140	SkyX::SkyX	thirdparty				skip		
 F040810	140671180	9	FUN_140671180	SkyX::SkyX	thirdparty				skip		
-F040811	1406712f0	44	FUN_1406712f0		unk				raw		
+F040811	1406712f0	44	Dialogue::isLoudEvent		unk				named	dialogue	events 2 6 11 13 17 26 30 31 34 36 40 45 46 48 51 54 74: may cut in on another's conversation; bubble seen further
 F040812	140671380	22	FUN_140671380		unk				raw		
-F040813	1406713a0	44	FUN_1406713a0		unk				raw		
+F040813	1406713a0	44	Dialogue::isFarEvent		unk				named	dialogue	events 2 11 17 26 31 34 36 40 45 74: bubble seen from further
 F040814	140671430	128	FUN_140671430		unk				raw		
 F040815	140671530	196	FUN_140671530		unk				raw		
 F040816	140671600	39	FUN_140671600		unk				raw		
@@ -40826,7 +40826,7 @@ F040824	140671930	142	FUN_140671930		unk				raw
 F040825	140671a80	125	FUN_140671a80		unk				raw		
 F040826	140671b10	143	FUN_140671b10		unk				raw		
 F040827	140671bb0	158	FUN_140671bb0		unk				raw		
-F040828	140671c60	97	FUN_140671c60		unk				raw		
+F040828	140671c60	97	Dialogue::isFree		unk				named	dialogue	+0x148 set, no bubble (+0x228), no partner (+0x2c8 0xb); or an end message queued
 F040829	140671cd0	50	SubjectiveTags::setLong	SubjectiveTags	ai				named	ai	long-term tags (+0x10) set tag; time(+0x08) = game clock * 1e-6
 F040830	140671d10	50	SubjectiveTags::setShort	SubjectiveTags	ai				named	ai	short-term tags (+0x20) set tag; time(+0x08) = game clock * 1e-6
 F040831	140671d50	275	FUN_140671d50		unk				raw		
@@ -40846,7 +40846,7 @@ F040844	140672840	205	FUN_140672840		unk				raw
 F040845	140672920	255	FUN_140672920		unk				raw		
 F040846	140672a30	38	FUN_140672a30		unk				raw		
 F040847	140672a60	386	FUN_140672a60		unk				raw		
-F040848	140672bf0	1642	FUN_140672bf0		unk				raw		
+F040848	140672bf0	1642	Dialogue::speakerOf		unk				named	dialogue	TalkerEnum -> character: me/whole squad, target, target if player's, a player squad member of the line's races, interjectors 1-3
 F040849	140673260	39	FUN_140673260		unk				raw		
 F040850	140673290	373	FUN_140673290		unk				raw		
 F040851	140673410	1042	FUN_140673410		unk				raw		
@@ -40864,7 +40864,7 @@ F040862	140674300	410	PlatoonMemory::addTag	PlatoonMemory	ai				named	ai	(subjec
 F040863	1406744a0	142	Character::tag	Character	ai				named	ai	tag other (short-term): a temporary-enemy tag (4) is dropped when other's squad is allied (F041495) or other is my ally (vtable 0x3f0); else my platoon's memory adds it (F040862)
 F040864	140674550	323	FUN_140674550		unk				raw		
 F040865	1406746a0	385	FUN_1406746a0		unk				raw		
-F040866	140674830	996	FUN_140674830		unk				raw		
+F040866	140674830	996	Dialogue::endConversation		unk				named	dialogue	repetition counted; free; owner kept only while handed on; bubble gone; event delivered when alone (or an announcement on a contract)
 F040867	140674c20	34	FUN_140674c20		unk				raw		
 F040868	140674c50	173	FUN_140674c50		unk				raw		
 F040869	140674d10	42	FUN_140674d10		unk				raw		
@@ -40908,24 +40908,24 @@ F040906	14067e660	579	FUN_14067e660		unk				raw
 F040907	14067e8b0	3779	FUN_14067e8b0		unk				raw		
 F040908	14067f780	806	FUN_14067f780		unk				raw		
 F040909	14067fab0	705	FUN_14067fab0		unk				raw		
-F040910	14067fd80	932	FUN_14067fd80		unk				raw		
+F040910	14067fd80	932	Dialogue::sayAloud		unk				named	dialogue	the text formatted, logged and shown in a bubble for len*0.12+2 s (+0x230)
 F040911	140680130	1028	FUN_140680130		unk				raw		
 F040912	140680560	13211	FUN_140680560		unk				raw		
-F040913	140683910	132	FUN_140683910		unk				raw		
-F040914	1406839a0	597	FUN_1406839a0		unk				raw		
+F040913	140683910	132	Dialogue::sayLineAloud		unk				named	dialogue	a monologue line: its text aloud (F040910), its effects (F040912)
+F040914	1406839a0	597	Dialogue::sayLine		unk				named	dialogue	partner cleared, busy, +0x198 = line; a monologue's aloud (F040913), else the window's: logged, effects, replies (F040911)
 F040915	140683c00	486	FUN_140683c00		unk				raw		
 F040916	140683df0	399	FUN_140683df0		unk				raw		
-F040917	140683f90	897	FUN_140683f90		unk				raw		
+F040917	140683f90	897	Dialogue::startConversation		unk				named	dialogue	(target, line, event, force): event and flags, target, face it, lead it, the opening line said
 F040918	140684320	1004	FUN_140684320		unk				raw		
-F040919	140684720	610	FUN_140684720		unk				raw		
-F040920	140684990	974	FUN_140684990		unk				raw		
+F040919	140684720	610	Dialogue::goOn		unk				named	dialogue	of the line's replies the best for the target, its speaker by TalkerEnum given lead and target, said; the leader hands on
+F040920	140684990	974	Dialogue::triggerEvent		unk				named	dialogue	cooldown, dead, owner busy, knocked out, inside checks; event 1 the window; else the event's best line opens a conversation
 F040921	140684d70	758	FUN_140684d70		unk				raw		
 F040922	140685070	12	FUN_140685070		unk				raw		
-F040923	140685090	1293	FUN_140685090		unk				raw		
-F040924	1406855c0	146	FUN_1406855c0		unk				raw		
-F040925	140685660	191	FUN_140685660		unk				raw		
+F040923	140685090	1293	Dialogue::update		unk				named	dialogue	(dt): cooldowns down; a line past its timers goes on (replies) or ends; a partner free is dropped
+F040924	1406855c0	146	Dialogue::onAttacked		unk				named	dialogue	busy and not on events 66 15 16 17 24: ends, says EV 28 (attacked by target) or 29
+F040925	140685660	191	Dialogue::raiseEvent		unk				named	dialogue	not dead, knocked out mask; free: triggerEvent; busy with another event (or forced) and a line for it: end, triggerEvent
 F040926	140685730	12	FUN_140685730		unk				raw		
-F040927	140685750	104	FUN_140685750		unk				raw		
+F040927	140685750	104	Dialogue::announce		unk				named	dialogue	the campaign's dialogue added to event 2; event 2 raised to no target
 F040928	14068aa00	11	FUN_14068aa00		unk				raw		
 F040929	14068aa20	11	FUN_14068aa20		unk				raw		
 F040930	14068aa70	11	FUN_14068aa70		unk				raw		
@@ -44936,7 +44936,7 @@ F044934	1407d13c0	22	FUN_1407d13c0		unk				raw
 F044935	1407d13e0	20	FUN_1407d13e0		unk				raw		
 F044936	1407d1400	5	FUN_1407d1400		unk				raw		
 F044937	1407d1420	26	FUN_1407d1420		unk				raw		
-F044938	1407d1440	72	FUN_1407d1440		unk				raw		
+F044938	1407d1440	72	Character::isLimp	Character	char				named	character	carried (+0x3d4), or the animation ragdoll (+0x448 vtable 0x48 = AnimationClass +0x2e8) +0x59 (ragdoll flag 1) or +0x5a (flag 0x800, carried)
 F044939	1407d1490	177	FUN_1407d1490		unk				raw		
 F044940	1407d1550	318	FUN_1407d1550		unk				raw		
 F044941	1407d16a0	71	FUN_1407d16a0		unk				raw		
@@ -45432,7 +45432,7 @@ F045430	1407ecdc0	810	FUN_1407ecdc0		unk				raw
 F045431	1407ed0f0	4154	FUN_1407ed0f0		unk				raw		
 F045432	1407ee130	404	FUN_1407ee130		unk				raw		
 F045433	1407ee2d0	1204	FUN_1407ee2d0		unk				raw		
-F045434	1407ee790	1624	FUN_1407ee790	UnloadedPlatoon	ai				raw		
+F045434	1407ee790	1624	UnloadedPlatoon::update	UnloadedPlatoon	ai				named	world	an unloaded platoon not the player's is loaded (+0x58 vtable +0x98) once its position is in a loaded zone (+0xb0 / +0xb1), within F051564's square with the 178.5 margin; walks capped 60 / 90 over 25000 off
 F045435	1407eedf0	573	FUN_1407eedf0	UniquePlatoon	ai				raw		
 F045436	1407ef040	1124	FUN_1407ef040		unk				raw		
 F045437	1407ef4b0	463	FUN_1407ef4b0		unk				raw		
@@ -46548,7 +46548,7 @@ F046546	1408593d0	680	CharSensor::perceive	CharSensor	ai				named	ai	per target:
 F046547	140859680	2531	FUN_140859680		unk				raw		
 F046548	14085a070	1393	CharSensor::update	CharSensor	ai				named	ai	proximity list for avoidance; every object in vision range through F046546
 F046549	14085a5f0	378	FUN_14085a5f0		unk				raw		
-F046550	14085a770	331	FUN_14085a770		unk				raw		
+F046550	14085a770	331	CharSensor::shareUpdate	CharSensor	ai				named	ai	another character within 200 units (100 when my state +0x88) not hostile (vtable 0x1d8 +0x10), the same vtable 0x60, not in a bed or cage (+0x2f8), not vtable 0x30: my update (F046548) with its gathered list, and my next tick skipped (+0x1d0); no direct caller found
 F046551	14085a8d0	351	CharSensor::tick	CharSensor	ai				named	ai	gather objects within the vision range (F044287), then F046548
 F046552	14085cdf0	17	FUN_14085cdf0	TagsClass<SenseType>	ai				raw		
 F046553	14085ce20	20	FUN_14085ce20	TagsClass<SenseType>	ai				raw		
@@ -46695,7 +46695,7 @@ F046693	14086dfe0	4689	AnimationLoader::load		anim				named	skeletal_animation	p
 F046694	14086f240	1369	FUN_14086f240		unk				raw		
 F046695	14086f7a0	4922	FUN_14086f7a0		unk				raw		
 F046696	140870ae0	5142	initGameDataAndMods		io				named	mod_loading	loads gamedata.base (fatal on failure), then the core mods, then readModsCfg mods in order (each followed by its .translation file), collecting failures for one error dialog
-F046697	140871f00	3682	FUN_140871f00		unk				raw		
+F046697	140871f00	3682	AnimationLoader::preprocess		anim				named	skeletal_animation	once, before skeletons load: of the ANIMATION records sharing an anim name the first keeps it, each later one is renamed <name>-<n> (n counts every copy, from 1) with "anim name original" keeping the shared name, and the (shared, copy) pair is listed for the loader (F046693) to clone the clip under the copy's name, so each record's delete flags strip its own copy; also drops COMBAT_TECHNIQUEs past an int field over 8 and reads ANIMATION_FILE "preprocess" records
 F046698	140872d70	124	FUN_140872d70		unk				raw		
 F046699	140872e00	6951	FUN_140872e00		unk				raw		
 F046700	140874930	1333	initTerrain		world				named	terrain	configures the terrain plugin: setTerrainScale(294912 world width, 9800 height range), setMaterialDistance(30000), patch size; heights from data/newland/land/fullmap.tif
@@ -48089,7 +48089,7 @@ F048087	1408f4400	325	FUN_1408f4400		unk				raw
 F048088	1408f45a0	48	FUN_1408f45a0	TerrainDecalsManager	ai				raw		
 F048089	1408f45e0	61	FUN_1408f45e0		unk				raw		
 F048090	1408f4740	68	FUN_1408f4740	ZoneSmell::Smell	world				raw		
-F048091	1408f4920	106	FUN_1408f4920		unk				raw		
+F048091	1408f4920	106	pushOut		unk				named	nests	a point moved out from a centre to a distance, across
 F048092	1408f4990	86	FUN_1408f4990		unk				raw		
 F048093	1408f49f0	184	FUN_1408f49f0		unk				raw		
 F048094	1408f4ab0	123	FUN_1408f4ab0		unk				raw		
@@ -48097,10 +48097,10 @@ F048095	1408f4be0	50	FUN_1408f4be0		unk				raw
 F048096	1408f4c20	163	FUN_1408f4c20		unk				raw		
 F048097	1408f4cd0	38	FUN_1408f4cd0		unk				raw		
 F048098	1408f4d00	105	FUN_1408f4d00		unk				raw		
-F048099	1408f4d70	304	FUN_1408f4d70		unk				raw		
+F048099	1408f4d70	304	ZoneManager::groundOk		unk				named	nests	terrain height >= 95 (or -99 unknown) and the areas map pixel not black
 F048100	1408f4eb0	365	ZoneManager::biomeColour	ZoneManager	world				named	zones	the biome image pixel under a zone centre (zone +0xa0, +0xa8), clamped to the image; R << 16 | G << 8 | B
 F048101	1408f5030	145	FUN_1408f5030		unk				raw		
-F048102	1408f50d0	1235	Zone::spawnPoint	Zone	world				named	zones	random point in the zone bounds, 4 tries x 10: away from towns (nearest town contains, scaled radius) and the camera; on walkable ground
+F048102	1408f50d0	1235	Zone::spawnPoint	Zone	world				named	nests	4 random points of the zone x 10 tries: pushed out of the nearest town (radius x mult), the nearest nest of another faction (625 x mult), 1382.4 from the camera; good ground (F048099); loaded: ground height, out of a town, navmesh snap (600); no point in a town (type != 4) when the camera is kept clear; F032176 navmesh section test
 F048103	1408f55b0	240	FUN_1408f55b0		unk				raw		
 F048104	1408f56b0	178	FUN_1408f56b0		unk				raw		
 F048105	1408f5770	28	FUN_1408f5770		unk				raw		
@@ -48112,12 +48112,12 @@ F048110	1408f5e70	165	FUN_1408f5e70		unk				raw
 F048111	1408f5f20	165	FUN_1408f5f20		unk				raw		
 F048112	1408f5fd0	278	FUN_1408f5fd0		unk				raw		
 F048113	1408f60f0	483	FUN_1408f60f0		unk				raw		
-F048114	1408f62e0	104	FUN_1408f62e0		unk				raw		
-F048115	1408f6350	974	Biome::homelessSpawnPoint	Biome	world				named	zones	not nests-at-markers: up to 10 random zones of the biome (not the camera zone, flagged or with a town) for a spawn point (F048102); markers: the biome nest markers
+F048114	1408f62e0	104	Zone::ownTown		unk				named	nests	the nearest of the zone's biome's towns (F048827) to its centre, if it stands in this zone
+F048115	1408f6350	974	Biome::homelessSpawnPoint	Biome	world				named	nests	not nests-at-markers: up to 10 random zones of the biome (not the camera zone, flagged or with a town) for a spawn point (F048102); markers: the biome nest markers
 F048116	1408f6730	28	FUN_1408f6730		unk				raw		
 F048117	1408f6760	308	FUN_1408f6760		unk				raw		
 F048118	1408f68a0	140	FUN_1408f68a0		unk				raw		
-F048119	1408f6940	126	FUN_1408f6940		unk				raw		
+F048119	1408f6940	126	ZoneManager::setCameraZone		unk				named		the zone at the camera's focus into 0x142135230
 F048120	1408f69d0	94	FUN_1408f69d0		unk				raw		
 F048121	1408f6a40	188	FUN_1408f6a40		unk				raw		
 F048122	1408f6b10	75	FUN_1408f6b10		unk				raw		
@@ -48133,9 +48133,9 @@ F048131	1408f7310	907	BiomeManager::spawnNests	BiomeManager	world				named	zones
 F048132	1408f76b0	969	FUN_1408f76b0		unk				raw		
 F048133	1408f7a80	1005	FUN_1408f7a80	TownPopulationManager	world				raw		
 F048134	1408f7e80	466	SpawnInfoList::candidates	SpawnInfoList	world				named	zones	entries passing world state (F050367) and the size limit: weight max(0, (w - count(template) * ratio) * factor) * F030216
-F048135	1408f8060	1415	FUN_1408f8060		unk				raw		
+F048135	1408f8060	1415	Zone::spawnHomelessAgain		unk				named	sim	the same body as F048137, for the population tick's further picks
 F048136	1408f85f0	212	FUN_1408f85f0		unk				raw		
-F048137	1408f86d0	104	Zone::spawnHomeless	Zone	world				named	zones	not the camera zone, not flagged; squads +0x70 < mult * biome homeless spawn amount; candidates from the biome list (and a town list near a town) weighted max(0, w - existing * ratio) * faction factor (F030216 = 1), world-state conditions (F050367); weighted pick, spawned at a zone point (F048102)
+F048137	1408f86d0	104	Zone::spawnHomeless	Zone	world				named	sim	not the camera zone nor a flagged one; under mult x biome amount; candidates (biome list unless the zone has its own town; the near town's list 2 with its budget); weighted pick; spawn point (camera, 2.0, 1.0); home: list town, zone town of its faction, else nearest town of its faction (a nest of it if nearer by 9216), none past 50000; no squad inside the nearest town within 10000; platoon made (F038259)
 F048138	1408f8740	2756	FUN_1408f8740		unk				raw		
 F048139	1408f9210	41	FUN_1408f9210	NestPopulationManager	world				raw		
 F048140	1408f9240	1394	ZoneManager::populationTick	ZoneManager	world				named	zones	every 2 s (+0xc0): squads in the player active zones (towns clamp 0..2) against the cap F048109; zone weights mult*amount + 1 - squads (halved with a town, (w+1)*2 when empty); weighted pick -> F048137
@@ -48765,11 +48765,11 @@ F048763	140926d10	47	FUN_140926d10		unk				raw
 F048764	140926d50	143	Town::contains	Town	world				named	ai	(pos, mult): type 8 never; else horizontal distance to the town position < radius * mult
 F048765	140926df0	132	FUN_140926df0		unk				raw		
 F048766	140926e80	9	FUN_140926e80	TownBase	world				raw		
-F048767	140926e90	22	FUN_140926e90	Nest	world				raw		
+F048767	140926e90	22	Nest::radius	Nest	world				named	nests	625, none for type 8
 F048768	140926eb0	214	Town::radius	Town	world				named	ai	vtable +0x2a0: non-player towns by type (+0xd8): 2 -> 2500, 3 -> 937.5, 4 -> 875, 9 -> 437.5, 8/10 -> 0, else 1250, times "town radius mult" (+0x520); player towns +0x51c (2500 when <= 1)
 F048769	140926fc0	151	FUN_140926fc0	TownBase	world				raw		
 F048770	140927060	172	FUN_140927060		unk				raw		
-F048771	140927120	325	FUN_140927120	TownNull	world				raw		
+F048771	140927120	325	Town::getPoint	TownNull	world				named	raid_ai	vtable 0x38: the town's point, kept with a timer
 F048772	140927270	59	FUN_140927270	TownBase	world				raw		
 F048773	1409272c0	84	FUN_1409272c0	TownNull	world				raw		
 F048774	140927330	8	FUN_140927330	TownList	world				raw		
@@ -48790,10 +48790,10 @@ F048788	140927950	3	FUN_140927950	TownBuildingsManager	build				raw
 F048789	140927960	3	FUN_140927960		unk				raw		
 F048790	140927970	31	FUN_140927970	TownNull	world				raw		
 F048791	1409279a0	296	FUN_1409279a0		unk				raw		
-F048792	140927ad0	210	FUN_140927ad0		unk				raw		
-F048793	140927bb0	335	FUN_140927bb0		unk				raw		
+F048792	140927ad0	210	TownList::nearestNest		unk				named	nests	nearest of the second list (the nests) of a faction when given, not the one excepted
+F048793	140927bb0	335	TownList::nearestAny		unk				named	nests	nearest town not of type 8, then nest, of a faction when given
 F048794	140927d10	290	FUN_140927d10		unk				raw		
-F048795	140927e40	197	FUN_140927e40		unk				raw		
+F048795	140927e40	197	TownList::nearestWithin		unk				named		nearest town within a squared distance
 F048796	140927f10	319	TownManager::nearest	TownManager	world				named	ai	(pos, faction, except, factionList, type): nearest town across of the type (10 = any; type 8 only when asked), owned by the faction when given, skipping allies of the list
 F048797	140928060	383	FUN_140928060		unk				raw		
 F048798	1409281f0	101	FUN_1409281f0		unk				raw		
@@ -48804,9 +48804,9 @@ F048802	140928410	732	FUN_140928410		unk				raw
 F048803	140928700	84	FUN_140928700		unk				raw		
 F048804	140928760	105	FUN_140928760		unk				raw		
 F048805	1409287d0	185	FUN_1409287d0	TownBase	world				raw		
-F048806	140928890	431	FUN_140928890		unk				raw		
+F048806	140928890	431	TownManager::findTown	TownManager	unk				named	world	(pos, fresh): of the towns in the 3x3 zone cells about pos, not type 8, not +0x270, not the player's when fresh, the nearest whose radius takes pos in; else TownNull (+0x180f8)
 F048807	140928a50	20	FUN_140928a50		unk				raw		
-F048808	140928a70	173	FUN_140928a70		unk				raw		
+F048808	140928a70	173	TownList::ofBiome		unk				named	nests	towns whose biome (+0x1a0) is the given one, of a type (10 any)
 F048809	140928b30	189	FUN_140928b30		unk				raw		
 F048810	140928c00	182	FUN_140928c00		unk				raw		
 F048811	140928cc0	142	FUN_140928cc0		unk				raw		
@@ -48822,13 +48822,13 @@ F048820	1409292f0	65	FUN_1409292f0		unk				raw
 F048821	140929340	367	FUN_140929340		unk				raw		
 F048822	1409294c0	106	FUN_1409294c0		unk				raw		
 F048823	140929530	41	FUN_140929530		unk				raw		
-F048824	140929560	696	FUN_140929560	Town	world				raw		
+F048824	140929560	696	Town::gatePoint	Town	world				named	raid_ai	the first gate of the gate map (type-0 hand, a gateway whose door's region, vtable 0x118, is 0) out from its door by the distance; else its position
 F048825	140929820	226	FUN_140929820	Town	world				raw		
 F048826	140929910	217	FUN_140929910	Town	world				raw		
 F048827	1409299f0	292	FUN_1409299f0		unk				raw		
 F048828	140929b20	447	FUN_140929b20		unk				raw		
 F048829	140929cf0	74	FUN_140929cf0	Town	world				raw		
-F048830	140929d40	351	FUN_140929d40		unk				raw		
+F048830	140929d40	351	TownList::registerInZones		unk				named		a town into the per-zone lists (+0xb8): each zone of its set, else the zone at its position
 F048831	140929eb0	350	FUN_140929eb0	Town	world				raw		
 F048832	14092a020	586	FUN_14092a020	BasePopulationManager	world				raw		
 F048833	14092a270	307	FUN_14092a270		unk				raw		
@@ -48845,7 +48845,7 @@ F048843	14092acf0	205	FUN_14092acf0		unk				raw
 F048844	14092add0	78	FUN_14092add0		unk				raw		
 F048845	14092ae30	66	FUN_14092ae30		unk				raw		
 F048846	14092ae80	1324	FUN_14092ae80		unk				raw		
-F048847	14092b3c0	1256	FUN_14092b3c0		unk				raw		
+F048847	14092b3c0	1256	TownManager::removeTown	TownManager	unk				named	world	a town out of the grid cell of its position, the manager's lists and the handle table
 F048848	14092b8b0	650	FUN_14092b8b0		unk				raw		
 F048849	14092bb40	391	FUN_14092bb40		unk				raw		
 F048850	14092bcd0	227	FUN_14092bcd0		unk				raw		
@@ -48856,7 +48856,7 @@ F048854	14092bfc0	12	FUN_14092bfc0		unk				raw
 F048855	14092bfe0	794	FUN_14092bfe0		unk				raw		
 F048856	14092c300	27	FUN_14092c300		unk				raw		
 F048857	14092c330	34	FUN_14092c330	TownNull	world				raw		
-F048858	14092c360	566	FUN_14092c360	TownBase	world				raw		
+F048858	14092c360	566	TownBase::setPosition	TownBase	world				named	nests	position, y the ground there when known; biome = the zone at it (+0x28) into +0x1a0; faction from the record
 F048859	14092c5a0	51	FUN_14092c5a0		unk				raw		
 F048860	14092c5e0	1496	findTown	TownManager	ai				named	ai	(manager, faction, position, faction filter, exclude, own-or-public, type mask): towns other than exclude, of the filter faction if any, public (+0x380) or of faction, faction alive, the town faction relation (+0x60) above -30 or allied, type (+0xd8) in mask (or a player town), not on the faction list (+0xa8); sorted by squared distance; a random one of the nearest min(n, 4)
 F048861	14092cbc0	134	FUN_14092cbc0	TownBase	world				raw		
@@ -48866,11 +48866,11 @@ F048864	14092cd60	1609	FUN_14092cd60	Town	world				raw
 F048865	14092d3b0	238	FUN_14092d3b0		unk				raw		
 F048866	14092d4b0	206	FUN_14092d4b0		unk				raw		
 F048867	14092d590	238	FUN_14092d590		unk				raw		
-F048868	14092d690	147	FUN_14092d690	TownList	world				raw		
+F048868	14092d690	147	TownList::add	TownList	world				named	nests	a Town (vtable 0x268) into the towns list (+0x58), any other TownBase (the nests) into the second list (+0x88); registered in its zones (F048830)
 F048869	14092d730	267	FUN_14092d730		unk				raw		
 F048870	14092d850	543	FUN_14092d850	TownList	world				raw		
 F048871	14092da80	297	FUN_14092da80		unk				raw		
-F048872	14092dbb0	490	FUN_14092dbb0	TownBase	world				raw		
+F048872	14092dbb0	490	Town::addZone	TownBase	world				named		vtable 0x228: the town's own zone first, then a zone within one of it, into its zone set (+0x1b0); not for types 0, 8, 10
 F048873	14092dda0	279	FUN_14092dda0		unk				raw		
 F048874	14092dec0	767	FUN_14092dec0		unk				raw		
 F048875	14092e1d0	724	FUN_14092e1d0	Nest	world				raw		
@@ -48902,10 +48902,10 @@ F048900	140934d10	245	FUN_140934d10		unk				raw
 F048901	140934e10	454	FUN_140934e10		unk				raw		
 F048902	140934fe0	313	FUN_140934fe0		unk				raw		
 F048903	140935120	658	FUN_140935120		unk				raw		
-F048904	1409353c0	2375	Town::setup	Town	world				named	ai	reads the TOWN record: "town radius mult" -> +0x520 (below 0.1 -> 1, clamped 0.1..5), "type" -> +0xd8, ... Trade prices: for each item of the VENDOR_LIST 'all trade goods' ('items' refs), in town order: a factor uniform in [1 - m, 1 + m] (m = GLOBAL CONSTANTS 'trade profit margins'), then for every town already set up that prices the item, clamped to within (distance between the towns / 1e6) x m x 10 of that town's factor; stored per town (+0x4b0 map).
+F048904	1409353c0	2375	Town::setup	Town	world				named	nests	reads the TOWN record: "town radius mult" -> +0x520 (below 0.1 -> 1, clamped 0.1..5), "type" -> +0xd8, ... Trade prices: for each item of the VENDOR_LIST 'all trade goods' ('items' refs), in town order: a factor uniform in [1 - m, 1 + m] (m = GLOBAL CONSTANTS 'trade profit margins'), then for every town already set up that prices the item, clamped to within (distance between the towns / 1e6) x m x 10 of that town's factor; stored per town (+0x4b0 map).
 F048905	140935d10	4425	Town::setupResidents	Town	world				named	ai	the town record "residents" per building: the resident template "building designation" goes to the building
-F048906	140936e60	604	FUN_140936e60		unk				raw		
-F048907	1409370d0	1078	FUN_1409370d0		unk				raw		
+F048906	140936e60	604	Town::setupResidentRows	Town	unk				named	world	once per town (+0x110): the residents rows from its faction (unless residents override) and its record, the default resident (+0x330)
+F048907	1409370d0	1078	Town::distributeResidents	Town	unk				named	world	(buildings): its buildings take its faction; rows by priority 5..0 each a building (F048877) until its number is used; the default resident to its buildings with none
 F048908	140937510	3879	FUN_140937510		unk				raw		
 F048909	140938440	3132	FUN_140938440	TownBase	world				raw		
 F048910	140939090	422	FUN_140939090		unk				raw		
@@ -49326,17 +49326,17 @@ F049324	140951ef0	47	FUN_140951ef0		unk				raw
 F049325	140951f30	4	FUN_140951f30	Nest	world				raw		
 F049326	140951f40	8	FUN_140951f40	Nest	world				raw		
 F049327	140951f50	3	FUN_140951f50	Nest	world				raw		
-F049328	140951f70	18	FUN_140951f70	Town	world				raw		
+F049328	140951f70	18	Town::getGameData	Town	world				named	world	+0x338 (its override) else +0x40 (the level's record)
 F049329	140951f90	6	FUN_140951f90	Town	world				raw		
 F049330	140951fa0	8	FUN_140951fa0	Town	world				raw		
 F049331	140951fb0	4	FUN_140951fb0	Town	world				raw		
-F049332	140951fc0	3	FUN_140951fc0	Town	world				raw		
+F049332	140951fc0	3	FUN_140951fc0	Town	world				raw		Town vtable +0x270: returns 0 (a Town is never kept by its handle in a fresh zone, F038257)
 F049333	140951fd0	8	FUN_140951fd0	Town	world				raw		
 F049334	140951fe0	78	FUN_140951fe0	Town	world				raw		
 F049335	140952050	13	FUN_140952050	Town	world				raw		
 F049336	140952060	101	FUN_140952060	Town	world				raw		
 F049337	1409520e0	170	FUN_1409520e0	Town	world				raw		
-F049338	1409521c0	39	FUN_1409521c0	Town	world				raw		
+F049338	1409521c0	39	Town::addGate	Town	world				named	world	vtable 0x2f8: the building's hand into the gate map +0x390 (F029224)
 F049339	1409521f0	3	FUN_1409521f0		unk				raw		
 F049340	140952200	6	FUN_140952200	TownNull	world				raw		
 F049341	140952220	48	FUN_140952220	TownBase	world				raw		
@@ -50349,10 +50349,10 @@ F050347	1409a6c10	1359	FUN_1409a6c10		unk				raw
 F050348	1409a72d0	5	thunk_FUN_1407ebd40		compiler				skip		
 F050349	1409a7300	161	FUN_1409a7300		unk				raw		
 F050350	1409a73b0	91	FUN_1409a73b0		unk				raw		
-F050351	1409a7420	551	FUN_1409a7420		unk				raw		
+F050351	1409a7420	551	UniquePlatoon::pickAssault		unk				named	world	(target): of its aggressive assaults, one at random whose conditions hold of the target (F030224)
 F050352	1409a7650	216	FUN_1409a7650		unk				raw		
 F050353	1409a7730	497	FUN_1409a7730		unk				raw		
-F050354	1409a7930	236	FUN_1409a7930		unk				raw		
+F050354	1409a7930	236	UniquePlatoon::decideMission		unk				named	world	while idle, once its timer (10) runs out: a target (F050352), an aggressive assault on it (F050351), set as its AI's mission; unreachable: no UniquePlatoon is made
 F050355	1409a7a30	27	FUN_1409a7a30	UniquePlatoon	ai				raw		
 F050356	1409a7a60	27	FUN_1409a7a60	UniquePlatoon	ai				raw		
 F050357	1409a7a90	194	FUN_1409a7a90		unk				raw		
@@ -50361,15 +50361,15 @@ F050359	1409a7bf0	409	FUN_1409a7bf0		unk				raw
 F050360	1409a7d90	103	FUN_1409a7d90		unk				raw		
 F050361	1409a7e00	793	FUN_1409a7e00		unk				raw		
 F050362	1409a8120	1127	FUN_1409a8120		unk				raw		
-F050363	1409a8590	196	FUN_1409a8590	UniquePlatoon	ai				raw		
+F050363	1409a8590	196	UniquePlatoon::onRemoved	UniquePlatoon	ai				named	world	unless kept (F045424): its manager's squadGone (F030225); its read of persistent is unused
 F050364	1409a8660	764	FUN_1409a8660		unk				raw		
 F050365	1409a8970	3046	FUN_1409a8970		unk				raw		
 F050366	1409a9570	1274	FUN_1409a9570		unk				raw		
 F050367	1409a9a70	246	FUN_1409a9a70		unk				raw		
-F050368	1409a9b70	1608	FUN_1409a9b70		unk				raw		
+F050368	1409a9b70	1608	UniquePlatoon::UniquePlatoon		unk				named	world	(template): its missions' assaults split by is aggressive into +0x238 and +0x250
 F050369	1409aa1c0	155	FUN_1409aa1c0		unk				raw		
 F050370	1409aa270	852	FUN_1409aa270		unk				raw		
-F050371	1409aa5d0	284	FUN_1409aa5d0		unk				raw		
+F050371	1409aa5d0	284	GameData::stateRefs		unk				named	world	a record's refs of a category into a map: each ref's state (GameData -> WorldEventState) -> its value == 1
 F050372	1409ab550	38	FUN_1409ab550	Ogre::STLAllocator<std::_Tree_nod<std::_Tmap_traits<GameData*___ptr64,int,std::less<GameData*___ptr64>,Ogre::STLAllocator<std::pair<GameData*___ptr64_const,int>,Ogre::CategorisedAllocPolicy<0>_>,0>_>::_Node,Ogre::CategorisedAllocPolicy<0>_>	thirdparty				skip		
 F050373	1409ab580	38	FUN_1409ab580	Ogre::STLAllocator<std::pair<GameData*___ptr64_const,WorldEventStateQuery*___ptr64>,Ogre::CategorisedAllocPolicy<0>_>	thirdparty				skip		
 F050374	1409ab5b0	38	FUN_1409ab5b0	Ogre::STLAllocator<boost::unordered::detail::ptr_node<std::pair<GameData*___ptr64_const,WorldEventStateQuery*___ptr64>_>,Ogre::CategorisedAllocPolicy<0>_>	thirdparty				skip		
@@ -50500,7 +50500,7 @@ F050498	1409b1be0	26	FUN_1409b1be0		thirdparty				skip
 F050499	1409b1c00	7	srand		unk				raw		
 F050500	1409b1c10	35	rand01		core				named		rand()/32768
 F050501	1409b1c40	53	coinFlip		core				named	ai	rand() / 32768 > 0.5
-F050502	1409b1c80	73	randRange		core				named		rand()/32768 * (b-a) + a
+F050502	1409b1c80	73	randRange		core				named	nests	rand()/32768 * (b-a) + a
 F050503	1409b1cd0	18	FUN_1409b1cd0		unk				raw		
 F050504	1409b1cf0	39	FUN_1409b1cf0		unk				raw		
 F050505	1409b1d20	260	FUN_1409b1d20		unk				raw		
@@ -50546,7 +50546,7 @@ F050544	1409b3770	39	FUN_1409b3770		unk				raw
 F050545	1409b37a0	351	FUN_1409b37a0		unk				raw		
 F050546	1409b3910	183	FUN_1409b3910		unk				raw		
 F050547	1409b39d0	356	FUN_1409b39d0		unk				raw		
-F050548	1409b3b40	117	randInt		core				named	ai	a + trunc(rand()/32768 * (b - a + 1)), held to [a, b]
+F050548	1409b3b40	117	randInt		core				named	nests	a + trunc(rand()/32768 * (b - a + 1)), held to [a, b]
 F050549	1409b3be0	230	FUN_1409b3be0		unk				raw		
 F050550	1409b3cd0	196	FUN_1409b3cd0		unk				raw		
 F050551	1409b3da0	96	FUN_1409b3da0		unk				raw		
@@ -51418,15 +51418,15 @@ F051416	1409fd520	188	FUN_1409fd520		unk				raw
 F051417	1409fd5f0	659	FUN_1409fd5f0		unk				raw		
 F051418	1409fd890	613	FUN_1409fd890		unk				raw		
 F051419	1409fdb00	187	FUN_1409fdb00		unk				raw		
-F051420	1409fdbd0	1026	FUN_1409fdbd0		unk				raw		
+F051420	1409fdbd0	1026	ZoneMapContent::collectNewBuildings		unk				named	world	a fresh zone's buildings with a town not TownNull, not the player's, with an interior (+0x1f0) or vtable +0x3d8, into the list
 F051421	1409fdfe0	48	FUN_1409fdfe0		unk				raw		
 F051422	1409fe020	205	FUN_1409fe020		unk				raw		
 F051423	1409fe100	212	FUN_1409fe100		unk				raw		
 F051424	1409fe1e0	293	FUN_1409fe1e0		unk				raw		
 F051425	1409fe310	37	FUN_1409fe310		unk				raw		
-F051426	1409fe340	955	FUN_1409fe340		unk				raw		
+F051426	1409fe340	955	ZoneMapContent::dropTownBuildings		unk				named	world	an overridden town's zone: its saved building states of the town not the player's (owner faction ID, townC / townCS) dropped
 F051427	1409fe710	129	FUN_1409fe710		unk				raw		
-F051428	1409fe7a0	463	FUN_1409fe7a0		unk				raw		
+F051428	1409fe7a0	463	Town::setRecord		unk				named	world	+0x338 = record; no-foliage range, type, is public from it; faction (if named and different, vtable +0xa0)
 F051429	1409fe980	1222	FUN_1409fe980		unk				raw		
 F051430	1409fee50	148	FUN_1409fee50		unk				raw		
 F051431	1409feef0	198	FUN_1409feef0		unk				raw		
@@ -51434,8 +51434,8 @@ F051432	1409fefc0	231	FUN_1409fefc0		unk				raw
 F051433	1409ff0b0	153	FUN_1409ff0b0		unk				raw		
 F051434	1409ff150	176	FUN_1409ff150		unk				raw		
 F051435	1409ff210	906	FUN_1409ff210		unk				raw		
-F051436	1409ff5a0	1313	FUN_1409ff5a0		unk				raw		
-F051437	1409ffad0	2842	FUN_1409ffad0		unk				raw		
+F051436	1409ff5a0	1313	ZoneManager::checkTownOverride		unk				named	world	as a town's zone content loads: not while a save loads (ZoneManager +0x08), not the player's, not started this game load (set +0x168148): of the current record's override towns whose world states all hold (F050371 / F050361), not the current one, the one with the most world states (F038149) set (F051428); the town added to the set; true makes the zone fresh
+F051437	1409ffad0	2842	ZoneMapContent::load		unk				named	world	a zone's content: each of its towns' overrides (F051436); one overridden: the zone fresh (+0xa8), its town buildings dropped (F051426) and its item list cleared
 F051438	140a00600	134	FUN_140a00600	ZoneMapContent	world				raw		
 F051439	140a00690	609	FUN_140a00690		unk				raw		
 F051440	140a00900	109	FUN_140a00900	SpacialCellCategorised	world				raw		
@@ -51562,8 +51562,8 @@ F051560	140a09490	64	FUN_140a09490		unk				raw
 F051561	140a09510	166	FUN_140a09510	ZoneManager	world				raw		
 F051562	140a095c0	102	FUN_140a095c0	ZoneManager	world				raw		
 F051563	140a09630	313	FUN_140a09630		unk				raw		
-F051564	140a09770	257	FUN_140a09770		unk				raw		
-F051565	140a09880	83	FUN_140a09880		unk				raw		
+F051564	140a09770	257	Zone::loadRect		unk				named	world	the zone's square (+0xe8..+0xf4) grown by 10 a side, moved in by the margin on each side whose neighbour (+0x128..) is neither loaded nor loading
+F051565	140a09880	83	Zone::containsLoaded		unk				named	world	whether a point lies in F051564's square
 F051566	140a098e0	1007	FUN_140a098e0		unk				raw		
 F051567	140a09ce0	44	FUN_140a09ce0		unk				raw		
 F051568	140a09d20	1085	FUN_140a09d20		unk				raw		
@@ -51606,14 +51606,14 @@ F051604	140a0e430	153	FUN_140a0e430	ZoneManager	world				raw
 F051605	140a0e4d0	153	FUN_140a0e4d0	ZoneManager	world				raw		
 F051606	140a0e570	405	FUN_140a0e570		unk				raw		
 F051607	140a0e710	68	FUN_140a0e710		unk				raw		
-F051608	140a0e760	830	FUN_140a0e760		unk				raw		
+F051608	140a0e760	830	ZoneManager::distributeNewResidents		unk				named	world	after zones load: their buildings (F051420) and towns; each town not the player's distributes its residents (F048907) and is noted
 F051609	140a0eab0	1361	FUN_140a0eab0		unk				raw		
 F051610	140a0f010	98	FUN_140a0f010		unk				raw		
 F051611	140a0f080	584	FUN_140a0f080		unk				raw		
 F051612	140a0f2d0	684	FUN_140a0f2d0		unk				raw		
 F051613	140a0f590	164	FUN_140a0f590		unk				raw		
 F051614	140a0f640	460	FUN_140a0f640		unk				raw		
-F051615	140a0f820	1521	FUN_140a0f820		unk				raw		
+F051615	140a0f820	1521	ZoneManager::update		unk				named	world	the camera's current zone and its neighbours requested; clears +0x08 once the load is done; distributeNewResidents
 F051616	140a0fe20	2309	FUN_140a0fe20		unk				raw		
 F051617	140a10730	1806	FUN_140a10730		unk				raw		
 F051618	140a10e50	239	FUN_140a10e50		unk				raw		

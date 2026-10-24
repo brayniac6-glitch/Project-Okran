@@ -73,35 +73,6 @@ impl Sim {
             .map(|(k, _)| k)
     }
 
-    /// (stand-in) Ditching resources' storage (crate::jobs): the nearest built storage of the
-    /// player's that keeps ("limit inventory") something `id` carries (its main grid or worn
-    /// backpack), and those records. (assumption) Storages without a limit are not ditched into.
-    pub(crate) fn ditch_target(&self, id: usize) -> Option<(usize, Vec<String>)> {
-        let inv = &self.folk[id].inventory;
-        let carried: Vec<String> = inv
-            .sections
-            .iter()
-            .filter(|s| !s.is_equipment())
-            .chain(inv.bag().into_iter().flat_map(|b| b.sections.iter()))
-            .flat_map(|s| s.items.iter().map(|p| p.item.record.clone()))
-            .collect();
-        if carried.is_empty() {
-            return None;
-        }
-        let at = self.folk[id].mover.position_units();
-        (0..self.buildings.len())
-            .filter(|&k| self.buildings[k].done && self.buildings[k].storage.is_some())
-            .filter_map(|k| {
-                let keeps: Vec<String> = self.data.get(&self.buildings[k].record)?.refs("limit inventory").iter().map(|(s, _)| s.clone()).collect();
-                let items: Vec<String> = carried.iter().filter(|c| keeps.contains(c)).cloned().collect();
-                (!items.is_empty()).then_some((k, items))
-            })
-            .min_by(|a, b| {
-                let d = |k: usize| (self.buildings[k].at[0] - at[0]).hypot(self.buildings[k].at[2] - at[2]);
-                d(a.0).total_cmp(&d(b.0))
-            })
-    }
-
     /// Every second: the player's people's rescue job.
     pub fn routines_tick(&mut self, dt: f32) {
         self.routine_timer += dt;

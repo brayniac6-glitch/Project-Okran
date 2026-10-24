@@ -1,0 +1,39 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+31 town nodes (21 general)
+town The Hub at [-50978.8, 1533.1519, 2932.4766], type 2, radius 2500
+63 pieces of furniture, bars: ["Storm House"]
+21 interior volumes, 2 doors
+hub squatters at Snailhouse: 1 leader(s), 2 others, package Squatters
+hub squatters at Small Shack: 1 leader(s), 0 others, package Squatters
+hub squatters at Old Storm House: 1 leader(s), 0 others, package Squatters
+hub squatters at Storm House: 1 leader(s), 2 others, package Squatters
+hub squatters at Stationhouse: 1 leader(s), 1 others, package Squatters
+Bar blackmarket at Storm House: 1 leader(s), 4 others, package Shop-24hr
+hub squatters at Bughouse: 0 leader(s), 0 others, package Squatters
+hub squatters at Small Shack: 1 leader(s), 1 others, package Squatters
+17 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Holy Nation Outlaws: enemies here []
+faction Trade Ninjas: enemies here []
+loaded in ~ s: 30 people
+world: 0 squads abroad, 304 towns
+t    10   ~ ms/step  people   30  hash b530c34d4e98f840
+t    20   ~ ms/step  people   30  hash 3d2191fdc52a5846
+t    30   ~ ms/step  people   30  hash 79c1c1b4a1f7321f
+t    40   ~ ms/step  people   30  hash 3159b60bac2921bb
+t    50   ~ ms/step  people   30  hash fa5180ae25cca5af
+t    60   ~ ms/step  people   30  hash 28b02b31dcd5ed84
+t    70   ~ ms/step  people   30  hash 0370df9288a721dc
+t    80   ~ ms/step  people   30  hash 5eda60d0fae10474
+t    90   ~ ms/step  people   30  hash 93367bdfb8562270
+t   100   ~ ms/step  people   30  hash bf75e70babe80b5c
+t   110   ~ ms/step  people   30  hash accb07466a771d85
+t   120   ~ ms/step  people   30  hash de083ee88658e47f
+final hash de083ee88658e47f
+7200 steps: ~ ms/step, worst ~ ms
+exit 0

@@ -84,6 +84,12 @@ pub fn update(
             game.sim.said.push((me, l.to_string()));
         }
     }
+    // a window conversation's lines (F040861): logged only
+    for (who, text) in std::mem::take(&mut game.sim.logged) {
+        let text = super::options_ui::censor(&text);
+        let line = format!("{}: {text}", game.sim.display_name(who));
+        super::log(&mut game.log, line);
+    }
     for (who, text) in std::mem::take(&mut game.sim.said) {
         // (F040907: "Language censorship")
         let text = super::options_ui::censor(&text);

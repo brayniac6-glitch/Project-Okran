@@ -1,0 +1,81 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+13 town nodes (13 general)
+town Tower of Abuse at [23826.102, 1147.2146, 17893.418], type 4, radius 875
+73 pieces of furniture, bars: []
+1 interior volumes, 0 doors
+tower of abuse at Ancient Lab: 1 leader(s), 21 others, package Guard building 24hr service- squad2 robo guards
+player squad: 1
+23 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Thrall Masters: enemies here ["Nameless"]
+faction Nameless: enemies here ["Thrall Masters"]
+world: 0 squads abroad, 304 towns
+t 0: prone true down false getting up 0.0 speed 3.3 own 5.0 legs -54.0/-54.0 ko -49.0 moved 0 goal Some(1)
+t 1: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.1/-54.1 ko -49.0 moved 5 goal Some(1)
+t 2: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.2/-54.2 ko -49.0 moved 10 goal Some(1)
+t 3: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.3/-54.3 ko -49.0 moved 15 goal Some(1)
+t 4: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.3/-54.3 ko -49.0 moved 20 goal Some(1)
+t 5: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.4/-54.4 ko -49.0 moved 25 goal Some(1)
+t 6: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.5/-54.5 ko -49.0 moved 30 goal Some(1)
+t 7: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.6/-54.6 ko -49.0 moved 35 goal Some(1)
+t 8: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.6/-54.6 ko -49.0 moved 40 goal Some(1)
+t 9: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.7/-54.7 ko -49.0 moved 45 goal Some(1)
+t 10: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.8/-54.8 ko -49.0 moved 50 goal Some(1)
+t 11: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.9/-54.9 ko -49.0 moved 55 goal Some(1)
+t 12: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -54.9/-54.9 ko -49.0 moved 60 goal Some(1)
+t 13: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -55.0/-55.0 ko -49.0 moved 65 goal Some(1)
+t 14: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -55.1/-55.1 ko -49.0 moved 70 goal Some(1)
+t 15: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -55.2/-55.2 ko -49.0 moved 75 goal Some(1)
+t 16: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -55.2/-55.2 ko -49.0 moved 80 goal Some(1)
+t 17: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -55.3/-55.3 ko -49.0 moved 85 goal Some(1)
+t 18: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -55.4/-55.4 ko -49.0 moved 90 goal Some(1)
+t 19: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -55.5/-55.5 ko -49.0 moved 95 goal Some(1)
+t 20: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -55.5/-55.5 ko -49.0 moved 100 goal Some(1)
+t 21: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -55.6/-55.6 ko -49.0 moved 105 goal Some(1)
+t 22: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -55.7/-55.7 ko -49.0 moved 110 goal Some(1)
+t 23: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -55.8/-55.8 ko -49.0 moved 115 goal Some(1)
+t 24: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -55.8/-55.8 ko -49.0 moved 120 goal Some(1)
+t 25: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -55.9/-55.9 ko -49.0 moved 125 goal Some(1)
+t 26: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -56.0/-56.0 ko -49.0 moved 130 goal Some(1)
+t 27: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -56.1/-56.1 ko -49.0 moved 135 goal Some(1)
+t 28: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -56.1/-56.1 ko -49.0 moved 140 goal Some(1)
+t 29: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -56.2/-56.2 ko -49.0 moved 144 goal Some(1)
+t 30: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -56.3/-56.3 ko -49.0 moved 149 goal Some(1)
+t 31: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -56.4/-56.4 ko -49.0 moved 154 goal Some(1)
+t 32: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -56.4/-56.4 ko -49.0 moved 159 goal Some(1)
+t 33: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -56.5/-56.5 ko -49.0 moved 164 goal Some(1)
+t 34: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -56.6/-56.6 ko -49.0 moved 169 goal Some(1)
+t 35: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -56.7/-56.7 ko -49.0 moved 174 goal Some(1)
+t 36: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -56.7/-56.7 ko -49.0 moved 179 goal Some(1)
+t 37: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -56.8/-56.8 ko -49.0 moved 184 goal Some(1)
+t 38: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -56.9/-56.9 ko -49.0 moved 189 goal Some(1)
+t 39: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -57.0/-57.0 ko -49.0 moved 194 goal Some(1)
+t 40: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -57.0/-57.0 ko -49.0 moved 199 goal Some(1)
+t 41: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -57.1/-57.1 ko -49.0 moved 204 goal Some(1)
+t 42: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -57.2/-57.2 ko -49.0 moved 209 goal Some(1)
+t 43: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -57.3/-57.3 ko -49.0 moved 214 goal Some(1)
+t 44: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -57.3/-57.3 ko -49.0 moved 219 goal Some(1)
+t 45: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -57.4/-57.4 ko -49.0 moved 224 goal Some(1)
+t 46: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -57.5/-57.5 ko -49.0 moved 229 goal Some(1)
+t 47: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -57.6/-57.6 ko -49.0 moved 234 goal Some(1)
+t 48: prone true down false getting up 0.0 speed 5.0 own 5.0 legs -57.6/-57.6 ko -49.0 moved 239 goal Some(1)
+t 49: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -57.7/-57.7 ko -49.0 moved 244 goal Some(1)
+t 50: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -57.8/-57.8 ko -49.0 moved 249 goal Some(1)
+t 51: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -57.9/-57.9 ko -49.0 moved 254 goal Some(1)
+t 52: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -57.9/-57.9 ko -49.0 moved 259 goal Some(1)
+t 53: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -58.0/-58.0 ko -49.0 moved 264 goal Some(1)
+t 54: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -58.1/-58.1 ko -49.0 moved 269 goal Some(1)
+t 55: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -58.2/-58.2 ko -49.0 moved 274 goal Some(1)
+t 56: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -58.2/-58.2 ko -49.0 moved 279 goal Some(1)
+t 57: prone true down false getting up 0.0 speed 4.9 own 5.0 legs -58.3/-58.3 ko -49.0 moved 284 goal Some(1)
+t 58: prone true down false getting up 0.0 speed 14.9 own 5.0 legs -58.4/-58.4 ko -49.0 moved 291 goal Some(1)
+t 59: prone true down false getting up 0.0 speed 0.0 own 5.0 legs -58.5/-58.5 ko -49.0 moved 299 goal Some(14)
+t 60: prone true down false getting up 0.0 speed 0.0 own 5.0 legs -58.5/-58.5 ko -49.0 moved 299 goal Some(14)
+ticks moving: 3518 prone, 0 standing
+wall sweeps 48339 stuck 2757
+exit 0

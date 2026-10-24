@@ -77,9 +77,9 @@ pub struct Mover {
     pub max_speed: f32,
     /// Reached the goal on the last step (+0x80).
     pub arrived: bool,
-    /// The deepest neighbour's push found last tick (F024363): the normal away from it and the
-    /// depth (m), which the next steer bends the velocity by. (assumption) Kenshi finds it inside
-    /// steer; here the crowd / arena pass after the step sets it for the next one.
+    /// The deepest neighbour's push for this step (F024363): the normal away from it and the
+    /// depth (m), which the steer moves the mover by and bends the velocity with. Kenshi finds
+    /// it inside steer: crate::crowd finds it as each mover steps, the arena for its fighters.
     pub avoid: Option<([f32; 3], f32)>,
 }
 
@@ -95,22 +95,29 @@ pub struct Neighbour {
 /// The push a mover at `me` (radius `radius`, m) gets from its neighbours, if any: the deepest
 /// overlap on the ground plane (the other's position taken at its height) of their radii
 /// together R, its depth (R - d) x (0.5 + (R_other - R_me) / R) so the smaller one gives way
-/// more, along the line from it; in combat mode (Character +0xe0) a fiftieth of that. Exactly on
-/// another (within 0.001): a random direction (Kenshi's (r - 0.5, r - 0.5, r x 0.5), the
-/// height dropped here) as deep as max(own radius m, the other's in units) x 0.1, at once.
-/// `rand` gives numbers in 0..1. Returns the normal and depth; None under 0.001.
-/// (not ported) A path-following mover whose goal the other stands on (within its radius) has
-/// its path state +0x88 set to 1; the rewrite's path state has no traced equivalent.
-pub fn neighbour_push(me: [f32; 3], radius: f32, others: &[Neighbour], combat: bool, mut rand: impl FnMut() -> f32) -> Option<([f32; 3], f32)> {
+/// more, held to 0 .. 1 m, along the line from it; in combat mode (Character +0xe0) a fiftieth
+/// of that. Exactly on another (within 0.001): Kenshi's random direction (r - 0.5, r - 0.5,
+/// r x 0.5) as deep as max(own radius m, the other's in units) x 0.1, at once. `rand` gives
+/// numbers in 0..1. Returns the normal and depth; None under 0.001.
+pub fn neighbour_push(me: [f32; 3], radius: f32, others: &[Neighbour], combat: bool, rand: impl FnMut() -> f32) -> Option<([f32; 3], f32)> {
+    neighbour_push_at(me, radius, others, combat, None, rand).0
+}
+
+/// @fn F024363
+///
+/// `neighbour_push` for a mover following a path to `goal` (m; path state +0x88 = 2): also
+/// whether a neighbour it overlaps stands on that goal (within the neighbour's radius on the
+/// ground plane), which ends the path where the mover is (+0x88 = 1).
+pub fn neighbour_push_at(me: [f32; 3], radius: f32, others: &[Neighbour], combat: bool, goal: Option<[f32; 3]>, mut rand: impl FnMut() -> f32) -> (Option<([f32; 3], f32)>, bool) {
     let mut best: Option<([f32; 3], f32)> = None;
+    let mut taken = false;
     for o in others {
         let (dx, dz) = (me[0] - o.position[0], me[2] - o.position[2]);
         if dx.abs() <= 0.001 && dz.abs() <= 0.001 {
             let (r1, r2, r3) = (rand(), rand(), rand());
-            let _ = r2;
-            let n = [r3 - 0.5, 0.0, r1 * 0.5];
-            let depth = radius.max(o.radius * 10.0) * 0.1;
-            return Some((n, depth));
+            let n = [r3 - 0.5, r2 - 0.5, (r1 as f64 * 0.5) as f32];
+            let depth = (radius.max(o.radius * 10.0) as f64 * 0.1) as f32;
+            return (Some((n, depth)), taken);
         }
         let sum = radius + o.radius;
         let d2 = dx * dx + dz * dz;
@@ -118,13 +125,19 @@ pub fn neighbour_push(me: [f32; 3], radius: f32, others: &[Neighbour], combat: b
             continue;
         }
         let d = d2.sqrt();
-        let depth = ((sum - d) * ((o.radius - radius) / sum + 0.5)).max(0.0);
+        let depth = ((sum - d) * ((o.radius - radius) / sum + 0.5)).min(1.0).max(0.0);
         if best.is_none_or(|b| depth > b.1) {
             best = Some(([dx / d, 0.0, dz / d], depth));
         }
+        if let Some(g) = goal {
+            let (gx, gz) = (o.position[0] - g[0], o.position[2] - g[2]);
+            if gx * gx + gz * gz < o.radius * o.radius {
+                taken = true;
+            }
+        }
     }
-    let (n, depth) = best.filter(|b| b.1 >= 0.001)?;
-    Some((n, if combat { depth * 0.02 } else { depth }))
+    let Some((n, depth)) = best.filter(|b| b.1 >= 0.001) else { return (None, taken) };
+    (Some((n, if combat { depth * 0.02 } else { depth })), taken)
 }
 
 impl Mover {
@@ -189,10 +202,24 @@ impl Mover {
 
     /// @fn F024364
     ///
+    /// AICharacter::steer with the push found for this step (F024363, in `avoid`) as Kenshi takes it: the
+    /// mover moved by all of the push first (the walls unheeded: Kenshi sweeps the push and
+    /// does not use the answer), then the desired velocity bent by it.
+    pub fn push_steer(&mut self, direction: [f32; 3], dt: f32) {
+        if let Some((n, depth)) = self.avoid {
+            for (p, c) in self.position.iter_mut().zip(n) {
+                *p += c * depth;
+            }
+        }
+        self.steer(direction, dt);
+    }
+
+    /// @fn F024364
+    ///
     /// Turn the velocity toward `direction` (unit length, or zero to stop) at full speed, changing
     /// it by at most acceleration * dt, the desired velocity first bent by the neighbour push in
-    /// `avoid` (F024363, Kenshi's own, not Havok's). (not ported) Kenshi also moves the position
-    /// by the push here; the crowd / arena pass does that instead.
+    /// `avoid` (F024363, Kenshi's own, not Havok's). The push's own move is `push_steer`'s (the
+    /// arena moves its fighters by theirs itself).
     pub fn steer(&mut self, direction: [f32; 3], dt: f32) {
         let mut desired = direction.map(|d| d * self.max_speed);
         // pushed by a neighbour (F024363): heading within ~37 degrees of straight into it, half
@@ -266,64 +293,246 @@ impl Mover {
     }
 }
 
-/// A mover on a found path (CharMovement mode 0): the gates still ahead, and the navmesh face
-/// underfoot (the Havok character tracks it; heights come from it).
+/// A mover on a found path (CharMovement mode 0; AICharacter's path state +0x88 = 2): the edges
+/// still ahead, the time spent off the path's corridor (+0x84), and whether the mover asks for
+/// its path again (its state +0x90 = 6).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathFollow {
     pub path: GatePath,
-    pub face: FaceRef,
+    pub off_corridor: f32,
+    pub repath: bool,
+}
+
+impl PathFollow {
+    pub fn new(path: GatePath) -> Self {
+        PathFollow { path, off_corridor: 0.0, repath: false }
+    }
+}
+
+/// How far up and down AICharacter::step looks for the face under the mover after it moves
+/// (F032166's ray, 4 m).
+pub const FACE_TRACK: f32 = 4.0;
+
+/// @fn F032166
+///
+/// The mover's face (+0x14) after it moved: the coherent vertical ray of
+/// `NavWorld::track_face` over `range` (the face it stood on first); found, the mover is set
+/// onto it; none: no face (-1).
+pub fn track(mover: &mut Mover, nav: &NavWorld, face: &mut Option<FaceRef>, range: f32) {
+    match nav.track_face(mover.position, *face, range) {
+        Some((f, y)) => {
+            *face = Some(f);
+            mover.position[1] = y;
+        }
+        None => *face = None,
+    }
+}
+
+/// How long a mover may be off its path's corridor before it asks for the path again (s).
+pub const OFF_CORRIDOR: f32 = 5.0;
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// @fn F024365
 ///
-/// One tick along a path: the heading is pulled through the gates from where the mover stands
-/// (F024361); while gates are ahead it steers that way at full speed, on the last segment it
-/// takes the braking step onto the goal. The height follows the face underfoot.
-pub fn follow(mover: &mut Mover, f: &mut PathFollow, nav: &NavWorld, dt: f32) {
-    let before = mover.position;
-    let crossed = f.path.next;
-    let target = f.path.target(before);
-    // through a gate: onto the face it leads into (replacement for Havok's corridor tracking)
-    let mut on_corridor = false;
-    if f.path.next > crossed
-        && let Some(&face) = f.path.faces.get(f.path.next - 1)
-    {
-        f.face = face;
-        on_corridor = true;
+/// AICharacter::step along a path (path state 2):
+/// - the heading from F024361 (with the corner fans rebuilt as it goes);
+/// - within stopping distance of the point the heading is judged by (its way along the
+///   velocity, less 0.1 m, under v^2 / 2a), the turn that heading asks for decides: when the
+///   speed squared is above 2a x the heading's part across the velocity, the heading at
+///   sqrt(that) (slowing round the turn, to a stop where it lies straight ahead); else square
+///   across the velocity toward the heading at full speed;
+/// - steer (F024364); heading for the goal, a step reaching it lands on it and stops;
+/// - the step moved against the walls (`step_piece`), split where it is over 3 m into as many
+///   pieces as it holds 3 m (rounded down);
+/// - after each piece the face underfoot, the time off the corridor (on it: the start face
+///   before any edge is passed, or the face any of the edges from the last passed to the next
+///   five leads into; more than 5 s off it asks for the path again) and the edges passed
+///   (F024347);
+/// - within 0.1 m of the goal the path is done (F024349): `arrived`.
+pub fn follow(mover: &mut Mover, f: &mut PathFollow, face: &mut Option<FaceRef>, walls: &mut Walls, nav: &NavWorld, dt: f32) {
+    mover.arrived = false;
+    // the Havok character stands on the navmesh (the body is put on the ground after)
+    if let Some(g) = *face {
+        mover.position[1] = nav.height_on(g, mover.position);
     }
-    if f.path.on_last_segment() {
-        mover.step(f.path.goal, dt);
-    } else {
-        mover.arrived = false;
-        let to = [target[0] - before[0], 0.0, target[2] - before[2]];
-        let dist = length(to);
-        let dir = if dist > 0.0 {
-            to.map(|v| v / dist)
-        } else {
-            [0.0; 3]
-        };
-        mover.steer(dir, dt);
-        for (p, v) in mover.position.iter_mut().zip(mover.velocity) {
-            *p += v * dt;
+    let h = f.path.heading(mover.position, mover.velocity, mover.radius, true, Some(nav));
+    let to_goal = h.index == f.path.edges.len();
+    let mut desired = h.dir;
+    let v = [mover.velocity[0], 0.0, mover.velocity[2]];
+    let speed = (v[0] * v[0] + v[2] * v[2]).sqrt();
+    if speed > 0.0 {
+        let vh = [v[0] / speed, 0.0, v[2] / speed];
+        let to = [h.to[0], 0.0, h.to[2]];
+        let stop = speed * speed / (mover.acceleration * 2.0);
+        if stop as f64 > dot3(to, vh) as f64 - 0.1 {
+            let n = [vh[2], 0.0, -vh[0]];
+            let across = dot3(n, h.dir);
+            let turn = ((mover.acceleration * 2.0 * across) as f64).abs() as f32;
+            let max = mover.max_speed;
+            desired = if max * max > turn {
+                h.dir.map(|c| c * (turn.sqrt() / max))
+            } else if across < 0.0 {
+                n.map(|c| -c)
+            } else {
+                n
+            };
         }
     }
-    // track the face underfoot (not on the tick a gate hands over the next corridor face);
-    // where the walk loses it, the corridor's faces round the next gate first, then the nearest
-    if !on_corridor {
-        let n = f.path.next;
-        let found = nav.walk(f.face, before, mover.position).or_else(|| {
-            [n.wrapping_sub(1), n]
-                .iter()
-                .filter_map(|&i| f.path.faces.get(i))
-                .copied()
-                .find(|&c| nav.is_over(c, mover.position))
-                .or_else(|| nav.closest_point(mover.position, 5.0).map(|(face, _)| face))
+    steer(mover, nav, *face, walls, desired, dt);
+    let mut step = mover.velocity.map(|c| c * dt);
+    let mut moved = false;
+    if to_goal {
+        let d = [mover.position[0] - f.path.goal[0], mover.position[1] - f.path.goal[1], mover.position[2] - f.path.goal[2]];
+        if dot3(d, d) < dot3(step, step) {
+            moved = true;
+            mover.position = f.path.goal;
+            mover.velocity = [0.0; 3];
+            step = [0.0; 3];
+        }
+    }
+    let mut pieces = 1;
+    let s2 = dot3(step, step);
+    if s2 > 9.0 {
+        pieces = ((s2.sqrt() / 3.0).floor() as usize).max(1);
+        step = step.map(|c| c / pieces as f32);
+    }
+    for _ in 0..pieces {
+        if step != [0.0; 3] {
+            step_piece(mover, nav, *face, walls, step, dt);
+            moved = true;
+        }
+        if !moved {
+            continue;
+        }
+        moved = false;
+        track(mover, nav, face, FACE_TRACK);
+        let on = face.is_some_and(|g| {
+            (f.path.next == 0 && f.path.start == Some(g)) || (f.path.next.saturating_sub(1)..f.path.edges.len().min(f.path.next + 5)).any(|k| f.path.edges[k].face == g)
         });
-        if let Some(face) = found {
-            f.face = face;
+        if on {
+            f.off_corridor = 0.0;
+        } else {
+            f.off_corridor += dt;
+        }
+        if f.off_corridor > OFF_CORRIDOR {
+            f.repath = true;
+        }
+        if let Some(g) = f.path.advance(mover.position) {
+            *face = Some(g);
         }
     }
-    mover.position[1] = nav.height_on(f.face, mover.position);
+    if at_goal(mover.position, *face, f) {
+        mover.arrived = true;
+    }
+}
+
+/// How far round the mover its walls are gathered: radius + 6 m (F024350's callers).
+pub const WALL_REACH: f32 = 6.0;
+
+/// The walls a mover keeps round it (AICharacter +0x150 .. +0x170): where and how far round they
+/// were gathered, whether one of them has a face across it, and the walls themselves.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Walls {
+    /// m (+0x150); never gathered: 0.
+    pub centre: [f32; 3],
+    /// m (+0x160)
+    pub reach: f32,
+    /// A wall with a face across it (+0x164): they are gathered again each time.
+    pub again: bool,
+    /// Each wall's ends (at their heights) and its normal into the walkable side.
+    pub list: Vec<([f32; 3], [f32; 3], [f32; 3])>,
+}
+
+impl Walls {
+    /// @fn F024350
+    ///
+    /// The walls round `at` (m) within `reach`: kept while none has a face across it and `at`
+    /// lies within (0.8 x the reach they were gathered with) of where they were, as a squared
+    /// distance (Kenshi compares the squared distance with 0.8 x the reach itself); else gathered
+    /// again from the face the mover stands on (F032187), which on no face, or one not loaded,
+    /// leaves them as they were.
+    pub fn gather(&mut self, nav: &NavWorld, face: Option<FaceRef>, at: [f32; 3], reach: f32) {
+        if !self.again && dist2(self.centre, at) <= (self.reach as f64 * 0.8) as f32 {
+            return;
+        }
+        let Some(face) = face.filter(|&f| nav.face_valid(f)) else { return };
+        self.centre = at;
+        self.reach = reach;
+        self.again = nav.walls_near(face, at, reach, &mut self.list);
+    }
+
+    /// F024364's gather: only when they never were (the centre still at 0).
+    pub fn first(&mut self, nav: &NavWorld, face: Option<FaceRef>, at: [f32; 3], reach: f32) {
+        if self.centre == [0.0; 3] {
+            self.gather(nav, face, at, reach);
+        }
+    }
+}
+
+/// @fn F024365
+///
+/// One piece of a step against the walls (the walls gathered round the mover, F024350): swept
+/// (F024351) to the first touch, the rest of the piece along that wall (on its tangent) swept
+/// again; a slide that cannot move at all is the stuck case Kenshi logs, which moves the mover
+/// 0.1 m out along the first touch normal (swept) instead. Otherwise, after a touch, the move
+/// is the new velocity (over `dt`), and a mover that began within its radius of the touch point
+/// goes out to the radius along that normal (not swept). The walls are those kept round the
+/// mover, gathered again first if the piece's middle is off from where they were (F024350).
+pub fn step_piece(mover: &mut Mover, nav: &NavWorld, face: Option<FaceRef>, walls: &mut Walls, d: [f32; 3], dt: f32) {
+    let start = mover.position;
+    walls.gather(nav, face, [start[0] + d[0] * 0.5, start[1] + d[1] * 0.5, start[2] + d[2] * 0.5], mover.radius + WALL_REACH);
+    let walls = &walls.list;
+    let (t1, hit) = NavWorld::sweep_wall(start, d, mover.radius, walls);
+    let mut at = start;
+    let (mut moved, mut t, mut touched) = (d, t1, hit);
+    if let Some((n1, _)) = hit {
+        at = [at[0] + d[0] * t1, at[1] + d[1] * t1, at[2] + d[2] * t1];
+        let rest = d.map(|c| c * (1.0 - t1));
+        let tangent = [n1[2], 0.0, -n1[0]];
+        let along = dot3(rest, tangent);
+        moved = tangent.map(|c| c * along);
+        let (t2, _) = NavWorld::sweep_wall(at, moved, mover.radius, walls);
+        t = t2;
+        if t2 == 0.0 {
+            kenshi_world::navmesh::STUCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if std::env::var("KENSHI_SWEEP_DEBUG").is_ok() {
+                eprintln!("stuck at {:?}", at.map(|v| (v * 10.0).round()));
+            }
+            moved = n1.map(|c| c * 0.1);
+            let (t3, _) = NavWorld::sweep_wall(at, moved, mover.radius, walls);
+            t = t3;
+            touched = None;
+        }
+    }
+    at = [at[0] + moved[0] * t, at[1] + moved[1] * t, at[2] + moved[2] * t];
+    kenshi_world::navmesh::SWEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Some((n1, w1)) = touched {
+        if dt > 0.0 {
+            mover.velocity = [(at[0] - start[0]) / dt, (at[1] - start[1]) / dt, (at[2] - start[2]) / dt];
+        }
+        if w1 < mover.radius {
+            at = [at[0] + n1[0] * (mover.radius - w1), at[1], at[2] + n1[2] * (mover.radius - w1)];
+        }
+    }
+    mover.position = at;
+}
+
+/// @fn F024349
+///
+/// Whether a path follower has reached its goal: within 0.1 m of it on the ground plane, and on
+/// the face the path's last edge leads into (the start face for a path with none) or within
+/// 1 m of the goal's height.
+pub fn at_goal(pos: [f32; 3], face: Option<FaceRef>, f: &PathFollow) -> bool {
+    let g = f.path.goal;
+    let (dx, dz) = (pos[0] - g[0], pos[2] - g[2]);
+    if dx * dx + dz * dz > 0.01 {
+        return false;
+    }
+    let goal_face = if f.path.edges.is_empty() { f.path.start } else { f.path.edges.last().map(|e| e.face) };
+    (face.is_some() && goal_face == face) || (pos[1] - g[1]).abs() < 1.0
 }
 
 /// @fn F040653
@@ -344,17 +553,81 @@ pub fn accepts_goal(position: [f32; 3], goal: [f32; 3], current_goal: Option<[f3
 
 /// @fn F040650
 ///
-/// One tick of CharMovement mode 2 (direct velocity, set by Task_FollowLeader): steer along
-/// `dir` (F024364), then move, the tick cut short so the step does not pass `dist`. The original
-/// compares `dist` (units, +0x398) with the mover's step in metres, so the cut only bites within
-/// a fraction of a unit; kept as it is.
-pub fn direct(mover: &mut Mover, dir: [f32; 3], dist: f32, dt: f32) {
+/// CharMovement mode 2 (direct velocity, set by Task_FollowLeader): steer along `dir` (F024364,
+/// with its push), and the tick the step then takes (`paused_step`), cut short so it does not
+/// pass `dist`. The original compares `dist` (units, +0x398) with the mover's step in metres, so
+/// the cut only bites within a fraction of a unit; kept as it is.
+pub fn direct(mover: &mut Mover, nav: &NavWorld, face: Option<FaceRef>, walls: &mut Walls, dir: [f32; 3], dist: f32, dt: f32) -> f32 {
     mover.arrived = false;
-    mover.steer(dir, dt);
+    steer(mover, nav, face, walls, dir, dt);
     let speed = length(mover.velocity);
-    let t = if dist < dt * speed { dist / speed } else { dt };
-    for (p, v) in mover.position.iter_mut().zip(mover.velocity) {
-        *p += v * t;
+    if dist < dt * speed { dist / speed } else { dt }
+}
+
+/// @fn F024365
+///
+/// AICharacter::step for a held mover (path state 3, set by CharMovement modes 1 and 2 through
+/// F024341): the neighbour push found as it steps (F024363) moves it by all of it, the walls
+/// unheeded (Kenshi gathers them, F024350, sweeps the push and does not use the answer), then
+/// its velocity moves it against the walls (`step_piece`) over `dt`.
+pub fn paused_step(mover: &mut Mover, nav: &NavWorld, face: &mut Option<FaceRef>, walls: &mut Walls, push: Option<([f32; 3], f32)>, dt: f32) {
+    if let Some((n, depth)) = push {
+        walls.gather(nav, *face, mover.position, mover.radius + WALL_REACH);
+        for (p, c) in mover.position.iter_mut().zip(n) {
+            *p += c * depth;
+        }
+    }
+    walk_velocity(mover, nav, face, walls, dt);
+}
+
+/// @fn F024364
+///
+/// The steer (`Mover::push_steer`) as the mover takes it: with a push, the walls gathered first
+/// if they never were (Kenshi sweeps the push against them and moves by all of it).
+pub fn steer(mover: &mut Mover, nav: &NavWorld, face: Option<FaceRef>, walls: &mut Walls, desired: [f32; 3], dt: f32) {
+    if mover.avoid.is_some() {
+        walls.first(nav, face, mover.position, mover.radius + WALL_REACH);
+    }
+    mover.push_steer(desired, dt);
+}
+
+/// @fn F024365
+///
+/// AICharacter::step for a mover without a path (path state 0 or 1): no heading, so the steer
+/// (with its push, F024364) only slows it, then its velocity moves it against the walls.
+pub fn idle_step(mover: &mut Mover, nav: &NavWorld, face: &mut Option<FaceRef>, walls: &mut Walls, dt: f32) {
+    mover.arrived = false;
+    steer(mover, nav, *face, walls, [0.0; 3], dt);
+    walk_velocity(mover, nav, face, walls, dt);
+}
+
+/// The velocity's step over `dt` against the walls (`walk_step`).
+fn walk_velocity(mover: &mut Mover, nav: &NavWorld, face: &mut Option<FaceRef>, walls: &mut Walls, dt: f32) {
+    let step = mover.velocity.map(|c| c * dt);
+    walk_step(mover, nav, face, walls, step, dt);
+}
+
+/// @fn F024365
+///
+/// A mover's step of `step` (m) over `dt` against the walls, in pieces as F024365 cuts a long
+/// one, the face it stands on (+0x14) tracked after each (F032166).
+pub fn walk_step(mover: &mut Mover, nav: &NavWorld, face: &mut Option<FaceRef>, walls: &mut Walls, step: [f32; 3], dt: f32) {
+    if let Some(g) = *face {
+        mover.position[1] = nav.height_on(g, mover.position);
+    }
+    let mut step = step;
+    let mut pieces = 1;
+    let s2 = dot3(step, step);
+    if s2 > 9.0 {
+        pieces = ((s2.sqrt() / 3.0).floor() as usize).max(1);
+        step = step.map(|c| c / pieces as f32);
+    }
+    for _ in 0..pieces {
+        if step == [0.0; 3] {
+            break;
+        }
+        step_piece(mover, nav, *face, walls, step, dt);
+        track(mover, nav, face, FACE_TRACK);
     }
 }
 
@@ -418,11 +691,22 @@ pub struct Pathing {
     pub follow: Option<PathFollow>,
     /// Which shut gates this character may pass (its faction's, kenshi_world::navmesh::Pass).
     pub pass: kenshi_world::navmesh::Pass,
-    /// (stand-in) The goal of the last request that found no path, and how many times it has
-    /// been asked for again since: not sent again for 60 asks (a second of a task asking each
-    /// tick) unless the goal moves, so one who can't get somewhere doesn't hold up everyone
-    /// else's paths (the manager answers one a tick).
-    pub failed: Option<([f32; 3], u16)>,
+    /// The last answer found no path.
+    pub failed: bool,
+    /// The mover's goal (AICharacter +0x40, m): the last one sent to the manager, then the
+    /// answer's.
+    pub goal: Option<[f32; 3]>,
+    /// The mover asks for its path to `goal` again at its next step (state +0x90 = 6).
+    pub again: bool,
+    /// The last answer found no path (+0x180): the next step tries to free the mover (F024358).
+    pub unstick: bool,
+    /// The face the mover stands on (AICharacter +0x14), none for -1.
+    pub face: Option<FaceRef>,
+    /// The walls the mover keeps round it (+0x150 .. +0x170).
+    pub walls: Walls,
+    /// Where the mover's own last step left it (x, z), none before its first: one found
+    /// elsewhere was moved by the simulation, as Kenshi moves it with setPosition (F024357).
+    pub last: Option<[f32; 2]>,
 }
 
 impl Pathing {
@@ -439,13 +723,6 @@ impl Pathing {
         urgent: bool,
         manager: &mut PathManager<O>,
     ) -> bool {
-        if let Some((g, n)) = &mut self.failed
-            && (g[0] - dest[0]).hypot(g[2] - dest[2]) < 20.0
-            && *n < 60
-        {
-            *n += 1;
-            return false;
-        }
         let moving = self.pending || self.follow.is_some();
         if !accepts_goal(
             mover.position_units(),
@@ -454,37 +731,227 @@ impl Pathing {
         ) {
             return false;
         }
-        manager.submit_as(owner, mover.position, dest.map(|v| v * TO_METRES), mover.radius, mover.water_cost, urgent, self.pass);
-        self.pending = true;
+        self.set_goal(owner, mover, dest.map(|v| v * TO_METRES), urgent, manager);
         self.last_goal = Some(dest);
         true
     }
 
-    /// The manager answered: follow the path, or stand (no path).
-    pub fn answer(&mut self, result: PathResult) {
-        self.pending = false;
-        self.failed = match &result {
-            PathResult::Found(_) => None,
-            _ => self.last_goal.map(|g| (g, 0)),
-        };
-        self.follow = match result {
-            PathResult::Found(f) => Some(PathFollow {
-                path: f.follow,
-                face: f.face,
-            }),
-            _ => None,
-        };
+    /// @fn F024356
+    ///
+    /// AICharacter::setGoal: the goal (m) sent to the manager from where the mover stands, with
+    /// its radius and water cost; the mover waits on the answer.
+    pub fn set_goal<O: PartialEq + Clone>(&mut self, owner: O, mover: &Mover, goal: [f32; 3], urgent: bool, manager: &mut PathManager<O>) {
+        manager.submit_from(owner, mover.position, self.face, goal, mover.radius, mover.water_cost, urgent, self.pass);
+        self.pending = true;
+        self.again = false;
+        self.goal = Some(goal);
     }
 
-    /// One tick of mode 0: along the path if there is one; arriving ends it.
-    pub fn tick(&mut self, mover: &mut Mover, nav: &NavWorld, dt: f32) {
-        if let Some(f) = &mut self.follow {
-            follow(mover, f, nav, dt);
-            if mover.arrived {
+    /// @fn F024352
+    ///
+    /// The manager answered. A path found from another face than the mover now stands on (it
+    /// moved while it waited) is taken from the edge after the one, of its first ten, that
+    /// leads onto that face; with none of them the answer is dropped and the path asked for
+    /// again. The edges from there on that end exactly where the mover stands are passed, and a
+    /// mover already at the goal is done (F024349). No path: the mover stops following, and its
+    /// next step tries to free it (F024358).
+    pub fn answer(&mut self, result: PathResult, mover: &Mover, nav: &NavWorld) {
+        self.pending = false;
+        self.failed = !matches!(result, PathResult::Found(_));
+        match result {
+            PathResult::Found(found) => {
+                let mut path = found.follow;
+                // the face the mover stands on now (F032165, else F032166 over 4 m)
+                if !self.face.is_some_and(|f| nav.face_valid(f)) {
+                    self.face = nav.track_face(mover.position, self.face, FACE_TRACK).map(|(f, _)| f);
+                }
+                let mut next = 0;
+                if self.face != Some(found.face) {
+                    match path.edges.iter().take(10).position(|e| Some(e.face) == self.face) {
+                        Some(i) => next = i + 1,
+                        None => {
+                            self.again = true;
+                            return;
+                        }
+                    }
+                }
+                let pos = mover.position;
+                while next < path.edges.len() && (path.edges[next].a == pos || path.edges[next].b == pos) {
+                    next += 1;
+                }
+                path.next = next;
+                path.start = Some(found.face);
+                self.goal = Some(path.goal);
+                let f = PathFollow::new(path);
+                self.follow = if at_goal(pos, self.face, &f) { None } else { Some(f) };
+            }
+            _ => {
                 self.follow = None;
+                self.unstick = true;
             }
         }
     }
+
+    /// The start of the mover's step (F024365): a mover whose last path failed is freed if it
+    /// can be (F024358, `visible` telling whether a point is in the camera's view), and one that
+    /// asks for its path again sends its goal to the manager (setGoal, not urgent).
+    pub fn prelude<O: PartialEq + Clone>(&mut self, owner: O, mover: &mut Mover, nav: &NavWorld, manager: &mut PathManager<O>, visible: &dyn Fn([f32; 3]) -> bool) {
+        self.settle(mover, nav);
+        self.prelude_requests(owner, mover, nav, manager, visible);
+    }
+
+    /// The mover as the simulation hands it to its step: a new one put on the navmesh
+    /// (AICharacter's constructor, F024360), one the simulation moved found anew (setPosition,
+    /// F024357).
+    pub fn settle(&mut self, mover: &mut Mover, nav: &NavWorld) {
+        match self.last {
+            // a new mover: AICharacter's constructor (F024360)
+            None => place(mover, nav, &mut self.face),
+            // moved by the simulation: setPosition (F024357), the face found anew by the
+            // vertical ray over 500 m
+            Some(l) if l != [mover.position[0], mover.position[2]] => {
+                self.face = None;
+                track(mover, nav, &mut self.face, kenshi_world::navmesh::START_SEARCH);
+            }
+            _ => {}
+        }
+        self.last = Some([mover.position[0], mover.position[2]]);
+    }
+
+    fn prelude_requests<O: PartialEq + Clone>(&mut self, owner: O, mover: &mut Mover, nav: &NavWorld, manager: &mut PathManager<O>, visible: &dyn Fn([f32; 3]) -> bool) {
+        if self.unstick {
+            self.unstick = false;
+            if let Some(goal) = self.goal
+                && unstick(mover, nav, self.face, &mut self.walls, goal, visible)
+            {
+                self.again = true;
+            }
+        }
+        if self.again
+            && let Some(goal) = self.goal
+        {
+            // state 6: the face found again over 500 m (F032166), then setGoal
+            track(mover, nav, &mut self.face, kenshi_world::navmesh::START_SEARCH);
+            self.set_goal(owner, mover, goal, false, manager);
+        }
+    }
+
+    /// One tick of mode 0 (F024365): the step's start (`prelude`), then along the path if there
+    /// is one (arriving ends it), else the step of a mover without one (`idle_step`).
+    pub fn tick<O: PartialEq + Clone>(&mut self, owner: O, mover: &mut Mover, nav: &NavWorld, manager: &mut PathManager<O>, visible: &dyn Fn([f32; 3]) -> bool, dt: f32) {
+        self.prelude(owner, mover, nav, manager, visible);
+        if let Some(f) = &mut self.follow {
+            follow(mover, f, &mut self.face, &mut self.walls, nav, dt);
+            if f.repath {
+                f.repath = false;
+                f.off_corridor = 0.0;
+                if !self.pending {
+                    self.again = true;
+                }
+            }
+            if mover.arrived {
+                self.follow = None;
+            }
+        } else {
+            idle_step(mover, nav, &mut self.face, &mut self.walls, dt);
+        }
+        self.last = Some([mover.position[0], mover.position[2]]);
+    }
+
+    /// After a step taken outside `tick` (a fighter's, or mode 2's): where it left the mover.
+    pub fn stepped(&mut self, mover: &Mover) {
+        self.last = Some([mover.position[0], mover.position[2]]);
+    }
+}
+
+/// @fn F024360
+///
+/// The new mover put on the navmesh: setPosition (F024357: the face found by the coherent
+/// vertical ray over 500 m, the mover set onto it); on none, the nearest point of the mesh
+/// within 3 m (F032167, the query mediator's getClosestPoint) and setPosition there.
+pub fn place(mover: &mut Mover, nav: &NavWorld, face: &mut Option<FaceRef>) {
+    *face = None;
+    track(mover, nav, face, kenshi_world::navmesh::START_SEARCH);
+    if face.is_none()
+        && let Some((_, q)) = nav.closest_point(mover.position, 3.0)
+    {
+        mover.position = q;
+        track(mover, nav, face, kenshi_world::navmesh::START_SEARCH);
+    }
+}
+
+/// @fn F024358
+///
+/// A mover whose path request failed (+0x180 = 2): out to its radius + 0.01 from the nearest
+/// wall it is too near (F024354, the walls it keeps, gathered within radius + 6 m, F024350:
+/// one on no face keeps those it had); then, stuck where it stands
+/// (F032186), 0.5 m toward its goal if that point is in the camera's view (F041469), else 3 m.
+/// Whether it moved (it then asks for its path again, +0x90 = 6). (The other case, +0x180 = 1,
+/// follows an answer of status 0 that found no path, which the manager here never gives.)
+pub fn unstick(mover: &mut Mover, nav: &NavWorld, face: Option<FaceRef>, walls: &mut Walls, goal: [f32; 3], visible: &dyn Fn([f32; 3]) -> bool) -> bool {
+    let mut again = false;
+    walls.gather(nav, face, mover.position, mover.radius + WALL_REACH);
+    if let Some(out) = wall_escape(mover.position, (mover.radius as f64 + 0.01) as f32, &walls.list) {
+        for (p, c) in mover.position.iter_mut().zip(out) {
+            *p += c;
+        }
+        again = true;
+    }
+    if nav.stuck(mover.position, mover.radius, 10.0) {
+        let d = [goal[0] - mover.position[0], goal[1] - mover.position[1], goal[2] - mover.position[2]];
+        let l = length(d);
+        let k = if visible(mover.position) { 0.5 } else { 3.0 };
+        if l > 0.0 {
+            for (p, c) in mover.position.iter_mut().zip(d) {
+                *p += c / l * k;
+            }
+        }
+        again = true;
+    }
+    again
+}
+
+/// @fn F024354
+///
+/// The way out from the walls for a mover at `pos` to stand `reach` off them (on the ground
+/// plane): of the walls within that reach, the nearest the mover stands in front of goes before
+/// any behind it (behind one, over its length, it is taken only when nearer than the nearest
+/// so far, and moved through to the front); the move puts the mover `reach` in front of that
+/// wall's nearest point. None with no wall within reach.
+pub fn wall_escape(pos: [f32; 3], reach: f32, walls: &[([f32; 3], [f32; 3], [f32; 3])]) -> Option<[f32; 3]> {
+    let r2 = reach * reach;
+    let (mut limit, mut best) = (r2, r2);
+    let mut out = None;
+    for &(a, b, _) in walls {
+        let e = [b[0] - a[0], 0.0, b[2] - a[2]];
+        let a = [a[0], pos[1], a[2]];
+        let d = [pos[0] - a[0], 0.0, pos[2] - a[2]];
+        let ee = e[0] * e[0] + e[2] * e[2];
+        let t = if ee > 0.0 { ((d[0] * e[0] + d[2] * e[2]) / ee).min(1.0).max(0.0) } else { 0.0 };
+        let diff = [pos[0] - (a[0] + e[0] * t), 0.0, pos[2] - (a[2] + e[2] * t)];
+        let dist2 = diff[0] * diff[0] + diff[2] * diff[2];
+        let mut next = limit;
+        if dist2 < limit || dist2 < best {
+            let n = [e[2], 0.0, -e[0]];
+            let mut k = reach;
+            next = dist2;
+            if n[0] * diff[0] + n[2] * diff[2] < 0.0 && 0.0 < t && t < 1.0 {
+                next = limit;
+                if best <= dist2 {
+                    limit = next;
+                    continue;
+                }
+                k = -reach;
+            }
+            let v = if dist2 == 0.0 { n } else { diff };
+            let l = length(v);
+            let dist = dist2.sqrt();
+            out = Some(if l > 0.0 { v.map(|c| c / l * (k - dist)) } else { [0.0; 3] });
+            best = dist2;
+        }
+        limit = next;
+    }
+    out
 }
 
 /// How fast a character is told to go (the FCS editor's MoveSpeed).
@@ -645,7 +1112,7 @@ mod tests {
         let (owner, r) = manager.update(&NavWorld::default()).unwrap();
         assert_eq!((owner, r), (1, PathResult::NoStart));
         assert!(manager.update(&NavWorld::default()).is_none());
-        p.answer(PathResult::NoStart);
+        p.answer(PathResult::NoStart, &m, &NavWorld::default());
         assert!(!p.pending && p.follow.is_none());
     }
 

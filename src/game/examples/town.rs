@@ -14,6 +14,8 @@ fn main() {
     let seconds: f32 = a.get(4).map_or(60.0, |n| n.parse().unwrap());
     let extras: Vec<String> = a.iter().skip(5).cloned().collect();
     let mut sim = Sim::load(install, zx, zy, people, &extras);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     while sim.t < seconds {
         let (t, tick) = (sim.t, sim.tick);
         sim.step();

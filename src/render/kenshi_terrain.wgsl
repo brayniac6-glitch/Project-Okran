@@ -6,7 +6,7 @@
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::view
 #import kenshi::interior::interior_clipped
-#import kenshi::lighting::{apply_fog, local_lights, main_light, sun_shadow, make_wet, reflection_dir, reflection_mip, to_screen}
+#import kenshi::lighting::{KenshiLight, apply_fog, local_lights, main_light, sun_shadow, make_wet, reflection_dir, reflection_mip, to_screen}
 
 struct TerrainParams {
     scales_a: array<vec4<f32>, 4>,
@@ -44,6 +44,7 @@ struct TerrainParams {
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> p: TerrainParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(70) var<storage, read> kl: KenshiLight;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var overlay_map: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(62) var interior_mask: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var linear_sampler: sampler;
@@ -269,11 +270,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let drefl = textureSampleLevel(specularity_cube, cube_sampler,
             reflection_dir(dn, dview, 0.2), reflection_mip(0.2));
         let dlit = main_light(dn, dview, colour, 0.2, 0.0, 0.0, 0.0,
-            p.sun_direction.xyz, p.sun_colour, p.env_colour.w, p.ambient_params.w,
+            kl.sun_direction.xyz, kl.sun_colour, kl.env_colour.w, kl.ambient_params.w,
             dambient, dirr, drefl, sun_shadow(in.world_position, in.world_normal, shadow_jitter));
-        let dfog = apply_fog(dlit, camera, world_pos, p.sun_real.xyz, p.horizon, p.fog, p.fog_colour,
-            p.sun_colour.w);
-        return vec4<f32>(to_screen(dfog, p.world.z), 1.0);
+        let dfog = apply_fog(dlit, camera, world_pos, kl.sun_real.xyz, kl.horizon, kl.fog, kl.fog_colour,
+            kl.sun_colour.w);
+        return vec4<f32>(to_screen(dfog, kl.misc.x), 1.0);
     }
 
     // terrain.hlsl main_vs: texture coordinates and cliff blending
@@ -342,7 +343,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // wetness: the weather's (SharedWaterParams wetness), and under the water (height 100)
     let absorb = 1.0 - albedo.a + absorbance;
-    albedo = make_wet(albedo, p.world.y, absorb, 100.0 - world_pos.y, 2.0);
+    albedo = make_wet(albedo, kl.misc.y, absorb, 100.0 - world_pos.y, 2.0);
 
     // the blood on the ground (deferred/blood.hlsl terrain: the blood map over the area, alpha
     // blended into the G-buffer's albedo)
@@ -380,10 +381,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let refl = textureSampleLevel(specularity_cube, cube_sampler,
         reflection_dir(world_normal, view_dir, gloss), reflection_mip(gloss));
     let lit = main_light(world_normal, view_dir, albedo.rgb, gloss, 0.0, 0.0, 0.0,
-        p.sun_direction.xyz, p.sun_colour, p.env_colour.w, p.ambient_params.w,
+        kl.sun_direction.xyz, kl.sun_colour, kl.env_colour.w, kl.ambient_params.w,
         ambient_mult, irr, refl, sun_shadow(in.world_position, in.world_normal, shadow_jitter));
     let lit_all = lit + local_lights(in.world_position.xyz, in.position.xy, world_normal, view_dir, albedo.rgb, gloss, 0.0);
-    let fogged = apply_fog(lit_all, camera, world_pos, p.sun_real.xyz, p.horizon, p.fog, p.fog_colour,
-        p.sun_colour.w);
-    return vec4<f32>(to_screen(fogged, p.world.z), 1.0);
+    let fogged = apply_fog(lit_all, camera, world_pos, kl.sun_real.xyz, kl.horizon, kl.fog, kl.fog_colour,
+        kl.sun_colour.w);
+    return vec4<f32>(to_screen(fogged, kl.misc.x), 1.0);
 }

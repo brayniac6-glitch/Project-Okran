@@ -9,6 +9,8 @@ fn main() {
     let (zx, zy): (i32, i32) = (a[1].parse().unwrap(), a[2].parse().unwrap());
     let seconds: f32 = a.get(3).map_or(300.0, |s| s.parse().unwrap());
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &[]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     if let Some(h) = a.get(4).and_then(|s| s.parse::<f64>().ok()) {
         sim.start_hour = h;
     }

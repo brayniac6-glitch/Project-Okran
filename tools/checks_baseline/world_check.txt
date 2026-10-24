@@ -1,0 +1,29 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+1 town nodes (1 general)
+6 pieces of furniture, bars: []
+0 interior volumes, 0 doors
+player squad: 1
+1 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Nameless: enemies here []
+world: 0 squads abroad, 304 towns
+t 2.0 homeless squad Holy Army Patrol (phoenix alive) (5 people) spawned in zone 21.29 at [-48802.0, 1198.0, -9788.0]
+t 4.0 homeless squad Escaped holy servants (1 people) spawned in zone 22.29 at [-45052.0, 1180.0, -11664.0]
+t 6.1 homeless squad slave hunters------ (10 people) spawned in zone 21.30 at [-49564.0, 1041.0, -7168.0]
+t 8.1 homeless squad wild goats (1 people) spawned in zone 22.31 at [-43593.0, 2176.0, -1971.0]
+t 10.1 homeless squad Drifter solo (1 people) spawned in zone 23.30 at [-39280.0, 1954.0, -9148.0]
+t 12.1 homeless squad Dust Bandit squad (6 people) spawned in zone 23.31 at [-40212.0, 542.0, -612.0]
+t 14.1 homeless squad slave hunters------ (10 people) spawned in zone 21.31 at [-48186.0, 1641.0, -68.0]
+t    60: 35 alive (35 spawned), 7 roaming squads, 20 have moved 50+, 0 fighting, 0 down, 0 dead
+t   120: 35 alive (35 spawned), 7 roaming squads, 20 have moved 50+, 0 fighting, 0 down, 0 dead
+t   180: 35 alive (35 spawned), 7 roaming squads, 20 have moved 50+, 0 fighting, 0 down, 0 dead
+t   240: 35 alive (35 spawned), 7 roaming squads, 20 have moved 50+, 0 fighting, 0 down, 0 dead
+enemies meeting within 300 units (seconds near / seconds fighting each other):
+0 never moved: 
+wall sweeps 266640 stuck 151
+exit 0

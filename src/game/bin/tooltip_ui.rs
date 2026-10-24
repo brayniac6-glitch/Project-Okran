@@ -15,6 +15,11 @@
 //! - an inventory item's (ToolTipInventory, F042779 / F048681: the Kenshi_FloatingPanelLight
 //!   frame, 0.17 of the screen wide, F048670), shown as soon as the mouse moves over the item,
 //!   beside it at its top, right of it unless that leaves the screen, else left (F048702).
+//!   Kenshi keeps it there whatever its height: F048670 sets only its width (0.17 of the
+//!   screen) and its height (its last line's bottom and the padding), and MyGUI's
+//!   setPosition does not clamp, so a tall tip (a Dustcoat's) runs past the screen's bottom
+//!   in Kenshi too. The game's tooltip (F048667) moves off the mouse only where it would
+//!   leave the screen's top or left.
 //!
 //! Line margins: the line's left and right inset 0.025 of the box's width (0.04 the inventory's)
 //! at the UI scale; the top padding round(0.1 of the box's first height, 0.2 of the screen) and
@@ -63,8 +68,9 @@ pub struct State {
 /// wrapping, its right text at the right. A tip's text: a line "label\tvalue\tcolour" a row (the
 /// colour: empty, both in the text colour; v, the value #afa68b; c, both #afa68b; g / r, the
 /// value #a8b774 / #59231a; t, both #492620; h, the label #492620 and the value #afa68b; k, the
-/// label #afa68b; #rrggbb, both in that colour), a
-/// line without a tab a paragraph, its MyGUI colour tags ("#rrggbb", "##" a #) colouring what
+/// label #afa68b; #rrggbb, both in that colour; #rrggbb/#rrggbb, the label's and the value's;
+/// either side's own MyGUI colour tags colouring what follows them within it), a line without a
+/// tab a paragraph, its MyGUI colour tags ("#rrggbb", "##" a #) colouring what
 /// follows them, on into the next paragraphs.
 fn lines(commands: &mut Commands, parent: Entity, text: &str, font: &TextFont) {
     let text_node = |s: &str, c: Color, j: Justify| {
@@ -87,15 +93,32 @@ fn lines(commands: &mut Commands, parent: Entity, text: &str, font: &TextFont) {
                         let v = hud_ui::tag(u32::from_str_radix(&c[1..], 16).unwrap_or(0));
                         (v, v)
                     }
+                    // the label's colour and the value's ("#rrggbb/#rrggbb", item_tip's pairs)
+                    c if c.len() == 15 && c.is_ascii() && c.starts_with('#') && c[7..].starts_with("/#") => {
+                        let hex = |s: &str| hud_ui::tag(u32::from_str_radix(s, 16).unwrap_or(0));
+                        (hex(&c[1..7]), hex(&c[9..]))
+                    }
                     _ => (TEXT, TEXT),
                 };
                 let row = commands
                     .spawn(Node { width: Val::Percent(100.0), flex_direction: FlexDirection::Row, justify_content: JustifyContent::SpaceBetween, ..default() })
                     .id();
-                let l = commands.spawn((text_node(label, lc, Justify::Left), Node { flex_shrink: 1.0, ..default() })).id();
+                // each side's own MyGUI colour tags (as its EditBox reads them) from its colour on
+                let side = |commands: &mut Commands, s: &str, c: Color, j: Justify, shrink: f32| {
+                    let mut c = c;
+                    let parts = if s.contains('#') { coloured(s, &mut c) } else { vec![(s.to_string(), c)] };
+                    let (first, fc) = parts.first().cloned().unwrap_or_default();
+                    let e = commands.spawn((text_node(&first, fc, j), Node { flex_shrink: shrink, ..default() })).id();
+                    for (t, c) in parts.into_iter().skip(1) {
+                        let span = commands.spawn((TextSpan::new(t), font.clone(), TextColor(c))).id();
+                        commands.entity(e).add_child(span);
+                    }
+                    e
+                };
+                let l = side(commands, label, lc, Justify::Left, 1.0);
                 commands.entity(row).add_child(l);
                 if !value.is_empty() {
-                    let v = commands.spawn((text_node(value, vc, Justify::Right), Node { flex_shrink: 0.0, ..default() })).id();
+                    let v = side(commands, value, vc, Justify::Right, 0.0);
                     commands.entity(row).add_child(v);
                 }
                 row

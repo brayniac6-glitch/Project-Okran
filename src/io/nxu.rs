@@ -184,6 +184,16 @@ fn mesh(b: &[u8]) -> Option<MeshData> {
 /// The colliding shapes of a collection's static actors (actors with a body, triggers and shapes
 /// with collision off are left out; so are planes).
 pub fn parse(text: &str) -> Vec<Shape> {
+    parse_actors(text, false)
+}
+
+/// The colliding shapes of all of a collection's actors, those with a body too (a door's: its
+/// actor is a moving one).
+pub fn parse_all(text: &str) -> Vec<Shape> {
+    parse_actors(text, true)
+}
+
+fn parse_actors(text: &str, bodies: bool) -> Vec<Shape> {
     let hulls: Vec<(&str, Vec<[f32; 3]>)> = elements(text, "NxConvexMeshDesc")
         .into_iter()
         .filter_map(|(h, b)| Some((attr(h, "id")?, hull(&cooked(b)?)?)))
@@ -194,7 +204,7 @@ pub fn parse(text: &str) -> Vec<Shape> {
         .collect();
     let mut out = Vec::new();
     for (head, actor) in elements(text, "NxActorDesc") {
-        if attr(head, "hasBody") == Some("true") || flag(actor, "NX_AF_DISABLE_COLLISION") {
+        if (!bodies && attr(head, "hasBody") == Some("true")) || flag(actor, "NX_AF_DISABLE_COLLISION") {
             continue;
         }
         let Some(global) = inner(actor, "globalPose").and_then(pose) else { continue };
@@ -241,14 +251,102 @@ pub fn parse(text: &str) -> Vec<Shape> {
     out
 }
 
+/// A moving actor of a collection (`hasBody`), in the file's own axes (an item's "physics
+/// file" is in its mesh's frame, so not turned Y-up): its pose, its NxBodyDesc (PhysX 2.8's
+/// defaults where the file leaves them: mass 0, linear damping 0, angular damping 0.05, 4 solver
+/// iterations) and its shapes' frames in the actor's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Body {
+    pub pose: Pose,
+    pub mass: f32,
+    pub density: f32,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+    pub iterations: u32,
+    pub shapes: Vec<Shape>,
+}
+
+/// The moving actors of a collection (box, sphere and capsule shapes).
+pub fn parse_bodies(text: &str) -> Vec<Body> {
+    let mut out = Vec::new();
+    for (head, actor) in elements(text, "NxActorDesc") {
+        if attr(head, "hasBody") != Some("true") || flag(actor, "NX_AF_DISABLE_COLLISION") {
+            continue;
+        }
+        let pose = inner(actor, "globalPose").and_then(pose).unwrap_or(Pose::IDENTITY);
+        let body = elements(actor, "NxBodyDesc").first().map_or("", |b| b.1);
+        let num = |s: &str, k: &str| inner(s, k).and_then(|v| v.trim().parse::<f32>().ok());
+        let mut shapes = Vec::new();
+        for tag in ["NxBoxShapeDesc", "NxSphereShapeDesc", "NxCapsuleShapeDesc"] {
+            for (h, b) in elements(actor, tag) {
+                let local = inner(b, "localPose").and_then(pose_of).unwrap_or(Pose::IDENTITY);
+                let a = |k: &str| attr(h, k).and_then(|v| v.trim().parse::<f32>().ok());
+                let kind = match tag {
+                    "NxBoxShapeDesc" => {
+                        let d = floats(attr(h, "dimensions").unwrap_or(""));
+                        if d.len() < 3 {
+                            continue;
+                        }
+                        ShapeKind::Box([d[0], d[1], d[2]])
+                    }
+                    "NxSphereShapeDesc" => ShapeKind::Sphere(a("radius").unwrap_or(0.0)),
+                    _ => ShapeKind::Capsule { radius: a("radius").unwrap_or(0.0), height: a("height").unwrap_or(0.0) },
+                };
+                shapes.push(Shape { pose: local, kind });
+            }
+        }
+        out.push(Body {
+            pose,
+            mass: num(body, "mass").unwrap_or(0.0),
+            density: num(actor, "density").unwrap_or(0.0),
+            linear_damping: num(body, "linearDamping").unwrap_or(0.0),
+            angular_damping: num(body, "angularDamping").unwrap_or(0.05),
+            iterations: num(body, "solverIterationCount").map_or(4, |v| v as u32),
+            shapes,
+        });
+    }
+    out
+}
+
+fn pose_of(s: &str) -> Option<Pose> {
+    pose(s)
+}
+
 pub fn read(path: &Path) -> io::Result<Vec<Shape>> {
     let b = std::fs::read(path)?;
     Ok(parse(&String::from_utf8_lossy(&b)))
 }
 
+/// [`parse_all`] of a file.
+pub fn read_all(path: &Path) -> io::Result<Vec<Shape>> {
+    let b = std::fs::read(path)?;
+    Ok(parse_all(&String::from_utf8_lossy(&b)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_severed_limbs_body() {
+        let text = r#"<NxActorDesc hasBody="true" id="name" name="Capsule">
+                <globalPose>1 0 0 0 1 0 0 0 1   0 0 0</globalPose>
+                <NxCapsuleShapeDesc height="5.464595" radius="0.691524">
+                    <NxShapeDesc userProperties="" name="x">
+                        <localPose>0 -1 -0 -0 0 -1  1 0 -0  2 0 0</localPose>
+                    </NxShapeDesc>
+                </NxCapsuleShapeDesc>
+                <NxBodyDesc id="body">
+                    <mass>1</mass>
+                    <angularDamping>0.1</angularDamping>
+                </NxBodyDesc>
+            </NxActorDesc>"#;
+        let b = parse_bodies(text);
+        assert_eq!(b.len(), 1);
+        assert_eq!((b[0].mass, b[0].angular_damping, b[0].linear_damping, b[0].iterations), (1.0, 0.1, 0.0, 4));
+        assert_eq!(b[0].shapes[0].pose.pos, [2.0, 0.0, 0.0]);
+        assert!(matches!(b[0].shapes[0].kind, ShapeKind::Capsule { .. }));
+    }
 
     #[test]
     fn box_in_y_up() {

@@ -2,6 +2,7 @@
 
 pub mod sim;
 pub mod base;
+pub mod upgrade;
 pub mod doors;
 pub mod upkeep;
 pub mod law;
@@ -36,5 +37,9 @@ pub mod raid_ai;
 pub mod furniture_cut;
 pub mod squads;
 pub mod shopping;
+pub mod talk;
+pub mod conversation;
 pub mod crowd;
+pub mod gate_codes;
+pub mod cells;
 pub use kenshi_io::cfg as settings;

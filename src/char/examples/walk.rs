@@ -53,14 +53,14 @@ fn main() {
         kenshi_world::navmesh::PathResult::Found(f) => f.points.clone(),
         other => panic!("no path: {other:?}"),
     };
-    pathing.answer(result);
+    pathing.answer(result, &mover, &nav);
     let gates = pathing.follow.as_ref().map_or(0, |f| f.path.gates.len());
     let dt = 1.0 / 60.0;
     let mut t = 0.0f32;
     let mut walked = 0.0;
     while !mover.arrived && t < 900.0 {
         let before = mover.position;
-        pathing.tick(&mut mover, &nav, dt);
+        pathing.tick(0, &mut mover, &nav, &mut manager, &|_| false, dt);
         walked += distance(before, mover.position);
         t += dt;
         let p = mover.position_units();

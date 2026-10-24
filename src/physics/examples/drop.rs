@@ -78,7 +78,7 @@ fn main() {
         if f == frames - 1 {
             for ((a, b), d) in mark.iter().zip(r.poses()).zip(&t.bodies) { println!("  drift {} {:.3} turn {:.3}", d.bone, a.0.distance(b.0), a.1.angle_between(b.1)); }
         }
-        r.step(&t, std::env::var("DROP_DT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0 / 60.0), &kenshi_physics::world::Scene { ground: |_, _| ground, statics: &statics, people: &[] });
+        r.step(&t, std::env::var("DROP_DT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0 / 60.0), &kenshi_physics::world::Scene { ground: |_, _| ground, statics: &statics, ignored: 0 });
         if f % 60 == 59 || r.asleep {
             let ys: Vec<String> = r.poses().zip(&t.bodies).map(|((x, _), b)| format!("{}:{:.1}", &b.bone[6.min(b.bone.len())..], x.y)).collect();
             println!("t {:.1} asleep {} speeds {:?} {}", (f + 1) as f32 / 60.0, r.asleep, r.speeds(), ys.join(" "));

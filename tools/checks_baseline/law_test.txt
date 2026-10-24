@@ -1,0 +1,1950 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+296 town nodes (164 general)
+town Bad Teeth at [-33384.523, 341.7531, -19952.654], type 2, radius 2500
+562 pieces of furniture, bars: ["Storm House", "Old Storm House", "Storm House"]
+15 interior volumes, 16 doors
+Shop bar holy at Storm House: 1 leader(s), 1 others, package Shop-24hr
+holy Armoury at Longhouse: 1 leader(s), 5 others, package Storage Guard
+Shop bar holy at Old Storm House: 1 leader(s), 1 others, package Shop-24hr
+Holy Guards at Bughouse: 1 leader(s), 12 others, package guard town - lawful arrests
+holy Bakery at Longhouse: 1 leader(s), 0 others, package Shop
+Shop bar holy at Storm House: 1 leader(s), 1 others, package Shop-24hr
+holy General storage at Small Shack: 1 leader(s), 1 others, package Storage Guard
+Holy Gate Guards at Defensive Gate IV: 1 leader(s), 8 others, package Gate guard  -no turrets -arrests
+holy armour shop at Bughouse: 1 leader(s), 2 others, package Shop
+Holy Gate Guards at Defensive Gate IV: 1 leader(s), 8 others, package Gate guard  -no turrets -arrests
+Holy Priest church at Stephouse: 1 leader(s), 7 others, package Guard building, residents
+Holy Guards at Bughouse: 1 leader(s), 12 others, package guard town - lawful arrests
+Civilian solo holy at Longhouse: 1 leader(s), 1 others, package Civilian
+player squad: 1
+73 people (arresting 44, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction The Holy Nation: enemies here []
+faction Nameless: enemies here []
+world: 0 squads abroad, 304 towns
+[load] t 1: 0 says "Do you have a copy of the Holy Flame, brother?"
+[load] t 1: Discovered Bad Teeth
+66 guards of the town: [(1, 2, Some("1083-gamedata.base")), (2, 2, Some("1083-gamedata.base")), (3, 2, Some("1083-gamedata.base")), (4, 2, Some("1083-gamedata.base")), (5, 2, Some("1083-gamedata.base")), (6, 2, Some("1083-gamedata.base")), (7, 2, Some("1083-gamedata.base")), (9, 2, Some("1083-gamedata.base"))]
+faction 1083-gamedata.base: offers bounties true, anti slavery false
+[A] crime Some((CrimeStealing, 3.0))
+law: alarm in town 12 for CrimeStealing at [-34075, 186, -19698] (by 0)
+law: 0 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 42 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 71 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+[A] t 3: Alarm raised
+[A] t 3: Lars has been caught stealing - bounty with The Holy Nation: c.2500
+[A] t 3: 0 says "Th- thats not yours!"
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 71 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+[A] t 4: 1 says "Scram!"
+[A] t 5: 0 says "Agghh!"
+law: 0 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+[A] t 6: 1 says "Argh!"
+law: 0 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 71 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+[A] t 6: 1 says "Wrong place at the wrong time, thief!"
+law: 1 hits 72 (guards true / false)
+[A] bounty with 1083-gamedata.base: 2500, crime Some((CrimeStealing, true)), blown 249
+[B] t 7: Lars has been imprisoned by The Holy Nation for 16 hours.
+[B] t 8: 0 says "Why?! Please, no!"
+law: 72 picks a lock of 44 at skill 80: chance 0.90, roll 0.42
+[B] t 9: Lars has escaped from the cage.
+look: 4 spots escaped prisoner 72
+look: 10 spots escaped prisoner 72
+look: 10 shoos 72 from Some(9)
+look: 12 spots escaped prisoner 72
+look: 13 spots escaped prisoner 72
+look: 14 spots escaped prisoner 72
+look: 15 spots escaped prisoner 72
+look: 16 spots escaped prisoner 72
+look: 17 spots escaped prisoner 72
+look: 18 spots escaped prisoner 72
+look: 19 spots escaped prisoner 72
+look: 20 spots escaped prisoner 72
+look: 21 spots escaped prisoner 72
+look: 22 spots escaped prisoner 72
+look: 30 spots escaped prisoner 72
+look: 31 spots escaped prisoner 72
+look: 33 spots escaped prisoner 72
+look: 35 spots escaped prisoner 72
+look: 36 spots escaped prisoner 72
+look: 42 spots escaped prisoner 72
+look: 43 spots escaped prisoner 72
+look: 44 spots escaped prisoner 72
+look: 45 spots escaped prisoner 72
+look: 46 spots escaped prisoner 72
+look: 47 spots escaped prisoner 72
+look: 48 spots escaped prisoner 72
+[B] t 9: 10 says "You're not allowed here, take exit"
+[B] prison None, escaped Some(("1083-gamedata.base", 0.08066701438031743)), crime Some((CrimeEscapePrison, "1083-gamedata.base")), town Some(12)
+law: alarm in town 12 for CrimeEscapePrison at [-33461, 377, -20257] (by 4)
+law: 4 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 8 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 10 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 12 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 13 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 14 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 15 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 16 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 17 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 18 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 19 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 20 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 21 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 22 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 30 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 31 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 33 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 35 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 36 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 42 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 43 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 44 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 45 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 46 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 47 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 48 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+[B] t 9: Lars has been caught escaping prison - bounty with The Holy Nation: c.2500
+[B] t 9: 4 says "Order!"
+[B] t 9: 10 says "Light of Okran, give us the strength to repel this darkness!"
+[B] t 9: 12 says "He will not escape the cleansing of Okran!"
+[B] t 9: 13 says "Do not let the darkness corrupt our society, repel them!"
+[B] t 9: 14 says "Darkness be purged by the light of Okran!"
+[B] t 9: 15 says "Darkness be purged by the light of Okran!"
+[B] t 9: 16 says "He will not evade the light of Okran!"
+[B] t 9: 17 says "He will not evade the light of Okran!"
+[B] t 9: 18 says "He mustn't get away!"
+[B] t 9: 19 says "Darkness be purged by the light of Okran!"
+[B] t 9: 20 says "Seize him!"
+[B] t 9: 21 says "Darkness be purged by the light of Okran!"
+[B] t 9: 22 says "He will not evade the light of Okran!"
+[B] t 9: 30 says "Stop!"
+[B] t 9: 42 says "Order!"
+look: 4 spots escaped prisoner 72
+look: 10 spots escaped prisoner 72
+look: 12 spots escaped prisoner 72
+look: 13 spots escaped prisoner 72
+look: 14 spots escaped prisoner 72
+look: 15 spots escaped prisoner 72
+look: 16 spots escaped prisoner 72
+look: 17 spots escaped prisoner 72
+look: 18 spots escaped prisoner 72
+look: 19 spots escaped prisoner 72
+look: 20 spots escaped prisoner 72
+look: 21 spots escaped prisoner 72
+look: 22 spots escaped prisoner 72
+look: 30 spots escaped prisoner 72
+look: 31 spots escaped prisoner 72
+look: 33 spots escaped prisoner 72
+look: 35 spots escaped prisoner 72
+look: 36 spots escaped prisoner 72
+look: 42 spots escaped prisoner 72
+look: 43 spots escaped prisoner 72
+look: 44 spots escaped prisoner 72
+look: 45 spots escaped prisoner 72
+look: 46 spots escaped prisoner 72
+look: 47 spots escaped prisoner 72
+look: 48 spots escaped prisoner 72
+notice: 10 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 23 looks at 72: T 45.0, meter 0.00, noticed true
+law view: goals 34 49 / 204 42 / 183 0 / 281 26; targets {(1, 34): 72, (10, 34): 72, (10, 204): 72, (12, 34): 72, (12, 204): 72, (13, 34): 72, (13, 204): 72, (14, 34): 72, (14, 204): 72, (15, 34): 72, (15, 204): 72, (16, 34): 72, (16, 204): 72, (17, 34): 72, (17, 204): 72, (18, 34): 72, (18, 204): 72, (19, 34): 72, (19, 204): 72, (20, 34): 72, (20, 204): 72, (21, 34): 72, (21, 204): 72, (22, 34): 72, (22, 204): 72, (30, 204): 72, (31, 204): 72, (33, 204): 72, (35, 204): 72, (36, 204): 72, (42, 204): 72, (43, 204): 72, (44, 204): 72, (45, 204): 72, (46, 204): 72, (47, 204): 72, (48, 204): 72}; cages 50
+law: guard 10 on 72: 47 apart, target down false, carrying None, fighting false
+law: guard 12 on 72: 141 apart, target down false, carrying None, fighting false
+law: guard 13 on 72: 9 apart, target down false, carrying None, fighting false
+law: guard 14 on 72: 66 apart, target down false, carrying None, fighting false
+law: guard 15 on 72: 81 apart, target down false, carrying None, fighting false
+law: guard 16 on 72: 46 apart, target down false, carrying None, fighting false
+law: guard 17 on 72: 69 apart, target down false, carrying None, fighting false
+law: guard 18 on 72: 74 apart, target down false, carrying None, fighting false
+law: guard 19 on 72: 57 apart, target down false, carrying None, fighting false
+law: guard 20 on 72: 47 apart, target down false, carrying None, fighting false
+law: guard 21 on 72: 10 apart, target down false, carrying None, fighting false
+law: guard 22 on 72: 25 apart, target down false, carrying None, fighting false
+[B] t 10: 10 says "What!?"
+law: 4 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 8 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 10 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 12 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 13 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 14 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 15 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 16 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 17 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 18 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 19 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 20 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 21 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 22 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 28 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 30 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 31 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 33 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 35 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 36 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 42 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 43 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 44 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 45 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 46 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 47 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 48 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+[B] t 10: 10 says "Order!"
+law: 10 hits 72 (guards true / false)
+look: 4 spots escaped prisoner 72
+look: 10 spots escaped prisoner 72
+look: 12 spots escaped prisoner 72
+look: 13 spots escaped prisoner 72
+look: 14 spots escaped prisoner 72
+look: 15 spots escaped prisoner 72
+look: 16 spots escaped prisoner 72
+look: 17 spots escaped prisoner 72
+look: 18 spots escaped prisoner 72
+look: 19 spots escaped prisoner 72
+look: 20 spots escaped prisoner 72
+look: 21 spots escaped prisoner 72
+look: 22 spots escaped prisoner 72
+look: 28 spots escaped prisoner 72
+look: 29 spots escaped prisoner 72
+look: 30 spots escaped prisoner 72
+look: 31 spots escaped prisoner 72
+look: 33 spots escaped prisoner 72
+look: 36 spots escaped prisoner 72
+look: 42 spots escaped prisoner 72
+look: 43 spots escaped prisoner 72
+look: 44 spots escaped prisoner 72
+look: 45 spots escaped prisoner 72
+look: 46 spots escaped prisoner 72
+look: 47 spots escaped prisoner 72
+look: 48 spots escaped prisoner 72
+law: 4 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 8 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 10 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 12 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 13 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 14 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 15 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 16 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 17 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 18 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 19 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 20 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 21 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 22 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 28 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 29 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 30 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 31 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 33 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 42 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 43 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 44 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 45 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 46 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 47 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 48 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+look: 4 spots escaped prisoner 72
+look: 10 spots escaped prisoner 72
+look: 12 spots escaped prisoner 72
+look: 13 spots escaped prisoner 72
+look: 14 spots escaped prisoner 72
+look: 15 spots escaped prisoner 72
+look: 16 spots escaped prisoner 72
+look: 17 spots escaped prisoner 72
+look: 18 spots escaped prisoner 72
+look: 19 spots escaped prisoner 72
+look: 20 spots escaped prisoner 72
+look: 21 spots escaped prisoner 72
+look: 22 spots escaped prisoner 72
+look: 28 spots escaped prisoner 72
+look: 29 spots escaped prisoner 72
+look: 30 spots escaped prisoner 72
+look: 31 spots escaped prisoner 72
+look: 33 spots escaped prisoner 72
+look: 36 spots escaped prisoner 72
+look: 42 spots escaped prisoner 72
+look: 43 spots escaped prisoner 72
+look: 44 spots escaped prisoner 72
+look: 45 spots escaped prisoner 72
+look: 46 spots escaped prisoner 72
+look: 47 spots escaped prisoner 72
+look: 48 spots escaped prisoner 72
+look: 58 spots escaped prisoner 72
+[B] t 12: 30 says "Surrender! Evil has no place here! "
+[B] t 12: 4 says "Evil be smited!"
+[B] t 12: 42 says "Arrest him!"
+[B] t 12: Discovered Holy Mines
+[B] away: town None, escaped None
+law: 1 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 4 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 8 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 10 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 11 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 12 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 13 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 14 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 15 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 17 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 20 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 21 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 29 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 30 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 31 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 42 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 43 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 44 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 45 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 46 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 47 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 48 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 60 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 61 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 62 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 63 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 64 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 65 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 66 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 71 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+[C] t 14: 11 says "He will not evade the light of Okran!"
+[C] t 14: 60 says "Stop!"
+[C] state 1, prison Some(179), shackled true
+[C] processing by [0]: clip Some("medic")
+[C] t 15: Lars has been enslaved by The Holy Nation.
+[C] t 17: 60 says "Dark one!"
+law: 72 hits 0 (guards false / false)
+law: 10 hits 72 (guards true / false)
+law: 1 takes up task 64 on Person(0)
+law: 1 takes up task 25 on Person(0)
+[C] processed: clip None
+law view: goals 34 49 / 204 42 / 183 0 / 281 26; targets {}; cages 50
+law: 72 hits 0 (guards false / false)
+law: 72 picks a lock of 20 at skill 80: chance 0.90, roll 0.23
+[C] t 20: Lars: Shackles broken!
+law: 10 hits 72 (guards true / false)
+law: 72 picks a lock of 44 at skill 80: chance 0.90, roll 0.85
+[C] t 22: Lars has escaped from the cage.
+law: 0 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 1 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 4 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 8 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 10 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 11 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 12 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 14 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 15 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 16 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 17 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 18 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 19 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 20 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 21 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 29 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 30 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 31 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 32 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 33 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 42 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 47 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 59 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 61 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 62 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 63 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 65 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 66 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 71 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+[C] t 22: Lars has been caught escaping prison - bounty with The Holy Nation: c.5000
+[C] state 2, prison None, shackled false, escaped Some(("1083-gamedata.base", 0.20273460379937092)), crime Some((CrimeEscapePrison, "1083-gamedata.base"))
+look: 1 spots escaped prisoner 72
+look: 4 spots escaped prisoner 72
+law: alarm in town 12 for CrimeEscapePrison at [-33463, 377, -20257] (by 4)
+look: 10 spots escaped prisoner 72
+look: 11 spots escaped prisoner 72
+look: 12 spots escaped prisoner 72
+look: 13 spots escaped prisoner 72
+look: 14 spots escaped prisoner 72
+look: 15 spots escaped prisoner 72
+look: 16 spots escaped prisoner 72
+look: 17 spots escaped prisoner 72
+look: 18 spots escaped prisoner 72
+look: 19 spots escaped prisoner 72
+look: 20 spots escaped prisoner 72
+look: 21 spots escaped prisoner 72
+look: 22 spots escaped prisoner 72
+look: 29 spots escaped prisoner 72
+look: 30 spots escaped prisoner 72
+look: 31 spots escaped prisoner 72
+look: 32 spots escaped prisoner 72
+look: 33 spots escaped prisoner 72
+look: 42 spots escaped prisoner 72
+look: 47 spots escaped prisoner 72
+look: 59 spots escaped prisoner 72
+look: 61 spots escaped prisoner 72
+look: 62 spots escaped prisoner 72
+look: 63 spots escaped prisoner 72
+look: 65 spots escaped prisoner 72
+look: 66 spots escaped prisoner 72
+notice: 1 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 4 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 5 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 6 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 7 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 11 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 12 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 13 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 14 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 15 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 16 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 17 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 18 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 19 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 20 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 21 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 22 looks at 72: T 25.0, meter 0.00, noticed true
+[C] t 23: 4 says "Escapee! Arrest him!"
+[C] t 23: 29 says "Escapee! Arrest him!"
+[C] t 23: 42 says "Escapee! Get him!"
+[C] t 23: 59 says "Escapee! Get him!"
+law: 0 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 8 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 10 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 11 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 12 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 14 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 15 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 16 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 17 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 18 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 19 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 20 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 21 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 28 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 29 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 30 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 31 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 32 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 33 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 34 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 42 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 46 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 58 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 59 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 60 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 61 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 62 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 63 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 64 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 65 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 66 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 67 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 68 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 71 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+[C] t 23: 46 says "Corrupted heretic!"
+law: 10 hits 72 (guards true / false)
+look: 2 spots escaped prisoner 72
+look: 3 spots escaped prisoner 72
+look: 10 spots escaped prisoner 72
+look: 11 spots escaped prisoner 72
+look: 12 spots escaped prisoner 72
+look: 13 spots escaped prisoner 72
+look: 14 spots escaped prisoner 72
+look: 15 spots escaped prisoner 72
+look: 16 spots escaped prisoner 72
+look: 17 spots escaped prisoner 72
+look: 18 spots escaped prisoner 72
+look: 19 spots escaped prisoner 72
+look: 20 spots escaped prisoner 72
+look: 21 spots escaped prisoner 72
+look: 22 spots escaped prisoner 72
+look: 28 spots escaped prisoner 72
+look: 29 spots escaped prisoner 72
+look: 30 spots escaped prisoner 72
+look: 31 spots escaped prisoner 72
+look: 32 spots escaped prisoner 72
+look: 33 spots escaped prisoner 72
+look: 35 spots escaped prisoner 72
+look: 36 spots escaped prisoner 72
+look: 42 spots escaped prisoner 72
+look: 46 spots escaped prisoner 72
+look: 58 spots escaped prisoner 72
+look: 60 spots escaped prisoner 72
+look: 61 spots escaped prisoner 72
+look: 62 spots escaped prisoner 72
+look: 63 spots escaped prisoner 72
+look: 64 spots escaped prisoner 72
+look: 65 spots escaped prisoner 72
+look: 66 spots escaped prisoner 72
+look: 67 spots escaped prisoner 72
+look: 68 spots escaped prisoner 72
+notice: 1 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 4 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 5 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 6 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 7 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 11 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 13 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 14 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 15 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 16 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 17 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 18 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 21 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 22 looks at 72: T 25.0, meter 0.00, noticed true
+law: 0 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 1 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 2 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 3 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 4 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 8 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 10 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 11 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 12 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 13 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 14 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 15 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 16 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 17 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 18 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 19 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 20 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 21 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 22 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 28 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 29 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 30 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 31 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 32 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 33 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 35 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 36 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 42 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 44 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 45 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 58 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 59 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 60 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 61 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 62 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 63 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 64 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 65 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 66 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 67 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 68 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 71 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+[C] t 24: 2 says "Corrupted heretic!"
+look: 3 spots escaped prisoner 72
+look: 4 spots escaped prisoner 72
+look: 5 spots escaped prisoner 72
+look: 7 spots escaped prisoner 72
+look: 10 spots escaped prisoner 72
+look: 11 spots escaped prisoner 72
+look: 12 spots escaped prisoner 72
+look: 14 spots escaped prisoner 72
+look: 15 spots escaped prisoner 72
+look: 16 spots escaped prisoner 72
+look: 17 spots escaped prisoner 72
+look: 18 spots escaped prisoner 72
+look: 19 spots escaped prisoner 72
+look: 20 spots escaped prisoner 72
+look: 21 spots escaped prisoner 72
+look: 28 spots escaped prisoner 72
+look: 29 spots escaped prisoner 72
+look: 30 spots escaped prisoner 72
+look: 31 spots escaped prisoner 72
+look: 32 spots escaped prisoner 72
+look: 33 spots escaped prisoner 72
+look: 34 spots escaped prisoner 72
+look: 35 spots escaped prisoner 72
+look: 36 spots escaped prisoner 72
+look: 58 spots escaped prisoner 72
+look: 60 spots escaped prisoner 72
+look: 61 spots escaped prisoner 72
+look: 62 spots escaped prisoner 72
+look: 63 spots escaped prisoner 72
+look: 64 spots escaped prisoner 72
+look: 65 spots escaped prisoner 72
+look: 66 spots escaped prisoner 72
+look: 67 spots escaped prisoner 72
+look: 68 spots escaped prisoner 72
+notice: 1 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 2 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 3 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 4 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 5 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 6 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 7 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 11 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 12 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 13 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 14 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 15 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 16 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 17 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 18 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 19 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 20 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 21 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 22 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 29 looks at 72: T 25.0, meter 0.00, noticed true
+law: 0 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 2 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 3 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 4 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 5 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 7 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 8 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 10 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 11 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 12 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 14 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 15 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 16 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 17 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 18 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 19 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 20 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 21 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 28 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 29 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 30 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 31 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 32 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 33 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 34 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 35 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 36 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 58 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 59 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 60 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 61 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 62 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 63 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 64 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 65 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 66 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 67 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 68 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 71 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 72 hits 0 (guards false / false)
+look: 2 spots escaped prisoner 72
+look: 3 spots escaped prisoner 72
+look: 4 spots escaped prisoner 72
+look: 5 spots escaped prisoner 72
+look: 6 spots escaped prisoner 72
+look: 7 spots escaped prisoner 72
+look: 10 spots escaped prisoner 72
+look: 11 spots escaped prisoner 72
+look: 12 spots escaped prisoner 72
+look: 14 spots escaped prisoner 72
+look: 15 spots escaped prisoner 72
+look: 17 spots escaped prisoner 72
+look: 18 spots escaped prisoner 72
+look: 19 spots escaped prisoner 72
+look: 20 spots escaped prisoner 72
+look: 21 spots escaped prisoner 72
+look: 28 spots escaped prisoner 72
+look: 29 spots escaped prisoner 72
+look: 30 spots escaped prisoner 72
+look: 31 spots escaped prisoner 72
+look: 32 spots escaped prisoner 72
+look: 33 spots escaped prisoner 72
+look: 34 spots escaped prisoner 72
+look: 35 spots escaped prisoner 72
+look: 36 spots escaped prisoner 72
+look: 58 spots escaped prisoner 72
+look: 59 spots escaped prisoner 72
+look: 60 spots escaped prisoner 72
+look: 61 spots escaped prisoner 72
+look: 62 spots escaped prisoner 72
+look: 63 spots escaped prisoner 72
+look: 64 spots escaped prisoner 72
+look: 65 spots escaped prisoner 72
+look: 66 spots escaped prisoner 72
+look: 67 spots escaped prisoner 72
+look: 68 spots escaped prisoner 72
+notice: 1 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 2 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 3 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 4 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 5 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 6 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 7 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 11 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 12 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 13 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 14 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 15 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 16 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 17 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 18 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 19 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 20 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 21 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 22 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 29 looks at 72: T 25.0, meter 0.00, noticed true
+law: 0 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 1 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 2 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 3 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 4 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 5 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 6 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 7 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 8 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 10 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 11 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 12 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 14 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 15 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 17 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 18 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 19 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 20 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 21 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 28 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 29 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 30 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 31 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 32 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 33 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 34 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 35 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 36 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 57 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 58 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 59 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 60 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 61 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 62 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 63 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 64 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 65 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 66 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 67 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 68 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 69 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 71 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 10 hits 72 (guards true / false)
+look: 1 spots escaped prisoner 72
+look: 2 spots escaped prisoner 72
+look: 3 spots escaped prisoner 72
+look: 4 spots escaped prisoner 72
+look: 5 spots escaped prisoner 72
+look: 6 spots escaped prisoner 72
+look: 7 spots escaped prisoner 72
+look: 10 spots escaped prisoner 72
+look: 11 spots escaped prisoner 72
+look: 12 spots escaped prisoner 72
+look: 13 spots escaped prisoner 72
+look: 14 spots escaped prisoner 72
+look: 15 spots escaped prisoner 72
+look: 17 spots escaped prisoner 72
+look: 18 spots escaped prisoner 72
+look: 19 spots escaped prisoner 72
+look: 20 spots escaped prisoner 72
+look: 21 spots escaped prisoner 72
+look: 28 spots escaped prisoner 72
+look: 29 spots escaped prisoner 72
+look: 30 spots escaped prisoner 72
+look: 31 spots escaped prisoner 72
+look: 32 spots escaped prisoner 72
+look: 33 spots escaped prisoner 72
+look: 34 spots escaped prisoner 72
+look: 35 spots escaped prisoner 72
+look: 36 spots escaped prisoner 72
+look: 57 spots escaped prisoner 72
+look: 58 spots escaped prisoner 72
+look: 59 spots escaped prisoner 72
+look: 60 spots escaped prisoner 72
+look: 61 spots escaped prisoner 72
+look: 62 spots escaped prisoner 72
+look: 63 spots escaped prisoner 72
+look: 64 spots escaped prisoner 72
+look: 65 spots escaped prisoner 72
+look: 66 spots escaped prisoner 72
+look: 67 spots escaped prisoner 72
+look: 68 spots escaped prisoner 72
+notice: 1 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 2 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 3 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 4 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 5 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 6 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 7 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 11 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 12 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 13 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 14 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 15 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 16 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 17 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 18 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 19 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 20 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 21 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 22 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 29 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 33 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 61 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 63 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 65 looks at 72: T 25.0, meter 0.00, noticed true
+notice: 66 looks at 72: T 25.0, meter 0.00, noticed true
+law: 0 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 1 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 2 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 3 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 5 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 6 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 7 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 8 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 10 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 11 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 12 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 13 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 14 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 15 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 16 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 17 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 18 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 19 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 20 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 21 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 28 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 30 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 31 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 32 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 33 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 34 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 35 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 36 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 57 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 58 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 59 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 60 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 61 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 62 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 63 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 64 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 65 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 66 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 67 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 68 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+law: 71 saw 72 commit CrimeEscapePrison against 1083-gamedata.base (event 41)
+[C] t 28: 46 says "Behave!"
+[C] after: state 2, blown 250, bounty 5000
+law: 72 hits 13 (guards false / true)
+[D] t 28: Lars has been caught assaulting - bounty with The Holy Nation: c.500
+law: 10 takes up task 64 on Person(13)
+law: 10 takes up task 25 on Person(13)
+law: 10 takes up task 64 on Person(13)
+law: 10 takes up task 25 on Person(13)
+law: alarm in town 12 for CrimeAssault at [-33345, 352, -20376] (by 1)
+law: 1 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 2 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 3 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 4 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 5 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 6 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 7 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 10 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 13 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 15 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 16 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 17 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 20 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 21 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 22 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 28 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 29 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 30 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 31 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 32 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 33 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 34 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 35 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 36 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 42 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 47 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 57 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 58 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 59 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 60 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 61 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 62 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 63 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 64 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 65 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 66 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 67 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 68 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 69 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+law: 71 saw 72 commit CrimeAssault against 1083-gamedata.base (event 41)
+[D] t 28: 1 says "Assault!"
+[D] t 28: 3 says "We must purge our lands from all darkness!"
+[D] t 28: 4 says "Attack him!"
+[D] t 28: 5 says "We must purge our lands from all darkness!"
+[D] t 28: 6 says "Darkness be purged by the light of Okran!"
+[D] t 28: 7 says "He mustn't get away!"
+[D] t 28: 28 says "He will not evade the fire of Okran!"
+[D] t 28: 29 says "We must purge our lands from all darkness!"
+[D] t 28: 33 says "Get him!"
+[D] t 28: 35 says "Light of Okran, bestow me the strength to purge this darkness!"
+[D] t 28: 36 says "He mustn't get away!"
+[D] t 28: 58 says "He will not evade the light of Okran!"
+[D] t 28: 60 says "He will not evade the fire of Okran!"
+[D] t 28: 61 says "Light of Okran, give us the strength to repel this darkness!"
+[D] t 28: 62 says "Light of Okran, give us the strength to repel this darkness!"
+[D] t 28: 63 says "He mustn't get away!"
+[D] t 28: 64 says "Get him!"
+[D] t 28: 65 says "Light of Okran, bestow me the strength to purge this darkness!"
+[D] t 28: 66 says "Light of Okran, give us the strength to repel this darkness!"
+[D] t 28: 67 says "He will not escape the cleansing of Okran!"
+[D] t 28: 68 says "Get him!"
+[D] t 28: 69 says "Order!"
+[D] t 29: 2 says "Order!"
+[D] t 29: apart 8, me Idle Some(4), guard Attack
+[D] me active true focus Some(1), guard 1 active true down false
+[D] bounty 500, crime Some((CrimeAssault, 19.683338)), down false
+[E] t 29: Lars has been imprisoned by The Holy Nation for 16 hours.
+[E] t 29: 29 says "Ack!"
+law: 18 takes up task 64 on Person(13)
+law: 18 takes up task 25 on Person(13)
+law: 18 takes up task 64 on Person(13)
+law: 10 takes up task 64 on Person(13)
+law: 18 takes up task 25 on Person(13)
+law: 10 takes up task 25 on Person(13)
+[E] t 30: Lars has been released from prison.
+law view: goals 34 49 / 204 42 / 183 0 / 281 26; targets {(10, 204): 72, (11, 204): 72, (12, 204): 72, (14, 204): 72, (15, 204): 72, (17, 204): 72, (18, 204): 72, (19, 204): 72, (20, 204): 72, (30, 204): 72, (31, 204): 72, (32, 204): 72, (33, 204): 72, (34, 204): 72, (35, 204): 72, (36, 204): 72, (57, 204): 72, (58, 204): 72, (59, 204): 72, (60, 204): 72, (61, 204): 72, (62, 204): 72, (63, 204): 72, (64, 204): 72, (65, 204): 72, (66, 204): 72, (67, 204): 72, (68, 204): 72, (69, 204): 72}; cages 50
+law: 13 takes up task 64 on Person(13)
+[E] prison false, lately released true
+[F] t 31: 2 says "What is-?!"
+[F] t 31: 33 says "What is-?!"
+[F] t 31: 58 says "What!?"
+[F] t 31: 69 says "Stop this! Tainted heretic!"
+[F] t 31: 29 says "How dare you!"
+law: alarm in town 12 for CrimeStealing at [-33336, 350, -20382] (by 1)
+[F] alarm raised true: [2]
+[F] t 32: 35 says "What are-!"
+[F] t 32: 65 says "Arrrgh!"
+law: 72 hits 7 (guards false / true)
+law: 72 hits 5 (guards false / true)
+law: 72 hits 16 (guards false / true)
+law: 72 hits 60 (guards false / true)
+law: 72 hits 62 (guards false / true)
+law: 72 hits 66 (guards false / true)
+law: 72 hits 61 (guards false / true)
+law: 72 hits 64 (guards false / true)
+law: 72 hits 1 (guards false / true)
+law: 72 hits 29 (guards false / true)
+law: 72 hits 4 (guards false / true)
+[F] t 32: Lars has been caught stealing - bounty with The Holy Nation: c.2500
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 2 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 3 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 4 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 5 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 6 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 7 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 10 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 12 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 13 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 15 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 16 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 17 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 18 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 19 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 20 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 21 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 22 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 28 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 29 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 30 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 31 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 32 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 33 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 34 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 35 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 36 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 57 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 58 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 59 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 60 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 61 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 62 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 63 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 64 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 65 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 66 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 67 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 68 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 69 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 71 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+[F] t 33: investigating [], alarms [[(CrimeAssault, 3), (CrimeStealing, 6)]], near 42
+notice: 23 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 28 looks at 72: T 45.0, meter 0.00, noticed true
+[F] t 33: 28 says "You!?"
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 2 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 3 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 4 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 5 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 6 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 7 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 10 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 12 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 16 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 17 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 18 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 19 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 20 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 21 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 22 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 28 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 29 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 30 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 31 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 32 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 33 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 34 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 35 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 36 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 45 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 46 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 57 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 58 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 59 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 60 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 61 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 62 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 63 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 64 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 65 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 66 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 67 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 68 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 69 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 71 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+[F] t 34: 58 says "Heretic! Attack him!"
+notice: 23 looks at 72: T 45.0, meter 0.00, noticed true
+[F] t 34: 2 says "You heretic! You rat!"
+[F] t 34: 33 says "I'll lock you up!"
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 2 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 3 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 4 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 5 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 6 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 7 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 10 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 12 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 13 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 16 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 17 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 18 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 19 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 20 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 21 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 22 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 27 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 28 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 29 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 30 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 31 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 32 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 33 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 34 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 35 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 36 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 43 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 44 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 45 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 46 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 47 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 48 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 57 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 58 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 59 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 60 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 61 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 62 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 64 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 66 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 67 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 68 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 69 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 71 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+[F] t 35: 65 says "Get him! Get the heretic!"
+notice: 23 looks at 72: T 45.0, meter 0.00, noticed true
+[F] t 35: 35 says "I'll lock you up!"
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 2 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 3 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 4 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 5 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 6 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 7 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 10 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 12 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 13 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 16 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 17 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 18 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 19 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 20 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 21 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 22 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 28 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 29 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 30 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 31 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 32 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 33 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 34 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 35 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 36 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 43 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 44 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 45 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 46 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 47 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 48 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 57 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 58 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 59 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 60 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 61 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 62 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 64 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 66 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 67 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 68 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 69 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 71 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+[F] t 36: 28 says "You heretic! You worm!"
+notice: 23 looks at 72: T 45.0, meter 0.00, noticed true
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 2 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 3 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 4 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 5 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 6 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 7 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 10 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 13 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 16 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 17 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 18 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 19 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 20 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 21 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 22 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 28 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 29 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 30 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 31 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 32 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 33 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 34 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 35 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 36 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 42 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 43 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 44 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 45 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 46 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 47 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 48 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 57 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 58 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 59 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 60 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 61 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 62 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 63 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 64 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 66 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 67 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 68 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 69 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 71 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 2 hits 72 (guards true / false)
+[F] t 37: investigating [], alarms [[(CrimeStealing, 2)]], near 49
+notice: 23 looks at 72: T 45.0, meter 0.00, noticed true
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 2 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 3 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 4 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 5 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 6 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 7 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 10 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 13 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 16 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 17 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 18 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 19 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 20 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 21 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 22 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 27 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 28 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 29 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 30 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 31 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 32 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 33 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 34 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 35 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 36 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 42 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 43 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 44 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 45 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 46 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 47 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 48 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 57 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 58 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 59 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 60 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 61 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 62 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 63 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 64 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 65 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 66 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 67 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 68 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 69 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 71 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 10 hits 72 (guards true / false)
+notice: 23 looks at 72: T 45.0, meter 0.00, noticed true
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 2 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 3 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 4 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 5 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 6 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 7 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 10 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 13 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 16 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 17 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 18 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 19 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 20 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 21 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 22 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 27 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 28 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 29 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 30 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 31 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 32 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 33 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 34 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 35 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 36 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 42 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 43 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 44 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 45 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 46 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 47 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 48 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 57 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 58 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 59 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 60 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 61 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 62 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 63 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 64 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 65 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 66 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 67 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 68 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 69 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 71 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+notice: 23 looks at 72: T 45.0, meter 0.00, noticed true
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 2 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 3 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 4 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 5 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 6 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 7 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 10 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 12 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 13 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 16 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 17 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 18 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 19 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 20 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 21 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 22 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 28 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 29 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 30 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 31 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 32 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 33 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 34 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 35 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 36 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 42 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 43 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 44 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 45 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 46 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 47 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 48 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 57 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 58 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 59 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 60 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 61 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 62 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 63 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 64 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 65 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 66 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 67 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 68 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 69 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 71 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+t 39.7 person 72 is knocked out
+law: 2 hits 72 (guards true / false)
+notice: 2 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 10 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 23 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 28 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 57 looks at 72: T 45.0, meter 0.00, noticed true
+law view: goals 34 49 / 204 42 / 183 0 / 281 26; targets {(10, 204): 72, (11, 204): 72, (12, 204): 72, (13, 204): 72, (14, 204): 72, (15, 204): 72, (16, 204): 72, (17, 204): 72, (18, 204): 72, (19, 204): 72, (20, 204): 72, (21, 204): 72, (22, 204): 72, (29, 204): 72, (30, 204): 72, (31, 204): 72, (32, 204): 72, (33, 204): 72, (34, 204): 72, (35, 204): 72, (36, 204): 72, (41, 204): 72, (42, 204): 72, (43, 204): 72, (44, 204): 72, (45, 204): 72, (46, 204): 72, (47, 204): 72, (48, 204): 72, (57, 204): 72, (58, 204): 72, (59, 204): 72, (60, 204): 72, (61, 204): 72, (62, 204): 72, (63, 204): 72, (64, 204): 72, (65, 204): 72, (66, 204): 72, (67, 204): 72, (68, 204): 72, (69, 204): 72}; cages 50
+law: 69 takes up task 64 on Person(64)
+law: 10 takes up task 68 on Person(72)
+law: 64 takes up task 64 on Person(64)
+law: 69 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 18 takes up task 64 on Person(16)
+law: 64 takes up task 64 on Person(64)
+law: 18 takes up task 25 on Person(16)
+law: 18 takes up task 64 on Person(16)
+law: 18 takes up task 25 on Person(16)
+law: 35 takes up task 68 on Person(72)
+law: 10 takes up task 25 on Person(16)
+law: 10 takes up task 64 on Person(16)
+law: 10 takes up task 25 on Person(16)
+law: 29 takes up task 68 on Person(72)
+law: 62 takes up task 64 on Person(64)
+law: 62 takes up task 25 on Person(64)
+law: 34 takes up task 68 on Person(72)
+law: 20 takes up task 64 on Person(16)
+law: 22 takes up task 68 on Person(72)
+law: 20 takes up task 25 on Person(16)
+law: 63 takes up task 64 on Person(64)
+law: 63 takes up task 25 on Person(64)
+law: 62 takes up task 64 on Person(64)
+law: 1 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 2 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 3 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 4 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 5 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 6 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 7 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 10 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 13 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 16 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 18 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 19 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 21 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 22 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 28 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 29 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 33 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 34 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 35 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 36 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 42 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 43 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 44 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 45 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 46 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 47 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 48 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 57 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 58 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 59 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 60 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 61 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 62 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 63 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 64 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 66 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 67 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 68 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 69 saw 72 commit CrimeStealing against 1083-gamedata.base (event 42)
+law: 62 takes up task 25 on Person(64)
+law: 45 takes up task 68 on Person(72)
+law: 62 takes up task 64 on Person(64)
+law: 62 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 36 takes up task 68 on Person(72)
+law: 64 takes up task 64 on Person(64)
+law: 62 takes up task 64 on Person(64)
+law: 62 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 13 takes up task 64 on Person(16)
+law: 46 takes up task 68 on Person(72)
+law: 64 takes up task 64 on Person(64)
+law: 13 takes up task 25 on Person(16)
+law: 62 takes up task 64 on Person(64)
+law: 62 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 48 takes up task 68 on Person(72)
+law: 62 takes up task 64 on Person(64)
+law: 62 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 62 takes up task 64 on Person(64)
+law: 57 takes up task 64 on Person(64)
+law: 62 takes up task 25 on Person(64)
+law: 57 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 62 takes up task 64 on Person(64)
+law: 62 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 62 takes up task 64 on Person(64)
+law: 62 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 58 takes up task 64 on Person(64)
+law: 69 takes up task 64 on Person(64)
+law: 58 takes up task 25 on Person(64)
+law: 62 takes up task 64 on Person(64)
+law: 69 takes up task 25 on Person(64)
+law: 43 takes up task 68 on Person(72)
+law: 62 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 58 takes up task 64 on Person(64)
+law: 67 takes up task 64 on Person(64)
+law: 69 takes up task 64 on Person(64)
+law: 44 takes up task 68 on Person(72)
+law: 58 takes up task 25 on Person(64)
+law: 62 takes up task 64 on Person(64)
+law: 67 takes up task 25 on Person(64)
+law: 69 takes up task 25 on Person(64)
+law: 10 takes up task 64 on Person(16)
+law: 62 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 10 takes up task 25 on Person(16)
+law: 58 takes up task 64 on Person(64)
+law: 69 takes up task 64 on Person(64)
+law: 58 takes up task 25 on Person(64)
+law: 59 takes up task 64 on Person(64)
+law: 62 takes up task 64 on Person(64)
+law: 69 takes up task 25 on Person(64)
+law: 59 takes up task 25 on Person(64)
+law: 62 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+[F] t 41: investigating [], alarms [], near 0
+law: 58 takes up task 64 on Person(64)
+law: 69 takes up task 64 on Person(64)
+law: 47 takes up task 68 on Person(72)
+law: 58 takes up task 25 on Person(64)
+law: 59 takes up task 64 on Person(64)
+law: 62 takes up task 64 on Person(64)
+law: 68 takes up task 64 on Person(64)
+law: 69 takes up task 25 on Person(64)
+law: 59 takes up task 25 on Person(64)
+law: 62 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(64)
+law: 68 takes up task 25 on Person(64)
+law: 58 takes up task 64 on Person(64)
+law: 69 takes up task 64 on Person(64)
+notice: 2 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 10 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 23 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 28 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 57 looks at 72: T 45.0, meter 0.00, noticed true
+law: 58 takes up task 25 on Person(64)
+law: 59 takes up task 64 on Person(64)
+law: 62 takes up task 64 on Person(64)
+law: 68 takes up task 64 on Person(64)
+law: 69 takes up task 25 on Person(64)
+law: 59 takes up task 25 on Person(64)
+law: 62 takes up task 25 on Person(64)
+law: 64 takes up task 64 on Person(62)
+law: 68 takes up task 25 on Person(64)
+law: 58 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 42 takes up task 68 on Person(72)
+law: 62 takes up task 64 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 57 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+t 41.2 person 35 picks up 72
+law: 10 takes up task 68 on Person(72)
+law: 62 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 36 takes up task 68 on Person(72)
+law: 57 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 57 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 57 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 57 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 57 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 57 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 57 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 57 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 57 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 16 takes up task 68 on Person(72)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 57 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 67 takes up task 64 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 59 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 67 takes up task 25 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 57 takes up task 64 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 59 takes up task 25 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 69 takes up task 64 on Person(62)
+law: 57 takes up task 25 on Person(62)
+law: 62 takes up task 25 on Person(62)
+law: 69 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 62 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 62 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 62 takes up task 25 on Person(62)
+law: 47 takes up task 68 on Person(72)
+law: 58 takes up task 25 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 33 takes up task 68 on Person(72)
+law: 62 takes up task 25 on Person(62)
+law: 16 takes up task 68 on Person(72)
+law: 58 takes up task 25 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 62 takes up task 25 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 58 takes up task 64 on Person(62)
+law: 64 takes up task 64 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 58 takes up task 25 on Person(62)
+law: 62 takes up task 64 on Person(62)
+law: 64 takes up task 25 on Person(62)
+law: 13 takes up task 68 on Person(72)
+law: 62 takes up task 64 on Person(62)
+law: 68 takes up task 64 on Person(62)
+law: 68 takes up task 25 on Person(62)
+law: 30 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 30 takes up task 25 on Person(29)
+law: 31 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 31 takes up task 25 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 30 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 30 takes up task 25 on Person(29)
+law: 31 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 31 takes up task 25 on Person(29)
+law: 32 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 32 takes up task 25 on Person(29)
+law: 59 takes up task 25 on Person(62)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 32 takes up task 64 on Person(29)
+law: 29 takes up task 25 on Person(29)
+law: 32 takes up task 25 on Person(29)
+law: 30 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 30 takes up task 25 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 31 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 31 takes up task 25 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 32 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 32 takes up task 25 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 30 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 30 takes up task 25 on Person(29)
+law: 29 takes up task 25 on Person(29)
+law: 29 takes up task 25 on Person(29)
+law: 29 takes up task 25 on Person(29)
+law: 31 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 31 takes up task 25 on Person(29)
+law: 32 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 32 takes up task 25 on Person(29)
+law: 29 takes up task 25 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 31 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 31 takes up task 25 on Person(29)
+law: 32 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 32 takes up task 25 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 30 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 30 takes up task 25 on Person(29)
+law: 32 takes up task 64 on Person(29)
+law: 33 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 32 takes up task 25 on Person(29)
+law: 33 takes up task 25 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 31 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 31 takes up task 25 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 34 takes up task 64 on Person(29)
+law: 29 takes up task 64 on Person(29)
+law: 30 takes up task 64 on Person(29)
+law: 34 takes up task 25 on Person(29)
+law: 30 takes up task 25 on Person(29)
+[F] t 45: investigating [], alarms [], near 0
+[F] t 49: investigating [], alarms [], near 0
+law view: goals 34 49 / 204 42 / 183 0 / 281 26; targets {}; cages 50
+[G] t 52: Lars now has a bounty with The Holy Nation: c.5500
+[G] t 53: carried by Some(35), down true, weapons 0
+[G]   carrier 35: current Some((112, None)), queue [(1, Furniture(179)), (108, Furniture(179)), (112, None)], orders [4], cage Some(179)
+law view: goals 34 49 / 204 42 / 183 0 / 281 26; targets {}; cages 50
+[G] t 60: Lars has been imprisoned by The Holy Nation for 110 hours.
+[G] t 60: caged Some(179)
+[H] t 66: 8 says "Do you have a copy of the Holy Flame, brother?"
+[H] kidnap 0: is kidnap true, down true; me down false carrying None prison false
+[H] pending [(72, 0)]
+[H] carrying Some(0), pending [], crime Some((CrimeKidnapping, "1083-gamedata.base", Some(0)))
+law: 4 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 8 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 10 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 11 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 14 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 16 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 17 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 22 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 28 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 30 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 31 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 32 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 35 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 42 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 43 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 47 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 58 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+[H] t 67: Lars has been caught kidnapping - bounty with The Holy Nation: c.5000
+t 67.6 person 72 is knocked out
+law: 47 hits 72 (guards true / false)
+notice: 1 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 2 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 3 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 4 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 5 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 6 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 7 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 10 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 11 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 12 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 13 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 14 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 15 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 16 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 17 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 19 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 21 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 22 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 28 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 35 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 42 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 43 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 44 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 46 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 47 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 48 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 58 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 64 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 68 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 69 looks at 72: T 45.0, meter 0.00, noticed true
+law: 10 takes up task 68 on Person(72)
+law: 2 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 4 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 10 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 14 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 15 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 17 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 22 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 28 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 35 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 44 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 47 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 58 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 69 saw 72 commit CrimeKidnapping against 1083-gamedata.base (event 58)
+law: 47 takes up task 68 on Person(72)
+law: 35 takes up task 68 on Person(72)
+notice: 1 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 2 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 3 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 4 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 5 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 6 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 7 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 10 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 11 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 12 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 13 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 14 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 15 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 16 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 17 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 19 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 21 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 22 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 28 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 35 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 42 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 43 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 44 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 46 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 47 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 48 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 58 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 64 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 68 looks at 72: T 45.0, meter 0.00, noticed true
+notice: 69 looks at 72: T 45.0, meter 0.00, noticed true
+t 69.2 person 10 picks up 72
+law: 47 takes up task 68 on Person(72)
+law: 17 takes up task 68 on Person(72)
+law: 14 takes up task 68 on Person(72)
+law view: goals 34 49 / 204 42 / 183 0 / 281 26; targets {}; cages 50
+law: 42 takes up task 68 on Person(72)
+[H] bounty 5000, alarms []
+exit 0

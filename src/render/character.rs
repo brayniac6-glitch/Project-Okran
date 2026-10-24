@@ -719,9 +719,22 @@ pub fn animate_characters(
 }
 
 /// Strip clip tracks as the original's animation loader does (F046693): each ANIMATION record's
-/// "delete ..." bones (F046685) and the lower body of blocks (F046682).
+/// "delete ..." bones (F046685) and the lower body of blocks (F046682). First, as it does, each
+/// clip copy the records were given (F046697, `split_shared_clips`) is cloned from its shared clip,
+/// so each record strips its own.
 pub fn strip_tracks(c: &mut CharacterAsset, data: &GameDataContainer) {
-    use kenshi_anim::select::{BELOW_WAIST, deleted_bones};
+    use kenshi_anim::select::{BELOW_WAIST, clip_copies, deleted_bones};
+    for (shared, copy) in clip_copies(data) {
+        let has = |n: &str| c.animations.iter().any(|a| a.name.eq_ignore_ascii_case(n));
+        if has(&copy) {
+            continue;
+        }
+        if let Some(a) = c.animations.iter().find(|a| a.name.eq_ignore_ascii_case(&shared)) {
+            let mut a = a.clone();
+            a.name = copy;
+            c.animations.push(a);
+        }
+    }
     let mut strip: std::collections::HashMap<String, Vec<&str>> = Default::default();
     for r in data.of_type(ItemType::Animation) {
         let bones = deleted_bones(r);

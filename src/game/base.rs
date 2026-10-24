@@ -24,6 +24,144 @@ pub const BUILDING_MATERIAL: &str = "580-gamedata.base";
 
 pub use crate::production::is_farm;
 
+/// The class the building factory makes of a BUILDING record (F038257): by its "farm data", else
+/// its functionality's "function".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildingClass {
+    /// No functionality, or one of function 0, 0x12, 13 (general storage) or another the factory
+    /// makes a plain building of (F029399).
+    Plain,
+    /// "farm data": FarmBuilding (F022915).
+    Farm,
+    /// Function 1 or 4: ProductionBuilding (F029411).
+    Production,
+    /// Function 2: StorageBuilding (F029410).
+    Storage,
+    /// Function 3: ResearchBuilding (F029408).
+    Research,
+    /// Function 5 with "consumes", or 0x17: GeneratorBuilding; 5 without: WindGeneratorBuilding.
+    Generator,
+    WindGenerator,
+    /// Function 8 with "produces" or "flags": TortureBuilding.
+    Torture,
+    /// Function 10: CraftingBuilding (F029669).
+    Crafting,
+    /// Function 0xc (F033883), 0xe (F029417) and 0xf (F037863).
+    Function12,
+    Furnace,
+    Function15,
+    /// Function 0x1a: RainCollectorBuilding.
+    RainCollector,
+}
+
+impl BuildingClass {
+    /// @fn F038257
+    pub fn of(data: &GameDataContainer, b: &GameData) -> BuildingClass {
+        if is_farm(b) {
+            return BuildingClass::Farm;
+        }
+        let Some(f) = functionality(b).and_then(|r| data.get(r)) else { return BuildingClass::Plain };
+        match f.ints.get("function").copied().unwrap_or(0) {
+            1 | 4 => BuildingClass::Production,
+            2 => BuildingClass::Storage,
+            3 => BuildingClass::Research,
+            5 if f.refs("consumes").is_empty() => BuildingClass::WindGenerator,
+            5 | 0x17 => BuildingClass::Generator,
+            8 if !f.refs("produces").is_empty() || f.ints.get("flags").copied().unwrap_or(0) != 0 => BuildingClass::Torture,
+            10 => BuildingClass::Crafting,
+            0xc => BuildingClass::Function12,
+            0xe => BuildingClass::Furnace,
+            0xf => BuildingClass::Function15,
+            0x1a => BuildingClass::RainCollector,
+            _ => BuildingClass::Plain,
+        }
+    }
+
+    /// Made with ProductionBuilding's constructor (F029411) and set up by its
+    /// setupFunctionality (F029392): the production buildings, the generators, the torture
+    /// buildings, the rain collectors and the farms.
+    pub fn is_production(self) -> bool {
+        matches!(self, BuildingClass::Production | BuildingClass::Generator | BuildingClass::WindGenerator | BuildingClass::Torture | BuildingClass::RainCollector | BuildingClass::Farm)
+    }
+
+    /// The building's type (Building +0x198, set by the constructors: 4 a ProductionBuilding and
+    /// those made with its constructor, 13 a farm, 3 a storage, 6 a crafting bench, 10 F029417's).
+    /// (assumption) 0 for the others (their constructors not read).
+    pub fn kind(self) -> i32 {
+        match self {
+            BuildingClass::Farm => 0xd,
+            c if c.is_production() => 4,
+            BuildingClass::Storage => 3,
+            BuildingClass::Crafting => 6,
+            BuildingClass::Furnace => 10,
+            _ => 0,
+        }
+    }
+}
+
+/// A StorageBuilding's category (+0x440: its "itemtype limit"; F029410).
+pub fn storage_category(b: &GameData) -> i32 {
+    b.ints.get("itemtype limit").copied().unwrap_or(4)
+}
+
+/// @fn F029410
+///
+/// A StorageBuilding's typed containers (its +0x450 list; the first is +0x448): one for each
+/// "limit inventory" item, all in its storage section, with no limit (-1); kept to one item, the
+/// section is that item's footprint and the limit its "stackable bonus mult".
+pub fn storage_entries(b: &GameData) -> Vec<(String, i32)> {
+    let items: Vec<String> = b.refs("limit inventory").iter().map(|(s, _)| s.clone()).collect();
+    let single = items.len() == 1;
+    let most = if single { b.floats.get("stackable bonus mult").copied().or_else(|| b.ints.get("stackable bonus mult").map(|&v| v as f32)).unwrap_or(1.0) as i32 } else { -1 };
+    items.into_iter().map(|r| (r, most)).collect()
+}
+
+/// Whether a StorageBuilding is kept from emptying (+0x444: its functionality's "flags" 1, the
+/// food stores'; F029349 lists none of its items then).
+pub fn storage_kept(data: &GameDataContainer, b: &GameData) -> bool {
+    functionality(b).and_then(|r| data.get(r)).is_some_and(|f| f.ints.get("flags").copied().unwrap_or(0) == 1)
+}
+
+/// The inventory a built building of record `b` has: a ProductionBuilding's containers
+/// (F029411 makes the inventory when its functionality "consumes" or "produces"; F029392 the
+/// containers), else with "has inventory" its storage section (F037797: "storage size width" x
+/// "height", taking weapons only for an "itemtype limit" of 2, armour only for 3; its stack the
+/// "stackable bonus minimum" times the "stackable bonus mult"), a StorageBuilding's kept to its
+/// "limit inventory" (F029410: one item, its footprint). `None` for a class whose set-up is
+/// still the old one (the crafting benches' F029659, the furnaces' F029393: their storage grid
+/// is kept as made).
+pub fn building_inventory(data: &GameDataContainer, b: &GameData) -> Option<Option<Inventory>> {
+    let class = BuildingClass::of(data, b);
+    if matches!(class, BuildingClass::Crafting | BuildingClass::Furnace) {
+        return None;
+    }
+    if class.is_production() {
+        let f = functionality(b).and_then(|r| data.get(r));
+        if f.is_some_and(|f| !f.refs("consumes").is_empty() || !f.refs("produces").is_empty()) {
+            return Some(crate::production::machine_inventory(data, b));
+        }
+    }
+    if !b.bools.get("has inventory").copied().unwrap_or(false) {
+        return Some(None);
+    }
+    let int = |k: &str| b.ints.get(k).copied().unwrap_or(0);
+    let limit = storage_category(b);
+    let mut sec = Section::new("main", int("storage size width").max(1) as u32, int("storage size height").max(1) as u32, if limit == 2 { 0 } else { kenshi_char::inventory::ANY });
+    sec.armour = limit == 3;
+    sec.stack = int("stackable bonus minimum").max(0) as u32;
+    sec.mult = b.floats.get("stackable bonus mult").copied().or_else(|| b.ints.get("stackable bonus mult").map(|&v| v as f32)).unwrap_or(1.0);
+    if class == BuildingClass::Storage {
+        let entries = storage_entries(b);
+        sec.only = entries.iter().map(|(r, _)| r.clone()).collect();
+        if entries.len() == 1
+            && let Some(item) = data.get(&entries[0].0).map(|r| Item::from_record(r, 1))
+        {
+            (sec.w, sec.h) = (item.w, item.h);
+        }
+    }
+    Some(Some(Inventory { sections: vec![sec] }))
+}
+
 /// A building of the player's.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlayerBuilding {
@@ -35,6 +173,12 @@ pub struct PlayerBuilding {
     /// Its materials (item record, count) and how many have gone in.
     pub materials: Vec<(String, u32)>,
     pub used: u32,
+    /// Materials put in beyond what its record needs: those of the record it was before an
+    /// upgrade or downgrade, kept on its construction with no need (F037832 keeps the entries
+    /// the new record does not name) for a downgrade back, and given back when it is taken
+    /// down (crate::upgrade).
+    #[serde(default)]
+    pub spare: Vec<(String, u32)>,
     /// Work done, in materials' worth (built at the materials' total).
     pub progress: f32,
     /// "build speed mult".
@@ -43,6 +187,22 @@ pub struct PlayerBuilding {
     pub confirmed: bool,
     /// Built.
     pub done: bool,
+    /// Its construction paused (the construction state's +1, Building +0x161: the panel's
+    /// PAUSE CONSTRUCTION, F037657): engineers looking for work pass it by (F050345).
+    #[serde(default)]
+    pub paused: bool,
+    /// Open to the public (Building +0xc8: set as it is made, F037841; the panel's button for
+    /// one with an interior turns it, F037656; Building::isPublic, F037699).
+    #[serde(default = "yes")]
+    pub public: bool,
+    /// A machine's power switch (Building +0x3b5, the panel's "Power" tick, F029299): switched
+    /// off it neither draws nor gives power, nor works. And whether a consumer may run off the
+    /// batteries when the generators fall short (+0x3b4, the "Battery" tick, F029300; set as
+    /// UseableStuff is made, F029399).
+    #[serde(default = "yes")]
+    pub switched_on: bool,
+    #[serde(default = "yes")]
+    pub on_battery: bool,
     /// Its storage ("has inventory"): one section of "storage size width" x "height".
     #[serde(skip)]
     pub storage: Option<Inventory>,
@@ -71,6 +231,12 @@ pub struct PlayerBuilding {
     pub death: f32,
     #[serde(default)]
     pub water: f32,
+    /// A farm's plants (+0x4f8: each one's growth, -10 once taken off; FARM_DATA "amount" of
+    /// them) and how many are taken off (+0x528).
+    #[serde(default)]
+    pub plants: Vec<f32>,
+    #[serde(default)]
+    pub harvested: u32,
     #[serde(default)]
     pub work: f32,
     /// A fuel generator's fuel left (in items' worth).
@@ -85,6 +251,44 @@ pub struct PlayerBuilding {
     /// while it burns): what its spinning parts turn by (rotation function 2). Not saved.
     #[serde(skip)]
     pub running: f32,
+    /// Its inventory made as its class makes it (`building_inventory`, `Sim::setup_inventories`),
+    /// once built. Not saved: made again on loading.
+    #[serde(skip)]
+    pub containers_made: bool,
+}
+
+impl Sim {
+    /// Building `b`'s class (F038257).
+    pub fn building_class(&self, b: usize) -> BuildingClass {
+        self.buildings.get(b).and_then(|pb| self.data.get(&pb.record)).map_or(BuildingClass::Plain, |r| BuildingClass::of(&self.data, r))
+    }
+
+    /// Building `b` built is a machine (vtable +0x3b0: a ProductionBuilding or one made like it,
+    /// a crafting bench, a furnace).
+    pub fn is_machine(&self, b: usize) -> bool {
+        let c = self.building_class(b);
+        self.buildings.get(b).is_some_and(|pb| pb.done) && (c.is_production() || matches!(c, BuildingClass::Crafting | BuildingClass::Furnace))
+    }
+
+    /// Building `b` built is a StorageBuilding (+0x2f8 without +0x3b0).
+    pub fn is_storage_building(&self, b: usize) -> bool {
+        self.buildings.get(b).is_some_and(|pb| pb.done) && self.building_class(b) == BuildingClass::Storage
+    }
+
+    /// Building `b`'s "max operators" (+0x3ac, F029391: the building's, else its
+    /// functionality's when negative).
+    pub fn max_operators_of(&self, b: usize) -> i32 {
+        let Some(rec) = self.buildings.get(b).and_then(|pb| self.data.get(&pb.record)) else { return 0 };
+        let own = rec.ints.get("max operators").copied().unwrap_or(-1);
+        if own >= 0 {
+            return own;
+        }
+        crate::production::function_of(&self.data, rec).and_then(|(f, _)| f.ints.get("max operators").copied()).unwrap_or(1)
+    }
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl PlayerBuilding {
@@ -111,8 +315,13 @@ impl PlayerBuilding {
             at,
             yaw,
             done: materials.is_empty(),
+            paused: false,
+            public: true,
+            switched_on: true,
+            on_battery: true,
             progress: 0.0,
             used: 0,
+            spare: Vec::new(),
             speed: float("build speed mult").max(0.01),
             materials,
             confirmed: false,
@@ -124,11 +333,14 @@ impl PlayerBuilding {
             stage: 0.0,
             death: 0.0,
             water: 0.0,
+            plants: Vec::new(),
+            harvested: 0,
             work: 0.0,
             fuel: 0.0,
             craft_queue: Vec::new(),
             craft_repeat: false,
             running: 0.0,
+            containers_made: false,
             outpost: None,
             outpost_checked: false,
         }

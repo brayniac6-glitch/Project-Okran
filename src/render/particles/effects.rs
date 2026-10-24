@@ -234,9 +234,13 @@ impl EffectInstance {
     /// each of its techniques: the wind handler (on emitted techniques), the ground colour
     /// handler (on emitted visual particles) and the light affector.
     fn new(def: &EffectDef, seed: u32, ground: &Option<Arc<GroundMap>>) -> EffectInstance {
+        let mut prof = crate::prof::Marks::start();
         let mut s = System::instance(&def.template, seed);
+        prof.mark("fx new: instance");
         s.prepare();
+        prof.mark("fx new: prepare");
         s.update(0.0);
+        prof.mark("fx new: first update");
         for t in &mut s.techniques {
             if def.wind_affected && t.emitters.iter().any(|e| e.emits_type == PType::Technique) {
                 t.observers.push(Observer::kenshi_on_emission(PuHandler::KenshiWind));
@@ -1168,19 +1172,23 @@ impl Effects {
             None => Vec3::ZERO,
         };
         self.last_target = Some(w.target);
+        let mut prof = crate::prof::Marks::start();
         let before = Self::draw_entities(&mut self.groups);
         for gs in &mut self.groups {
             for g in gs.iter_mut() {
                 g.update(defs, dt, rng, w);
             }
         }
+        prof.mark("fx: groups");
         // the camera wrap: centre ahead of the camera (assumption: F023372's
         // orientation x (0, 0, size) points down the view)
         let wrap_centre = w.camera + w.forward * self.wrap;
         for gs in &mut self.groups {
             for g in gs.iter_mut() {
                 for h in &mut g.handlers {
+                    prof.mark("fx: instances");
                     h.run(defs, dt, rng, w, &self.ground, &mut self.wrap);
+                    prof.mark("fx: handlers");
                     let d = &defs[h.effect];
                     let (speed, dir) = w.wind.get(h.region).copied().unwrap_or((0.0, Vec3::ZERO));
                     let size = d.size;
@@ -1202,6 +1210,7 @@ impl Effects {
                 }
             }
         }
+        prof.mark("fx: instances");
         // the buildings' effects
         for i in &mut self.attached {
             let s = i.system();
@@ -1212,6 +1221,7 @@ impl Effects {
             s.update(dt);
             s.position = world;
         }
+        prof.mark("fx: buildings");
         // the point effects (F033136)
         let mut k = 0;
         while k < self.oneshots.len() {
@@ -1230,8 +1240,10 @@ impl Effects {
                 k += 1;
             }
         }
+        prof.mark("fx: point effects");
         let after = Self::draw_entities(&mut self.groups);
         self.dead_draws.extend(before.into_iter().filter(|e| !after.contains(e)));
+        prof.mark("fx: draw lists");
     }
 
     fn draw_entities(groups: &mut [Vec<Group>]) -> std::collections::HashSet<bevy::prelude::Entity> {

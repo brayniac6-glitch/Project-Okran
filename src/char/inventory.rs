@@ -44,6 +44,18 @@ pub struct Item {
     /// Its owners (Item +0x140, the original owner's handle): a faction; none for one's own.
     /// An item whose owners are not its holder's faction is loot (F044581).
     pub owner: Option<String>,
+    /// How many of the stack are buyback (the trade GUI's map of items to counts, global
+    /// 0x142132c18: F042723 reads it, F042730 toggles it as the item crosses in a trade, F042731
+    /// moves counts with merged or split stacks; cleared only with the game, F042716 from
+    /// F042099), so not saved.
+    pub buyback: i32,
+    /// The smith who made it (Item +0x1f8, set by addFinishedCraftItem F029664; saved as
+    /// "crafter", F043905 / F043906): weapons, armour, crossbows and limbs (vtable slot 88).
+    pub crafter: Option<String>,
+    /// One of a kind (Item +0x12a, the "[Unique]" tag): the world's artifacts as their town hands
+    /// them out (F022232 from Town::distributeArtifacts F048891) and the towns' "special items"
+    /// (F049408); saved as "unique" (F043903 / F043904).
+    pub unique: bool,
     /// A backpack's storage (CONTAINER "storage size width / height": its own grid) and what
     /// its contents weigh against their own weight ("encumbrance effect", F043920 +0x23c).
     /// (assumption) the contents' weight is the effect times theirs.
@@ -99,6 +111,9 @@ impl Item {
             model: None,
             uniform: None,
             owner: None,
+            buyback: 0,
+            crafter: None,
+            unique: false,
             contents: (kind == Some(ItemType::Container)).then(|| int("storage size width").zip(int("storage size height"))).flatten().filter(|&(w, h)| w > 0 && h > 0).map(|(w, h)| Inventory {
                 sections: vec![Section::new("main", w as u32, h as u32, ANY)],
             }),
@@ -131,6 +146,17 @@ pub struct Section {
     pub h: u32,
     pub slot: i32,
     pub items: Vec<Placed>,
+    /// The items it takes, when kept to some (InventorySection +0x98 / +0xa0, F014ce0 adds one:
+    /// a machine's container, F029392; a storage's "limit inventory", F029410); empty for any.
+    pub only: Vec<String>,
+    /// Its stack size: a stack in it holds the more of this (+0x88: a machine container's limit,
+    /// a building's "stackable bonus minimum") and the item's own "stackable" (1 for a section
+    /// kept to some items), times `mult` (+0x8c, a building's "stackable bonus mult"; F043593).
+    pub stack: u32,
+    pub mult: f32,
+    /// +0x38: it takes only armour (a building's storage of "itemtype limit" 3, F037797;
+    /// F043601).
+    pub armour: bool,
 }
 
 /// The main grid's slot type: it takes anything.
@@ -138,7 +164,28 @@ pub const ANY: i32 = 7;
 
 impl Section {
     pub fn new(name: &'static str, w: u32, h: u32, slot: i32) -> Section {
-        Section { name, w, h, slot, items: Vec::new() }
+        Section { name, w, h, slot, items: Vec::new(), only: Vec::new(), stack: 0, mult: 1.0, armour: false }
+    }
+
+    /// A machine's container of `w` x `h` (the item's footprint) taking only `record`, a stack
+    /// of up to `stack` of it (F029392).
+    pub fn container(name: &'static str, w: u32, h: u32, record: &str, stack: u32) -> Section {
+        Section { name, w, h, slot: ANY, items: Vec::new(), only: vec![record.to_string()], stack, mult: 1.0, armour: false }
+    }
+
+    /// @fn F043593
+    ///
+    /// How many of `item` a stack in this section holds (F0103ed): the more of the item's
+    /// "stackable" (1 in a section kept to some items) and the section's stack size, times its
+    /// multiplier; at least 1.
+    pub fn stack_of(&self, item: &Item) -> u32 {
+        let own = if self.only.is_empty() { item.stack } else { 1 };
+        ((own.max(self.stack) as f32 * self.mult) as u32).max(1)
+    }
+
+    /// How many items it holds (F746840: a container's count).
+    pub fn count(&self) -> u32 {
+        self.items.iter().map(|p| p.item.quantity).sum()
     }
 
     /// An equipment section: one item of its kind.
@@ -146,7 +193,17 @@ impl Section {
         self.slot != ANY
     }
 
+    /// @fn F043601
+    ///
+    /// Whether the section takes `item`: one kept to some items takes those; else one of armour
+    /// takes armour; else its slot type (7 any).
     pub fn takes(&self, item: &Item) -> bool {
+        if !self.only.is_empty() {
+            return self.only.contains(&item.record);
+        }
+        if self.armour {
+            return item.kind == Some(ItemType::Armour);
+        }
         self.slot == ANY || item.slot == self.slot
     }
 
@@ -204,10 +261,14 @@ impl Section {
                 // onto a stack of its kind with room
                 for &(j, ..) in &placed {
                     let (a, b) = (&entries[i].item, &entries[j].item);
-                    if a.record == b.record && b.stack > 1 && b.quantity < b.stack && a.quantity > 0 {
-                        let take = (b.stack - b.quantity).min(a.quantity);
+                    let most = self.stack_of(b);
+                    if a.record == b.record && most > 1 && b.quantity < most && a.quantity > 0 {
+                        let take = (most - b.quantity).min(a.quantity);
                         entries[j].item.quantity += take;
                         entries[i].item.quantity -= take;
+                        let n = (take as i32).min(entries[i].item.buyback);
+                        entries[j].item.buyback += n;
+                        entries[i].item.buyback -= n;
                     }
                 }
                 if entries[i].item.quantity == 0 {
@@ -292,24 +353,40 @@ impl Inventory {
     /// of its kind, else the first free cell of the main grid; false when it does not fit.
     pub fn add(&mut self, mut item: Item, equip: bool) -> bool {
         for s in &mut self.sections {
+            let most = s.stack_of(&item);
             for p in &mut s.items {
-                if p.item.record == item.record && p.item.stack > 1 && p.item.quantity < p.item.stack {
-                    let take = (p.item.stack - p.item.quantity).min(item.quantity);
+                if p.item.record == item.record && most > 1 && p.item.quantity < most {
+                    let take = (most - p.item.quantity).min(item.quantity);
                     p.item.quantity += take;
                     item.quantity -= take;
+                    // InventorySection::addItem (F043608): the buyback count of what merged
+                    // goes with it (F042731)
+                    let n = (take as i32).min(item.buyback);
+                    p.item.buyback += n;
+                    item.buyback -= n;
                     if item.quantity == 0 {
                         return true;
                     }
                 }
             }
         }
-        let order: Vec<usize> = if equip {
-            (0..self.sections.len()).filter(|&i| self.sections[i].is_equipment()).chain(self.section("main")).collect()
-        } else {
-            self.section("main").into_iter().collect()
-        };
+        // the sections kept to the item first (a machine's containers, F031147 / F029325)
+        let mut order: Vec<usize> = (0..self.sections.len()).filter(|&i| self.sections[i].only.contains(&item.record) && self.sections[i].name != "main").collect();
+        if equip {
+            order.extend((0..self.sections.len()).filter(|&i| self.sections[i].is_equipment()));
+        }
+        order.extend(self.section("main"));
         for i in order {
             if let Some((x, y)) = self.sections[i].first_fit(&item) {
+                // (a container's stack holds no more than its size: the rest goes on)
+                let most = self.sections[i].stack_of(&item);
+                if item.quantity > most && (!self.sections[i].only.is_empty() || self.sections[i].stack > 0 || self.sections[i].mult != 1.0) {
+                    let mut rest = item.clone();
+                    rest.quantity -= most;
+                    item.quantity = most;
+                    self.sections[i].items.push(Placed { item, x, y });
+                    return self.add(rest, equip);
+                }
                 self.sections[i].items.push(Placed { item, x, y });
                 return true;
             }
@@ -579,6 +656,9 @@ mod tests {
             model: None,
             uniform: None,
             owner: None,
+            buyback: 0,
+            crafter: None,
+            unique: false,
             icon: None,
             food: None,
             medkit: None,

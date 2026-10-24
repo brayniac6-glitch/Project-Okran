@@ -118,6 +118,9 @@ pub struct KenshiSave {
     pub squads: Vec<KSquad>,
     /// GamestateFaction: each faction (by name) and its relations to others (string id, value).
     pub relations: Vec<(String, Vec<(String, f32)>)>,
+    /// The player's faction's known factions (PlayerFactionRelations' save, F041511 / F041517:
+    /// its GamestateFaction's "known" references, string ids): that faction's name, and them.
+    pub known: Option<(String, Vec<String>)>,
     /// The CHARACTER templates of everyone dead in any squad.
     pub dead: Vec<String>,
     pub buildings: Vec<KBuilding>,
@@ -248,6 +251,9 @@ pub fn read(dir: &Path) -> Result<KenshiSave, String> {
             .filter_map(|(k, sid)| Some((sid.clone(), float(f, &format!("relation{}", k.strip_prefix("relationSID")?))?)))
             .collect();
         out.relations.push((f.name.clone(), rel));
+        if let Some((_, refs)) = f.references.iter().find(|(cat, _)| cat == "known") {
+            out.known = Some((f.name.clone(), refs.iter().map(|x| x.target.clone()).collect()));
+        }
     }
     for p in quick.records.iter().filter(|r| r.kind == PLATOON) {
         let id = string(p, "platoon stringID").unwrap_or_else(|| p.name.clone());
@@ -396,6 +402,22 @@ pub fn write(dir: &Path, s: &KenshiSave) -> std::io::Result<()> {
             f.strings.push((format!("relationSID{k}"), sid.clone()));
             f.floats.push((format!("relation{k}"), *v));
         }
+        // the player's faction's known factions (F041511)
+        if let Some((owner, known)) = &s.known
+            && owner == name
+        {
+            f.references.push(("known".into(), known.iter().map(|k| Reference { target: k.clone(), values: [0, 0, 0] }).collect()));
+        }
+        quick.push(f);
+    }
+    // (the player's faction keeping no relations of its own: a record for its known ones)
+    if let Some((owner, known)) = &s.known
+        && !s.relations.iter().any(|(n, _)| n == owner)
+    {
+        let mut f = rec(FACTION_STATE, next, "quick.save", owner);
+        next += 1;
+        f.ints = vec![("platoonIDs".into(), 0), ("rank".into(), 0)];
+        f.references.push(("known".into(), known.iter().map(|k| Reference { target: k.clone(), values: [0, 0, 0] }).collect()));
         quick.push(f);
     }
     for sq in &s.squads {
@@ -627,6 +649,11 @@ impl crate::sim::Sim {
                 v.sort_by(|a, b| a.0.cmp(&b.0));
                 v
             },
+            known: self.data.get(crate::sim::PLAYER_FACTION).map(|r| {
+                let mut k: Vec<String> = self.world.known_factions.iter().cloned().collect();
+                k.sort();
+                (r.name.clone(), k)
+            }),
             dead: {
                 let mut d: Vec<String> = self.world.dead_uniques.iter().cloned().collect();
                 d.sort();
@@ -765,6 +792,10 @@ impl crate::sim::Sim {
                         r.relations.insert(other.clone(), kenshi_ai::faction::Relation { forced_ally, relation: *v });
                     }
                 }
+            }
+            // F041517: the known factions, those the game has
+            if let Some((_, known)) = &k.known {
+                self.world.known_factions.extend(known.iter().filter(|f| data.get(f).is_some()).cloned());
             }
         }
         if opt.dead_npcs {

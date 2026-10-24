@@ -26,19 +26,24 @@ fn main() {
         (pb.confirmed, pb.done, pb.progress, pb.used) = (true, true, t as f32, t);
         pb
     };
-    // the storage, the materials for the site in it
-    let crate_rec = data.records.values().find(|r| r.name.starts_with("Storage Crate")).expect("storage");
-    let mut store = built(crate_rec, 250.0, 0.0);
-    if store.storage.is_none() {
-        store.storage = Some(kenshi_char::inventory::Inventory { sections: vec![kenshi_char::inventory::Section::new("main", 10, 10, kenshi_char::inventory::ANY)] });
-    }
+    // the site, and the storage keeping its material (a StorageBuilding, F029410: the builders'
+    // item search, F038632, finds only those and the machines' outputs), the materials in it
     let mut site = PlayerBuilding::new(rec("Research Bench II"), [at[0] - 250.0, at[1], at[2]], 0.0);
     site.confirmed = true;
+    let material = site.materials.first().map(|m| m.0.clone()).expect("a material");
+    let crate_rec = data
+        .of_type(kenshi_data::ItemType::Building)
+        .filter(|r| kenshi_game::base::BuildingClass::of(&data, r) == kenshi_game::base::BuildingClass::Storage)
+        .find(|r| r.refs("limit inventory").iter().map(|(s, _)| s.as_str()).eq([material.as_str()]))
+        .expect("a storage keeping the material");
+    sim.buildings.push(built(crate_rec, 250.0, 0.0));
+    sim.setup_inventories();
     for (m, n) in &site.materials {
-        store.storage.as_mut().unwrap().add(kenshi_char::inventory::Item::from_record(data.get(m).unwrap(), *n), false);
-        println!("site needs {n} {}", data.get(m).unwrap().name);
+        for _ in 0..*n {
+            sim.buildings[0].storage.as_mut().unwrap().add(kenshi_char::inventory::Item::from_record(data.get(m).unwrap(), 1), false);
+        }
+        println!("site needs {n} {} (in {})", data.get(m).unwrap().name, crate_rec.name);
     }
-    sim.buildings.push(store);
     sim.buildings.push(site);
     sim.buildings.push(built(rec("Small Research Bench"), 0.0, 250.0));
     sim.buildings.push(built(rec("Training Dummy MkI"), 0.0, -250.0));

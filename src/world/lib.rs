@@ -10,6 +10,7 @@ pub mod foliage;
 pub mod biome;
 pub mod nest;
 pub mod furniture;
+pub mod gates;
 pub mod interior;
 pub mod navmesh;
 pub mod navcut;
@@ -201,8 +202,13 @@ pub struct Placement {
     /// layout (`nodes::Layouts`) the building has.
     pub interior: Option<String>,
     pub exterior: Option<String>,
-    /// The town handle's index ("townI") and serial ("townS"), when the building belongs to one.
+    /// The zone state's town handle (its container "townC" and serial "townCS", of
+    /// "townTYPE" 13), when it has one. Kenshi does not read it for a building of a shipped
+    /// zone (F038257, `town::building_town`); some name towns that are not (stale serials).
     pub town: Option<(i32, i32)>,
+    /// The state's "isInsideBuilding" handle is a building's (its type 0): furniture placed
+    /// inside another building (F038257 takes the parent's).
+    pub inside: bool,
     /// The state record's "squad template": the squad living here.
     pub squad: Option<String>,
     /// The state record's "residents template": the town's resident squad for the building,
@@ -222,6 +228,11 @@ pub struct Placement {
     /// loaded by F029401 into setOn F029284, which turns its lights and effects on or off).
     /// None for other buildings (their states have none).
     pub power_on: Option<bool>,
+    /// The building's own handle as the zone state keeps it ("handleTYPE", "handleC",
+    /// "handleCS", "handleI", "handleS": the hand's type, container, container serial, index
+    /// and serial); the building is made with it (the zone's references to it, "isInsideBuilding"
+    /// and the like, are by it). None for one made in game.
+    pub handle: Option<[i32; 5]>,
 }
 
 /// A door's state as a zone or save keeps it (DoorStuff, F029397 / F029398).
@@ -273,15 +284,17 @@ pub fn placements(zone: &kenshi_io::fcs::File) -> Vec<Placement> {
                 world_y: float(st, "world Y pos"),
                 interior: string(st, "interior layout name"),
                 exterior: string(st, "exterior layout name"),
-                town: int(st, "townI")
-                    .zip(int(st, "townS"))
-                    .filter(|t| t.0 != 0 || t.1 != 0),
+                town: int(st, "townC")
+                    .zip(int(st, "townCS"))
+                    .filter(|_| int(st, "townTYPE") == Some(13)),
+                inside: int(st, "isInsideBuildingTYPE") == Some(0),
                 squad: string(st, "squad template"),
                 residents: string(st, "residents template"),
                 destroyed: st
                     .and_then(|r| r.bools.iter().find(|(k, _)| k == "destroyed").map(|(_, v)| *v))
                     .unwrap_or(false),
                 power_on: st.and_then(|r| r.bools.iter().find(|(k, _)| k == "power on").map(|(_, v)| *v)),
+                handle: (|| Some([int(st, "handleTYPE")?, int(st, "handleC")?, int(st, "handleCS")?, int(st, "handleI")?, int(st, "handleS")?]))(),
                 door_saved: (0..16)
                     .map(|n| {
                         let state = int(st, &format!("state{n}"))?;
@@ -315,6 +328,21 @@ pub fn placements(zone: &kenshi_io::fcs::File) -> Vec<Placement> {
             }
         })
         .collect()
+}
+
+/// The heightmap read through once on a thread of its own, so the system keeps it in its file
+/// cache: the game's height lookups (the weather's effects on the ground, the terrain's
+/// patches, people's feet) read 64 x 64 tiles of it as they go, and a first read of a tile from
+/// the disk stalled the frame (by up to a second while the disk was busy). Nothing is kept here:
+/// the reads are the same, only quicker.
+pub fn warm_heightmap(install: &Path) {
+    let path = install.join(HEIGHTMAP);
+    let _ = std::thread::Builder::new().name("heightmap warm".into()).spawn(move || {
+        use std::io::Read;
+        let Ok(mut f) = std::fs::File::open(&path) else { return };
+        let mut buf = vec![0u8; 8 << 20];
+        while matches!(f.read(&mut buf), Ok(n) if n > 0) {}
+    });
 }
 
 impl Terrain {

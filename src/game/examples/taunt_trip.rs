@@ -11,6 +11,8 @@ fn main() {
     let seconds: f32 = a.get(4).map_or(30.0, |s| s.parse().unwrap());
     let extras = vec!["player:3".to_string(), format!("squad:{}", a[3])];
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &extras);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     let players: Vec<usize> = sim.folk.iter().filter(|p| p.player).map(|p| p.id).collect();
     let foes: Vec<usize> = sim.folk.iter().filter(|p| !p.player && p.faction.as_deref().is_some_and(|f| sim.data.get(f).is_some_and(|r| r.name == "Dust Bandits"))).map(|p| p.id).collect();
     println!("{} of the player's, {} bandits", players.len(), foes.len());

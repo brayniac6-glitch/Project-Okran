@@ -13,8 +13,9 @@
 //! anyone else: Talk To, Trade, Pay Bounty, Stealth KO (0xe4, sneaking), First Aid, Follow,
 //! Bodyguard, Attack Unprovoked, Attack All, and in the player's home or outpost Throw out of
 //! home (0xdf) or town (0x111, F044505). A bed: Put in Bed (99, carrying someone) or Sleep
-//! (0x102); a cage: Put in (0x6c, carrying), Get in (0x6b) or Set Free; a machine: Auto-Haul
-//! (0x7c); training equipment: Training (0x61); a door: Open / Close, Smash (0x7b).
+//! (0x102); a cage: Put in (0x6c, carrying), Get in (0x6b) or Set Free; a storage: Auto-Haul
+//! (Hauling to, 0x7c); a machine of no operators: Auto-Haul (0x98), another: Operate (0x57);
+//! training equipment: Training (0x61); a door: Open / Close, Smash (0x7b).
 //! (Kenshi's menu never offers Capture, Stealth Kill or Break Out: they are the AI's orders.)
 use super::{Game, dialogue_ui, inventory_ui};
 use bevy::prelude::*;
@@ -86,6 +87,8 @@ pub enum Action {
     StandUp,
     AttackAll,
     AutoHaul,
+    /// Auto-Haul on a storage (Hauling to, 0x7c).
+    HaulTo,
     ThrowOutHome,
     ThrowOutTown,
     DisposeCorpse,
@@ -168,12 +171,14 @@ pub fn options(game: &Game, target: usize) -> Vec<(String, Action)> {
         if sim.needs_repair(b) {
             out.push(("Repair".to_string(), Action::Repair));
         }
-        if sim.is_operated(b) {
-            out.push(("Operate".to_string(), Action::Operate));
-        }
-        // a machine: its output kept hauled to storage
-        if sim.is_production(b) {
+        // F044603: a storage, Auto-Haul (Hauling to, 0x7c); a machine of no operators (+0x3ac),
+        // Auto-Haul (Operating automatic machine, 0x98); another that is worked, Operate (0x57)
+        if sim.is_storage_building(b) {
+            out.push(("Auto-Haul".to_string(), Action::HaulTo));
+        } else if sim.is_machine(b) && sim.max_operators_of(b) == 0 {
             out.push(("Auto-Haul".to_string(), Action::AutoHaul));
+        } else if sim.is_operated(b) {
+            out.push(("Operate".to_string(), Action::Operate));
         }
         if pb.storage.is_some() {
             out.push(("Open".to_string(), Action::Open));
@@ -376,6 +381,7 @@ pub fn act(game: &mut Game, inv: &mut inventory_ui::InventoryWindow, talk: &mut 
             Action::Repair => game.sim.order_repair(&selected, b),
             Action::Dismantle => game.dismantle_request = Some((selected.clone(), b)),
             Action::AutoHaul => game.sim.order_auto_haul(&selected, b),
+            Action::HaulTo => game.sim.order_haul_to(&selected, b),
             _ => {}
         }
         return;
@@ -443,7 +449,8 @@ pub fn act(game: &mut Game, inv: &mut inventory_ui::InventoryWindow, talk: &mut 
         | Action::PutInBed
         | Action::PutInCage
         | Action::GetInCage
-        | Action::AutoHaul => {}
+        | Action::AutoHaul
+        | Action::HaulTo => {}
     }
 }
 

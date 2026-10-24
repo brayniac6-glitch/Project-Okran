@@ -23,6 +23,22 @@ pub struct GuiWidget {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Caption(pub Entity);
 
+/// A caption coloured by its own MyGUI colour code ("#rrggbb" before its text): its skin's
+/// state colours leave it be, as MyGUI's text keeps the colour its code gives.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct CodedColour;
+
+/// A text's leading MyGUI colour code ("#rrggbb", 0 .. 1 channels), and the text after it.
+pub fn colour_code(s: &str) -> (Option<[f32; 3]>, &str) {
+    let b = s.as_bytes();
+    if b.len() >= 7 && b[0] == b'#' && b[1..7].iter().all(u8::is_ascii_hexdigit) {
+        let v = u32::from_str_radix(&s[1..7], 16).unwrap_or(0);
+        let c = |k: u32| ((v >> k) & 0xff) as f32 / 255.0;
+        return (Some([c(16), c(8), c(0)]), &s[7..]);
+    }
+    (None, s)
+}
+
 /// How a widget's parts and text look in each state (normal, highlighted, pushed, disabled).
 #[derive(Component, Debug, Clone, Default)]
 pub struct Looks {
@@ -51,11 +67,41 @@ pub struct Parts(pub HashMap<String, Entity>);
 pub struct Scroll {
     pub range: f32,
     pub pos: f32,
+    /// MyGUI's ScrollBar scroll page: what an arrow moves it (1 by default; a ScrollView's
+    /// bars 16, ScrollView::getVScrollPage).
+    pub page: f32,
     track: Option<Entity>,
     place: Option<(Entity, f32)>,
     track_w: f32,
+    /// The track's "MinTrackSize" (its user string, MyGUI pixels): the thumb no shorter.
+    min_track: f32,
     /// The template's "VerticalAlignment": the bar runs down, not across.
     vertical: bool,
+}
+
+/// Set a scroll bar's thumb length to this share of its track place (MyGUI's ScrollViewBase:
+/// setTrackSize(line size x view / content), the line size its track place's length): at
+/// least its MinTrackSize, at most the track place.
+pub struct SetScrollTrack(pub Entity, pub f32);
+
+impl Command for SetScrollTrack {
+    type Out = ();
+    fn apply(self, world: &mut World) {
+        let Some(mut s) = world.get_mut::<Scroll>(self.0) else { return };
+        let place = s.place.map_or(0.0, |p| p.1);
+        let len = ((place * self.1).floor()).max(s.min_track).min(place).max(0.0);
+        s.track_w = len;
+        let (track, vertical) = (s.track, s.vertical);
+        if let Some(t) = track
+            && let Some(mut n) = world.get_mut::<Node>(t)
+        {
+            if vertical {
+                n.height = Val::Px(len);
+            } else {
+                n.width = Val::Px(len);
+            }
+        }
+    }
 }
 
 /// An edit box's text, and whether it takes the keyboard; `max` its "MaxTextLength" (MyGUI's
@@ -77,6 +123,14 @@ pub struct GuiScroll {
 /// An edit box's text changed.
 #[derive(Message, Debug, Clone)]
 pub struct GuiEdit {
+    pub widget: Entity,
+    pub text: String,
+}
+
+/// An edit box let the keyboard go (Enter, Escape, a click elsewhere, or hidden from view):
+/// its text then (MyGUI's eventEditSelectAccept / eventKeyLostFocus).
+#[derive(Message, Debug, Clone)]
+pub struct GuiEditDone {
     pub widget: Entity,
     pub text: String,
 }
@@ -124,6 +178,25 @@ fn node(r: [f32; 4]) -> Node {
         height: Val::Px(r[3].max(0.0)),
         ..default()
     }
+}
+
+/// A skin part's node, kept to its align as its widget is resized afterwards (MyGUI's sub-skins
+/// follow their align: a stretched part keeps its insets, an end-aligned one its distance from
+/// the far edge), at `r` within the widget's `size` now.
+fn part_node(a: Align, r: [f32; 4], size: [f32; 2]) -> Node {
+    let mut n = Node { position_type: PositionType::Absolute, ..default() };
+    let (w, h) = (r[2].max(0.0), r[3].max(0.0));
+    match a.h {
+        Span::Start | Span::Centre => (n.left, n.width) = (Val::Px(r[0]), Val::Px(w)),
+        Span::End => (n.right, n.width) = (Val::Px(size[0] - r[0] - w), Val::Px(w)),
+        Span::Stretch => (n.left, n.right) = (Val::Px(r[0]), Val::Px(size[0] - r[0] - w)),
+    }
+    match a.v {
+        Span::Start | Span::Centre => (n.top, n.height) = (Val::Px(r[1]), Val::Px(h)),
+        Span::End => (n.bottom, n.height) = (Val::Px(size[1] - r[1] - h), Val::Px(h)),
+        Span::Stretch => (n.top, n.bottom) = (Val::Px(r[1]), Val::Px(size[1] - r[1] - h)),
+    }
+    n
 }
 
 struct Ctx<'a, 'w, 's> {
@@ -286,7 +359,7 @@ fn widget(
                     };
                     let img = ctx
                         .commands
-                        .spawn((node(pr), ImageNode { image: tex.clone(), rect: Some(rect(st)), image_mode: mode, color: tint, ..default() }))
+                        .spawn((part_node(part.align, pr, size), ImageNode { image: tex.clone(), rect: Some(rect(st)), image_mode: mode, color: tint, ..default() }))
                         .id();
                     ctx.commands.entity(e).add_child(img);
                     let states = part.states.iter().filter_map(|(n, s)| Some((n.clone(), rect(s.rect?)))).collect();
@@ -358,6 +431,15 @@ fn widget(
             .or(client_skin_colour)
             .or_else(|| text_colours.iter().find(|(n, _)| n == "normal").map(|(_, c)| *c))
             .unwrap_or([1.0, 1.0, 1.0]);
+        // a caption's own colour code colours it (CodedColour)
+        let (code, shown) = match &caption {
+            Some(c) => {
+                let (k, rest) = colour_code(c);
+                (k, rest.to_string())
+            }
+            None => (None, String::new()),
+        };
+        let colour = code.unwrap_or(colour);
         let (jc, ai, j) = text_align(&prop("TextAlign").unwrap_or_default());
         let wrap = if prop("WordWrap").as_deref() == Some("true") { LineBreak::WordBoundary } else { LineBreak::NoWrap };
         let holder = ctx
@@ -367,7 +449,7 @@ fn widget(
         let t = ctx
             .commands
             .spawn((
-                Text::new(caption.unwrap_or_default().replace("\\n", "\n")),
+                Text::new(shown.replace("\\n", "\n")),
                 TextFont {
                     font: font.as_ref().map_or_else(FontSource::default, |f| FontSource::Handle(ctx.assets.load(f.file.clone()))),
                     font_size: FontSize::Px(font.as_ref().map_or(14.0 * crate::res::ui_scale(), |f| f.screen_px())),
@@ -386,6 +468,9 @@ fn widget(
         ctx.commands.entity(holder).add_child(t);
         ctx.commands.entity(e).add_child(holder);
         ctx.commands.entity(e).insert(Caption(t));
+        if code.is_some() {
+            ctx.commands.entity(t).insert(CodedColour);
+        }
         if !text_colours.is_empty() && text_prop("TextColour").is_none() {
             looks.text = Some((t, text_colours));
         }
@@ -460,12 +545,22 @@ fn widget(
             let track = parts.0.get("Track").copied();
             let vertical = t.prop("VerticalAlignment") == Some("true");
             let axis = vertical as usize;
+            // the track's MinTrackSize (ScrollBar::initialiseOverride reads it off the track)
+            fn user_of<'a>(d: &'a WidgetDef, name: &str, key: &str) -> Option<&'a str> {
+                if d.name == name {
+                    return d.user.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+                }
+                d.children.iter().find_map(|c| user_of(c, name, key))
+            }
+            let min_track = user_of(t, "Track", "MinTrackSize").and_then(|v| v.parse().ok()).unwrap_or(0.0);
             ctx.commands.entity(e).insert(Scroll {
                 range,
                 pos: 0.0,
+                page: 1.0,
                 track,
                 place: place.map(|p| (p, ctx.built.sizes.get(&p).map_or(0.0, |s| s[axis]))),
                 track_w: track.and_then(|t| ctx.built.sizes.get(&t)).map_or(0.0, |s| s[axis]),
+                min_track,
                 vertical,
             });
         }
@@ -551,8 +646,23 @@ impl Command for SetCaption {
             e.text = self.1.clone();
         }
         let Some(t) = world.get::<Caption>(self.0).map(|c| c.0) else { return };
+        // a leading colour code colours the caption (and stays: CodedColour)
+        let (code, rest) = colour_code(&self.1);
+        let rest = rest.to_string();
         if let Some(mut text) = world.get_mut::<Text>(t) {
-            text.0 = self.1;
+            text.0 = rest;
+        }
+        match code {
+            Some(rgb) => {
+                if let Some(mut c) = world.get_mut::<TextColor>(t) {
+                    let a = c.0.alpha();
+                    c.0 = Color::srgba(rgb[0], rgb[1], rgb[2], a);
+                }
+                world.entity_mut(t).insert(CodedColour);
+            }
+            None => {
+                world.entity_mut(t).remove::<CodedColour>();
+            }
         }
     }
 }
@@ -634,7 +744,7 @@ fn looks(
     mut enabled: RemovedComponents<Disabled>,
     q: Query<(&Interaction, &Looks, Has<Disabled>, Option<&Checked>)>,
     mut images: Query<&mut ImageNode>,
-    mut colours: Query<&mut TextColor>,
+    mut colours: Query<&mut TextColor, Without<CodedColour>>,
 ) {
     let mut which: Vec<Entity> = changed.iter().collect();
     which.extend(enabled.read());
@@ -711,7 +821,7 @@ fn scrolls(
         // the arrows: the bar's own Start and End buttons
         for &(b, d) in &arrows {
             if parents.iter_ancestors(b).any(|a| a == e) {
-                pos = (pos + d).clamp(0.0, s.range);
+                pos = (pos + d * s.page).clamp(0.0, s.range);
             }
         }
         if (pos - s.pos).abs() > f32::EPSILON {
@@ -770,10 +880,12 @@ fn typing(
     mut boxes: Query<(Entity, &Interaction, &mut EditText, Option<&Caption>, Option<&bevy::ui::RelativeCursorPosition>, &InheritedVisibility)>,
     mut texts: Query<&mut Text>,
     mut out: MessageWriter<GuiEdit>,
+    mut done: MessageWriter<GuiEditDone>,
     time: Res<Time<Real>>,
 ) {
     use bevy::input::ButtonState;
     use bevy::input::keyboard::Key;
+    let had: Vec<Entity> = boxes.iter().filter(|b| b.2.focused).map(|b| b.0).collect();
     // a click focuses the box under it (its own skin's parts over it count as it) and
     // unfocuses the rest
     if mouse.just_pressed(MouseButton::Left) {
@@ -809,6 +921,9 @@ fn typing(
                 out.write(GuiEdit { widget: e, text: t.text.clone() });
             }
         }
+        if !t.focused && had.contains(&e) {
+            done.write(GuiEditDone { widget: e, text: t.text.clone() });
+        }
         // what it shows: its text, and the cursor while it has the keyboard
         let want = if t.focused && blink { format!("{}|", t.text) } else { t.text.clone() };
         if let Some(c) = cap
@@ -834,6 +949,7 @@ impl Plugin for GuiPlugin {
         app.add_message::<GuiClick>()
             .add_message::<GuiScroll>()
             .add_message::<GuiEdit>()
+            .add_message::<GuiEditDone>()
             .add_systems(Update, (looks, clicks, scrolls.after(clicks), typing));
     }
 }

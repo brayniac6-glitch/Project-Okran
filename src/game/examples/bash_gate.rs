@@ -8,6 +8,8 @@ fn main() {
     let (zx, zy): (i32, i32) = (a[1].parse().unwrap(), a[2].parse().unwrap());
     let seconds: f32 = a.get(3).map_or(240.0, |s| s.parse().unwrap());
     let mut sim = Sim::load(std::path::Path::new(&a[0]), zx, zy, 0, &["player:1".to_string()]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     // every gate shut and locked
     sim.step();
     let gates: Vec<usize> = (0..sim.door_states.len()).filter(|&d| sim.is_gate(d)).collect();

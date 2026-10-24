@@ -94,6 +94,35 @@ pub trait Agent {
     fn restricted(&self) -> bool {
         false
     }
+    /// The dialogue events isDialogDelivered asks about (its task system's +0x264 / +0x268 /
+    /// +0x1b1); `None` for an agent without them.
+    fn talk_events(&mut self) -> Option<&mut TalkEvents> {
+        None
+    }
+}
+
+/// The dialogue events of a task system (AITaskSytem +0x264, +0x268, +0x1b1): the talk tasks
+/// (a definition's +0x130, Task_TalktoPlayer) and conditions 109 / 110 (isDialogDelivered,
+/// 0x140792140) read them.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TalkEvents {
+    /// +0x264: the event of the plan queued last (F036921: a queued task's definition +0x130,
+    /// when above 0); never cleared after (only the task system's constructor, F036912, zeroes
+    /// it).
+    pub plan: i32,
+    /// +0x268: the event of the talk task ranked or planned last (F036914, F036920); cleared
+    /// after each decision (F036927).
+    pub planning: i32,
+    /// +0x1b1: set while the task system decides (F036927).
+    pub deciding: bool,
+}
+
+impl TalkEvents {
+    /// The event isDialogDelivered asks of (0x140792140): +0x268 while deciding and set, else
+    /// +0x264.
+    pub fn asked(&self) -> i32 {
+        if self.deciding && self.planning != 0 { self.planning } else { self.plan }
+    }
 }
 
 /// F039867: the entry holds when its check answers `expected`; a condition without a check holds.
@@ -399,6 +428,11 @@ impl<'a, A: Agent> Planner<'a, A> {
     pub fn plan(&mut self, task: u16, target: A::Target, pos: [f32; 3]) -> Option<Vec<usize>> {
         let gd = def(task)?;
         let root = self.node(gd, target, pos)?;
+        // the goal's dialogue event (+0x130) is the one isDialogDelivered asks of from here
+        // (+0x268, set after the root node is made and expanded)
+        if let Some(e) = self.agent.talk_events() {
+            e.planning = gd.f130;
+        }
         let mut plan = vec![];
         if gd.hook.is_some() {
             let (t, p) = (self.nodes[root].target.clone(), self.nodes[root].pos);
@@ -416,6 +450,12 @@ impl<'a, A: Agent> Planner<'a, A> {
         while !self.open.is_empty() {
             let mut n = self.pop_best();
             let d = self.def(n);
+            // a talk task taken next: its event (+0x268)
+            if d.f130 != 0
+                && let Some(e) = self.agent.talk_events()
+            {
+                e.planning = d.f130;
+            }
             let redundant = self.redundant(n, &plan);
             let runnable = d.hook.is_none() && d.f134 != 0 && {
                 let (t, p) = (self.nodes[n].target.clone(), self.nodes[n].pos);

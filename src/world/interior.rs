@@ -189,6 +189,12 @@ pub struct Door {
     /// as far as its meshes reach), and the heights it spans.
     pub ends: [[f32; 2]; 2],
     pub heights: [f32; 2],
+    /// DoorStuff's frame (F029383): the centre of its collision box (+0x3b0), and the box's
+    /// "door navmesh axis" column (world: the doorway's line; the door's outside point +0x3bc
+    /// lies 15 units along it x up, the inside +0x3c8 15 back). Without a collision box Kenshi
+    /// sets none (all 0).
+    pub centre: [f32; 3],
+    pub navmesh_axis: [f32; 3],
 }
 
 /// A door collision box's axis `k` in the building's frame: the collision is made Z-up, its
@@ -209,18 +215,31 @@ pub fn box_axis(k: i32) -> [f32; 3] {
 /// box from the door's actor (at the building's origin), the doorway its "door navmesh axis"
 /// column. Without a box, the box axes as made (`box_axis`) and the thinner of the meshes'
 /// other extents.
-fn door_frame(data: &GameDataContainer, res: &Resources, d: &kenshi_data::GameData, extents: [f32; 3]) -> ([f32; 3], [f32; 3], [f32; 3]) {
+fn door_frame(data: &GameDataContainer, res: &Resources, d: &kenshi_data::GameData, extents: [f32; 3]) -> ([f32; 3], [f32; 3], [f32; 3], Option<([f32; 3], [f32; 3])>) {
     let axis = d.ints.get("door axis").copied().unwrap_or(0).clamp(0, 2);
     let nav = d.ints.get("door navmesh axis").copied().unwrap_or(0).clamp(0, 2);
-    let boxed = d.refs("parts").iter().find_map(|(psid, _)| {
-        let part = data.get(psid)?;
-        let file = part.files.get("xml collision").filter(|f| !f.is_empty())?;
-        let shapes = kenshi_io::nxu::read(&res.path(file)?).ok()?;
-        shapes.into_iter().find_map(|sh| match sh.kind {
-            kenshi_io::nxu::ShapeKind::Box(dims) => Some((sh.pose, dims)),
-            _ => None,
-        })
+    let collision = |all: bool| {
+        d.refs("parts")
+            .iter()
+            .find_map(|(psid, _)| {
+                let part = data.get(psid)?;
+                let file = part.files.get("xml collision").filter(|f| !f.is_empty())?;
+                let path = res.path(file)?;
+                let read = if all { kenshi_io::nxu::read_all(&path) } else { kenshi_io::nxu::read(&path) };
+                read.ok().filter(|v| !v.is_empty())
+            })
+            .unwrap_or_default()
+    };
+    let shapes: Vec<kenshi_io::nxu::Shape> = collision(false);
+    // the door's first collision shape (its actor's first, whatever its kind, a moving actor's
+    // too) gives its centre and its navmesh axis (F029383: vtable 0x88 / 0x90 of the actor's
+    // first shape)
+    let first = collision(true).first().map(|sh| sh.pose);
+    let boxed = shapes.iter().find_map(|sh| match sh.kind {
+        kenshi_io::nxu::ShapeKind::Box(dims) => Some((sh.pose, dims)),
+        _ => None,
     });
+    let frame = first.map(|p| ([p.rows[0][nav as usize], p.rows[1][nav as usize], p.rows[2][nav as usize]], p.pos));
     match boxed {
         Some((pose, dims)) => {
             let col = |k: usize| [pose.rows[0][k], pose.rows[1][k], pose.rows[2][k]];
@@ -230,7 +249,7 @@ fn door_frame(data: &GameDataContainer, res: &Resources, d: &kenshi_data::GameDa
             if out[0] * pose.pos[0] + out[1] * pose.pos[1] + out[2] * pose.pos[2] < 0.0 {
                 out = out.map(|v| -v);
             }
-            (col(a), out, col(nav as usize))
+            (col(a), out, col(nav as usize), frame)
         }
         None => {
             let slide = box_axis(axis);
@@ -238,7 +257,7 @@ fn door_frame(data: &GameDataContainer, res: &Resources, d: &kenshi_data::GameDa
             let thin = (0..3).filter(|&j| j != k).min_by(|&x, &y| extents[x].total_cmp(&extents[y])).unwrap_or(2);
             let mut out = [0.0; 3];
             out[thin] = 1.0;
-            (slide, out, box_axis(nav))
+            (slide, out, box_axis(nav), frame)
         }
     }
 }
@@ -293,7 +312,7 @@ pub fn doors(data: &GameDataContainer, res: &Resources, placements: &[Placement]
                     lhi[k] = lhi[k].max(v[k]);
                 }
             }
-            let (slide, out_dir, doorway) = door_frame(data, res, d, [lhi[0] - llo[0], lhi[1] - llo[1], lhi[2] - llo[2]]);
+            let (slide, out_dir, doorway, boxed) = door_frame(data, res, d, [lhi[0] - llo[0], lhi[1] - llo[1], lhi[2] - llo[2]]);
             // the doorway's line ("door navmesh axis") turned with the building, and how far the
             // door reaches along it
             let local = if doorway[1].abs() > 0.5 { [1.0, 0.0, 0.0] } else { doorway };
@@ -326,6 +345,11 @@ pub fn doors(data: &GameDataContainer, res: &Resources, placements: &[Placement]
                 always_locks: d.bools.get("always locks").copied().unwrap_or(false),
                 slide,
                 out_dir,
+                centre: boxed.map_or([0.0; 3], |(_, c)| {
+                    let (r, b) = (rot(c), base(p));
+                    [r[0] + b[0], r[1] + b[1], r[2] + b[2]]
+                }),
+                navmesh_axis: boxed.map_or([0.0; 3], |(axis, _)| rot(axis)),
             });
         }
     }

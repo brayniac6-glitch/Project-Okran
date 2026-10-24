@@ -1,0 +1,110 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+136 town nodes (34 general)
+town Shark at [-47040.98, 120.94015, 48137.1], type 2, radius 2500
+417 pieces of furniture, bars: ["Swamp Dome", "Swamp Dome"]
+15 interior volumes, 15 doors
+swamper fish and drugs at Swamp Store: 1 leader(s), 0 others, package Shop
+Swamper Blackshifter at Swamp Shack: 1 leader(s), 4 others, package Guard building, residents
+the dancing skeleton at Swamp Dome: 1 leader(s), 4 others, package Shop-24hr
+swamp trade goods at Swamp House: 1 leader(s), 1 others, package Shop
+swamp travel shop at Swamp House: 1 leader(s), 1 others, package Shop
+swamper fish and drugs at Swamp Store: 1 leader(s), 0 others, package Shop
+swamp shop mechanical at Swamp Shack: 1 leader(s), 0 others, package Shop
+swamp smithy at Swamp House: 1 leader(s), 1 others, package Shop
+Swamper resident solo at Swamp Shack: 1 leader(s), 1 others, package worker fighter indie resident
+Swamper resident solo at Swamp Shack: 1 leader(s), 0 others, package worker fighter indie resident
+Swamper resident solo at Swamp House: 1 leader(s), 0 others, package worker fighter indie resident
+Swamper resident solo at Swamp House: 1 leader(s), 1 others, package worker fighter indie resident
+Swamper resident solo at Swamp Shack: 1 leader(s), 1 others, package worker fighter indie resident
+hound hq at Swamp Dome: 1 leader(s), 8 others, package Guard building, residents
+blsh casino guy at Swamp Dome: 1 leader(s), 5 others, package Shop-24hr
+player squad: 3
+45 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Swampers: enemies here []
+faction Blackshifters: enemies here []
+faction Hounds: enemies here []
+faction Nameless: enemies here []
+site needs 10 Iron Plates (in Storage: Iron Plates)
+bench operated true, dummy trains Some((StatMeleeAttack, 6.0))
+jobs: Engineer: Research Bench II / Operating machine: Small Research Bench / Training: Training Dummy MkI
+world: 0 squads abroad, 304 towns
+jobs: 43 starts 87 on Building(2)
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 6 of 42159-gamedata.base from storage 0 for 1
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 0 of 42159-gamedata.base from storage 0 for 1
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 0 of 42159-gamedata.base from storage 0 for 1
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 0 of 42159-gamedata.base from storage 0 for 1
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 0 of 42159-gamedata.base from storage 0 for 1
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 0 of 42159-gamedata.base from storage 0 for 1
+jobs: 42 starts 71 on Building(1)
+jobs: 42 starts 71 on Building(1)
+jobs: 42 starts 71 on Building(1)
+jobs: 42 starts 71 on Building(1)
+jobs: 42 starts 71 on Building(1)
+jobs: 42 starts 71 on Building(1)
+jobs: 42 starts 2 on Building(1)
+1 t 60: 42 at [-228, -1] goal Some(125) queue [(2, Building(1)), (125, Building(1))] operate None down false fighting false
+1 t 60: 43 at [-3, 226] goal Some(87) queue [(87, Building(2))] operate Some(2) down false fighting false
+1 t 60: 44 at [-28, -4] goal Some(14) queue [] operate None down false fighting false
+  site: used 6 of 10, progress 0.02, done false
+check: B works the bench (its first job) true; C not training with JOBS off true
+jobs: 43 starts 2 on Building(1)
+jobs: 44 starts 97 on Building(3)
+2 t 90: 42 at [-228, -1] goal Some(125) queue [(2, Building(1)), (125, Building(1))] operate None down false fighting false
+2 t 90: 43 at [-234, 15] goal Some(125) queue [(2, Building(1)), (125, Building(1))] operate None down false fighting false
+2 t 90: 44 at [4, -233] goal Some(97) queue [(97, Building(3))] operate Some(3) down false fighting false
+  site: used 6 of 10, progress 0.19, done false
+check: B on Engineer after the swap true; C on Training true
+jobs: 42 starts 2 on Building(1)
+jobs: 43 starts 2 on Building(1)
+jobs: 42 starts 2 on Building(1)
+jobs: 43 starts 2 on Building(1)
+jobs: 42 starts 2 on Building(1)
+jobs: 43 starts 2 on Building(1)
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 4 of 42159-gamedata.base from storage 0 for 1
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 0 of 42159-gamedata.base from storage 0 for 1
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 0 of 42159-gamedata.base from storage 0 for 1
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 0 of 42159-gamedata.base from storage 0 for 1
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 0 of 42159-gamedata.base from storage 0 for 1
+jobs: 42 starts 247 on Store(1048576)
+jobs: 42 takes 0 of 42159-gamedata.base from storage 0 for 1
+jobs: 43 starts 87 on Building(2)
+jobs: 42 starts 71 on Building(1)
+jobs: 42 starts 71 on Building(1)
+jobs: 42 starts 2 on Building(1)
+jobs: 43 starts 2 on Building(1)
+3 t 900: 42 at [-228, -1] goal Some(125) queue [(2, Building(1)), (125, Building(1))] operate None down false fighting false
+3 t 900: 43 at [-234, 15] goal Some(125) queue [(2, Building(1)), (125, Building(1))] operate None down false fighting false
+3 t 900: 44 at [4, -233] goal Some(97) queue [(97, Building(3))] operate Some(3) down false fighting false
+  site: used 10 of 10, progress 6.87, done false
+check: built false at t 900; C trains true, its skill 43.93 -> 43.93
+4 t 920: 42 at [-228, -1] goal Some(14) queue [] operate None down false fighting false
+4 t 920: 43 at [-234, 15] goal Some(125) queue [(2, Building(1)), (125, Building(1))] operate None down false fighting false
+4 t 920: 44 at [4, -233] goal Some(97) queue [(97, Building(3))] operate Some(3) down false fighting false
+  site: used 10 of 10, progress 6.97, done false
+jobs: 42 starts 97 on Building(3)
+5 t 965: 42 at [0, -227] goal Some(97) queue [(97, Building(3))] operate Some(3) down false fighting false
+5 t 965: 43 at [-234, 15] goal Some(125) queue [(2, Building(1)), (125, Building(1))] operate None down false fighting false
+5 t 965: 44 at [5, -234] goal Some(14) queue [] operate None down false fighting false
+  site: used 10 of 10, progress 7.20, done false
+check: A idle with JOBS off true; C lets go with JOBS off true; A trains with JOBS on true
+check: hold gives Attacking enemies true, taken away true
+check: B's jobs [(125, 1), (87, 1)] (Engineer kept, the bench's now 1); B works it false
+check: the Medic job [97, 58], C treats A true
+exit 0

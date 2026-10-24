@@ -63,6 +63,23 @@ impl ResearchWindow {
     }
 }
 
+/// The faction tab's relations panel (a Kenshi_ScrollView): its client area, the canvas's width
+/// (F035125), the view's height, its scroll bar.
+///
+/// MyGUI's ScrollViewBase::updateScrollSize hides a scroll bar its canvas does not need and
+/// widens the client by it (narrows it again as the bar shows): the empty canvas at the panel's
+/// start leaves both bars hidden, the client the skin's widened by the vertical bar's width and
+/// heightened by the horizontal's. F035125's canvas width, that client's width less the
+/// vertical bar's, is then the skin's own client width; the view is the skin's client
+/// heightened by the horizontal bar (never shown: the canvas is no wider than the view).
+#[derive(Clone, Copy)]
+pub(super) struct RelationsCanvas {
+    client: Entity,
+    width: f32,
+    view_h: f32,
+    bar: Option<Entity>,
+}
+
 pub(super) struct Open {
     ui: Built,
     types: Vec<String>,
@@ -86,8 +103,19 @@ pub(super) struct Open {
     map_drag: Option<Vec2>,
     map_nodes: Vec<Entity>,
     map_drawn: f32,
-    /// The faction tab's lines scrolled past.
+    /// The faction tab's lines scrolled past; the relations panel's canvas (its client area
+    /// and width, F035125) once its parts are laid; its lines' column.
     faction_scroll: usize,
+    relations_canvas: Option<RelationsCanvas>,
+    faction_column: Option<Entity>,
+    /// The relations panel scrolled down (pixels) and how far it can be (its canvas's height
+    /// less its view's, MyGUI's ScrollView mVRange).
+    relations_offset: f32,
+    relations_range: f32,
+    /// The name last put in the faction's name box.
+    name_shown: Option<String>,
+    /// The screen's size (logical pixels) as the window opened.
+    screen: [f32; 2],
     /// The dialogue tab: the log's length when drawn. The AI tab: its tooltip's text.
     log_len: usize,
     ai_tip: Option<Entity>,
@@ -142,7 +170,7 @@ fn redraw(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, asse
             return;
         }
         3 => {
-            redraw_faction(commands, o, game);
+            redraw_faction(commands, o, game, gui, assets);
             return;
         }
         5 => {
@@ -506,7 +534,7 @@ fn redraw_map(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, 
     let mut names: Vec<Rect> = Vec::new();
     // (testing) KENSHI_MAP_ALL: every town shown
     let all = std::env::var("KENSHI_MAP_ALL").is_ok();
-    let mut found: Vec<_> = game.sim.towns.iter().enumerate().filter(|(_, t)| all || game.sim.world.discovered.contains(&t.record)).collect();
+    let mut found: Vec<_> = game.sim.towns.iter().enumerate().filter(|(_, t)| all || game.sim.world.discovered.contains(&t.id)).collect();
     found.sort_by_key(|(_, t)| !(t.kind == 1 || t.kind == 2));
     for (ti, t) in found {
         let at = to_px(t.position[0], t.position[2]);
@@ -522,16 +550,21 @@ fn redraw_map(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, 
             _ => [1083.0, 25.0, 32.0, 32.0],
         };
         // (KENSHI_MAP_ALL: taken as been at too)
-        let tint = town_marker_colour(&game.sim, t, all || game.sim.world.explored.contains(&t.record));
+        let tint = town_marker_colour(&game.sim, t, all || game.sim.world.explored.contains(&t.id));
         let m = marker(commands, at, rect, tint);
         // its name: until the player has been at it (F048883's explored), its "unexplored name"
         // when it has one (F048888)
-        let shown = if game.sim.world.explored.contains(&t.record) {
+        let shown = if game.sim.world.explored.contains(&t.id) {
             t.name.clone()
         } else {
             game.sim.data.get(&t.record).and_then(|r| r.strings.get("unexplored name")).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| t.name.clone())
         };
-        commands.entity(m).insert((Interaction::default(), super::inventory_ui::ItemTip(town_tip(&game.sim, ti, t, &shown))));
+        // its tooltip only once the player has been at it (F035106: setNeedToolTip by TownBase
+        // +0x181; KENSHI_MAP_ALL: all)
+        commands.entity(m).insert(Interaction::default());
+        if all || game.sim.world.explored.contains(&t.id) {
+            commands.entity(m).insert(super::inventory_ui::ItemTip(town_tip(&game.sim, ti, t, &shown)));
+        }
         // a name over another's is left out (the bigger places drawn first keep theirs)
         let est = Rect::new(at.x + 10.0, at.y - 8.0, at.x + 10.0 + shown.len() as f32 * o.fonts.0.1 * 0.55, at.y - 8.0 + o.fonts.0.1 * 1.2);
         let free = names.iter().all(|r| r.intersect(est).is_empty());
@@ -759,13 +792,16 @@ fn redraw_ai(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, a
     }
 }
 
-fn redraw_faction(commands: &mut Commands, o: &mut Open, game: &Game) {
+fn redraw_faction(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, assets: &AssetServer) {
     let sim = &game.sim;
-    let mine = sim.folk.iter().find(|p| p.player).and_then(|p| p.faction.clone());
-    let rel = mine.as_ref().and_then(|f| sim.relations.get(f).cloned()).or_else(|| mine.as_ref().and_then(|f| sim.data.get(f)).map(|r| kenshi_ai::faction::FactionRelations::from_data(r, &sim.data)));
-    if let Some(e) = o.ui.get("FactionNameText") {
-        let _ = &mine;
-        commands.queue(SetCaption(e, sim.player_faction_name()));
+    // the name box shows the faction's name (not again while it is the same: what is being
+    // typed stays)
+    let name = sim.player_faction_name();
+    if let Some(e) = o.ui.get("FactionNameText")
+        && o.name_shown.as_ref() != Some(&name)
+    {
+        commands.queue(SetCaption(e, name.clone()));
+        o.name_shown = Some(name);
     }
     if let Some(e) = o.ui.get("lbFactionName") {
         commands.queue(SetCaption(e, "FACTION NAME".to_string()));
@@ -782,7 +818,7 @@ fn redraw_faction(commands: &mut Commands, o: &mut Open, game: &Game) {
         // the game's colour 0x141f49360, #444444). (stand-in) A contract is
         // its leader and the hours it has left; an event is a campaign a dialogue set coming,
         // with the hours to it
-        let heading = |s: &str| hud_ui::Row { label: s.into(), value: String::new(), colour: hud_ui::GREY, tip: String::new() };
+        let heading = |s: &str| hud_ui::Row { label: s.into(), value: String::new(), colour: hud_ui::GREY, tip: String::new(), button: None };
         rows.push(heading("---Active Contracts---"));
         let now = sim.hours_gone();
         for c in &sim.contracts {
@@ -795,55 +831,164 @@ fn redraw_faction(commands: &mut Commands, o: &mut Open, game: &Game) {
         }
         commands.queue(hud_ui::SetRows { panel: p, rows, font: o.fonts.0.clone(), label_colour: hud_ui::LIGHT, centre: false });
     }
+    faction_lines(commands, o, game, gui, assets);
+}
+
+/// @fn F035139
+///
+/// The faction tab's relations lines, made again every 2 seconds while it shows: a
+/// Kenshi_FactionRelationsLine (F035113) for each faction the player's faction has a relation
+/// with (F041500: all but itself), that it knows (F045530), not "not real" (Faction +0x1d0) and
+/// not the record GENERATION_TEMPLATE_FACTION (its GameData +0x58, the string id); in their
+/// names' order (F035702, as strings compare),
+/// one under another 3 apart (at the UI scale), at the layout's height (0.0222222 of the
+/// screen) and the canvas's width (F035125, `RelationsCanvas`); each one's relation the other faction's toward the player's (F041507). The canvas
+/// as high as the lines (F035139's setCanvasSize); the scroll view (MyGUI's ScrollView) shows
+/// its scroll bar while the canvas is higher than the view, and moves it 50 pixels a wheel
+/// notch (ScrollView::notifyMouseWheel), within 0 .. its range.
+fn faction_lines(commands: &mut Commands, o: &mut Open, game: &Game, gui: &GuiRes, assets: &AssetServer) {
+    // the last lines gone (unless a redraw took them already)
+    if let Some(c) = o.faction_column.take()
+        && let Some(k) = o.rows.iter().position(|r| *r == c)
+    {
+        o.rows.remove(k);
+        commands.entity(c).despawn();
+    }
     let Some(panel) = o.ui.get("RelationsPanel") else { return };
-    // the factions the player's faction has a relation with (F035139: its relations map, the
-    // factions met; a hidden one left out), by their relation
-    let met: std::collections::HashSet<&String> = rel.as_ref().map(|r| r.relations.keys().collect()).unwrap_or_default();
+    let sim = &game.sim;
+    let mine = sim.folk.iter().find(|p| p.player).and_then(|p| p.faction.clone());
+    let from_data = |f: &str| sim.data.get(f).map(|r| kenshi_ai::faction::FactionRelations::from_data(r, &sim.data));
+    let rel = mine.as_ref().and_then(|f| sim.relations.get(f).cloned().or_else(|| from_data(f)));
+    let known = &sim.world.known_factions;
     let mut list: Vec<(String, f32)> = sim
         .data
         .of_type(ItemType::Faction)
-        .filter(|f| met.contains(&f.string_id))
-        .filter(|f| Some(&f.string_id) != mine.as_ref() && !f.name.starts_with('_') && !f.bools.get("not real").copied().unwrap_or(false))
+        .filter(|f| known.contains(&f.string_id) && rel.as_ref().is_none_or(|r| r.relations.contains_key(&f.string_id)))
+        .filter(|f| Some(&f.string_id) != mine.as_ref() && f.string_id != "GENERATION_TEMPLATE_FACTION" && !f.bools.get("not real").copied().unwrap_or(false))
         .map(|f| {
-            // the relation as the player's faction holds it, else as the other holds it, else its default
-            let theirs = mine.as_ref().and_then(|m| f.refs("relations").iter().find(|(o, _)| o == m).map(|(_, v)| v[0] as f32));
-            let ours = rel.as_ref().and_then(|r| r.relations.get(&f.string_id).map(|x| x.relation));
-            let default = f.ints.get("default relation").copied().unwrap_or(0) as f32;
-            (f.name.clone(), ours.or(theirs).unwrap_or(default))
+            // F041507: the other faction's own entry for the player's
+            let toward = |r: &kenshi_ai::faction::FactionRelations| mine.as_deref().map_or(r.default_relation, |m| r.relation(m));
+            let r = sim.relations.get(&f.string_id).map(toward).or_else(|| from_data(&f.string_id).as_ref().map(toward)).unwrap_or(0.0);
+            (f.name.clone(), r)
         })
         .collect();
-    // (assumption) the strongest feelings first, friend or foe, then by name
-    list.sort_by(|a, b| b.1.abs().total_cmp(&a.1.abs()).then(a.0.cmp(&b.0)));
-    list.dedup_by(|a, b| a.0 == b.0);
-    o.faction_scroll = o.faction_scroll.min(list.len().saturating_sub(1));
+    list.sort_by(|a, b| a.0.cmp(&b.0));
     let scale = kenshi_gui::res::ui_scale();
+    // the canvas: the scroll view's client area (F035125, `RelationsCanvas`)
+    let canvas = o.relations_canvas.unwrap_or_else(|| {
+        let size = o.ui.sizes.get(&panel).copied().unwrap_or([400.0, 400.0]);
+        RelationsCanvas { client: panel, width: size[0], view_h: size[1], bar: None }
+    });
+    let (parent, w) = (canvas.client, canvas.width);
+    // (MyGUI's coordinates are whole pixels: the layout's height cut down)
+    let h = (o.screen[1] * 0.0222222).trunc();
+    let mut tops = Vec::with_capacity(list.len());
+    let mut y = 0.0f32;
+    for _ in &list {
+        tops.push(y);
+        y = (3.0 * scale + h + y).trunc();
+    }
+    // the canvas's height (F035139) and the view's range over it (ScrollViewBase)
+    o.relations_range = (y - canvas.view_h).max(0.0);
+    o.relations_offset = o.relations_offset.clamp(0.0, o.relations_range);
     let column = commands
-        .spawn((Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), height: Val::Percent(100.0), flex_direction: FlexDirection::Column, overflow: Overflow::clip(), ..default() }, ZIndex(3)))
+        .spawn((Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(-o.relations_offset), width: Val::Px(w), height: Val::Px(y), ..default() }, ZIndex(3)))
         .id();
-    commands.entity(panel).add_child(column);
+    commands.entity(parent).add_child(column);
+    // the view clips its canvas; its scroll bar shows while the canvas does not fit
+    commands.queue(move |world: &mut World| {
+        if let Some(mut n) = world.get_mut::<Node>(parent) {
+            n.overflow = Overflow::clip();
+        }
+    });
+    // the vertical bar (ScrollViewBase::updateScrollSize): its range the canvas's height less
+    // the view's, its arrows 16 pixels (ScrollView::getVScrollPage), its thumb the view's
+    // share of the canvas
+    if let Some(b) = canvas.bar {
+        commands.entity(b).insert(if o.relations_range > 0.0 { Visibility::Inherited } else { Visibility::Hidden });
+        let (range, pos) = (o.relations_range, o.relations_offset);
+        commands.queue(move |world: &mut World| {
+            if let Some(mut s) = world.get_mut::<kenshi_gui::Scroll>(b) {
+                s.range = range;
+                s.page = 16.0;
+            }
+        });
+        commands.queue(kenshi_gui::SetScroll(b, pos));
+        if y > 0.0 {
+            commands.queue(kenshi_gui::SetScrollTrack(b, canvas.view_h / y));
+        }
+    }
     o.rows.push(column);
-    let text = |s: String, c: Color| (Text::new(s), TextFont { font: bevy::text::FontSource::Handle(o.fonts.0.0.clone()), font_size: bevy::text::FontSize::Px(o.fonts.0.1), ..default() }, TextColor(c));
-    for (name, r) in list.into_iter().skip(o.faction_scroll).take(60) {
-        // Kenshi_FactionRelationsLine: a bar from the middle, right for friends, left for foes
-        let line = commands.spawn(Node { width: Val::Percent(100.0), height: Val::Px(22.0 * scale), flex_shrink: 0.0, margin: UiRect::bottom(Val::Px(2.0)), ..default() }).id();
-        let frac = (r / 100.0).clamp(-1.0, 1.0);
-        let bar = commands
-            .spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Percent(if frac >= 0.0 { 50.0 } else { 50.0 + 49.0 * frac }),
-                    width: Val::Percent(49.0 * frac.abs()),
-                    top: Val::Percent(21.0),
-                    height: Val::Percent(58.0),
-                    ..default()
-                },
-                BackgroundColor(if frac >= 0.0 { Color::srgba(0.35, 0.55, 0.25, 0.8) } else { Color::srgba(0.6, 0.18, 0.12, 0.8) }),
-            ))
-            .id();
-        let n = commands.spawn((text(name, hud_ui::LIGHT), Node { position_type: PositionType::Absolute, left: Val::Percent(2.0), ..default() })).id();
-        let v = commands.spawn((text(format!("{r:.0}"), hud_ui::LIGHT), Node { position_type: PositionType::Absolute, right: Val::Percent(2.0), ..default() })).id();
-        commands.entity(line).add_children(&[bar, n, v]);
-        commands.entity(column).add_child(line);
+    o.faction_column = Some(column);
+    // (the layout's root laid over the whole line, its parts by their align)
+    let mut defs = gui.0.layout("Kenshi_FactionRelationsLine.layout");
+    if let Some(d) = defs.first_mut() {
+        d.pos = kenshi_gui::res::Pos::Px([0.0, 0.0, 500.0, 24.0]);
+        d.align = kenshi_gui::res::Align::parse("Stretch");
+    }
+    for ((name, r), top) in list.into_iter().zip(tops) {
+        let holder = commands.spawn(Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(top), width: Val::Px(w), height: Val::Px(h), ..default() }).id();
+        commands.entity(column).add_child(holder);
+        let line = kenshi_gui::ui::spawn_design(commands, &gui.0, assets, &defs, Some(holder), [500.0, 24.0], [w, h]);
+        relation_line(commands, &line, &name, r);
+    }
+}
+
+/// The relations panel's canvas moved to the scroll view's offset (its top at minus it).
+fn relations_scrolled(commands: &mut Commands, o: &Open) {
+    let (Some(c), top) = (o.faction_column, -o.relations_offset) else { return };
+    commands.queue(move |world: &mut World| {
+        if let Some(mut n) = world.get_mut::<Node>(c) {
+            n.top = Val::Px(top);
+        }
+    });
+    if let Some(b) = o.relations_canvas.and_then(|c| c.bar) {
+        commands.queue(kenshi_gui::SetScroll(b, o.relations_offset));
+    }
+}
+
+/// @fn F035138
+///
+/// A faction's relations line: its name (FactionName), its relation in FactionValue
+/// ("{1,num}", over 60 in #a8b774, under -30 in #bf4834, else #afa68b), and its bar: a friend's
+/// RightBar from the middle rightward its share (relation / 100) of the bar's width, a foe's
+/// LeftBar leftward from the middle; the other none.
+fn relation_line(commands: &mut Commands, line: &Built, name: &str, r: f32) {
+    if let Some(e) = line.get("FactionName") {
+        commands.queue(SetCaption(e, name.to_string()));
+    }
+    let colour = if r < -30.0 {
+        hud_ui::tag(0xbf4834)
+    } else if r > 60.0 {
+        hud_ui::GREEN
+    } else {
+        hud_ui::TAN
+    };
+    if let Some(e) = line.get("FactionValue") {
+        commands.queue(SetCaption(e, hud_ui::num(r as i64)));
+        commands.queue(move |world: &mut World| {
+            if let Some(c) = world.get::<kenshi_gui::Caption>(e).map(|c| c.0)
+                && let Some(mut t) = world.get_mut::<TextColor>(c)
+            {
+                t.0 = colour;
+            }
+        });
+    }
+    // the layout's bars: LeftBar 0.01 .. 0.5, RightBar 0.5 .. 0.99 of the line
+    let bars = [(line.get("LeftBar"), 0.01f32, 0.49f32, r < 0.0), (line.get("RightBar"), 0.5, 0.49, r >= 0.0)];
+    for (e, x, full, this) in bars {
+        let Some(e) = e else { continue };
+        let width = if this { full * r.abs() * 0.01 } else { 0.0 };
+        // the foe's bar grows from the middle leftward
+        let left = if x < 0.5 { x + full - width } else { x };
+        commands.queue(move |world: &mut World| {
+            if let Some(mut n) = world.get_mut::<Node>(e) {
+                n.left = Val::Percent(left * 100.0);
+                n.width = Val::Percent(width * 100.0);
+                // (the skin's image is a child at the bar's full size: cut to the bar)
+                n.overflow = Overflow::clip();
+            }
+        });
     }
 }
 
@@ -1102,8 +1247,8 @@ pub fn update(
     windows: Query<&Window>,
     rows: Query<(&Interaction, &ListRow)>,
     (mut wheel, time, portraits, laid): (MessageReader<bevy::input::mouse::MouseWheel>, Res<Time>, Res<super::portraits::Portraits>, Query<(&ComputedNode, &UiGlobalTransform)>),
-    (ai_rows, queue_over): (Query<(&Interaction, &AiRow)>, Query<(&ListRow, &bevy::ui::RelativeCursorPosition)>),
-    mut edits: MessageReader<kenshi_gui::GuiEdit>,
+    (ai_rows, queue_over, parts, mut scrolled): (Query<(&Interaction, &AiRow)>, Query<(&ListRow, &bevy::ui::RelativeCursorPosition)>, Query<&kenshi_gui::Parts>, MessageReader<kenshi_gui::GuiScroll>),
+    (mut edits, mut edits_done): (MessageReader<kenshi_gui::GuiEdit>, MessageReader<kenshi_gui::GuiEditDone>),
 ) {
     let squad_edits: Vec<kenshi_gui::GuiEdit> = edits.read().cloned().collect();
     let mut squad_clicks: Vec<GuiClick> = Vec::new();
@@ -1268,6 +1413,12 @@ pub fn update(
             map_nodes: Vec::new(),
             map_drawn: -1.0,
             faction_scroll: 0,
+            relations_canvas: None,
+            faction_column: None,
+            relations_offset: 0.0,
+            relations_range: 0.0,
+            name_shown: None,
+            screen: size,
             log_len: usize::MAX,
             ai_tip: None,
             squads_shown: Vec::new(),
@@ -1368,15 +1519,64 @@ pub fn update(
             redraw_map(&mut commands, o, &game, &gui, &assets);
         }
     }
-    // the faction tab's list scrolled by the wheel
+    // the relations panel's canvas (F035125, `RelationsCanvas`), known once the panel's parts
+    // are made
+    if o.relations_canvas.is_none()
+        && let Some(panel) = o.ui.get("RelationsPanel")
+        && let Ok(p) = parts.get(panel)
+        && let Some(&client) = p.0.get("Client")
+    {
+        let size = o.ui.sizes.get(&client).copied().unwrap_or([0.0, 0.0]);
+        let bar = p.0.get("VScroll").copied();
+        let hbar_h = p.0.get("HScroll").and_then(|b| o.ui.sizes.get(b)).map_or(0.0, |s| s[1]);
+        let view_h = size[1] + hbar_h;
+        // the client over the hidden horizontal bar's place (ScrollViewBase)
+        commands.queue(move |world: &mut World| {
+            if let Some(mut n) = world.get_mut::<Node>(client) {
+                n.height = Val::Px(view_h);
+            }
+        });
+        o.relations_canvas = Some(RelationsCanvas { client, width: size[0].max(1.0), view_h, bar });
+        if o.tab == 3 {
+            o.map_drawn = -1.0;
+        }
+    }
+    // the faction tab: its lines made again every 2 seconds (F035139); the wheel and the
+    // scroll bar move its scroll view
     if o.tab == 3 {
         let mut moved = false;
+        // (MyGUI's wheel goes to the widget under the mouse)
+        let cursor = windows.iter().next().and_then(|w| w.cursor_position());
+        let over = o.ui.get("RelationsPanel").is_some_and(|p| cursor.is_some_and(|c| inside(rect_of(&laid, p), c)));
         for w in wheel.read() {
-            o.faction_scroll = if w.y > 0.0 { o.faction_scroll.saturating_sub(3) } else { o.faction_scroll + 3 };
+            if over && o.relations_range > 0.0 {
+                o.relations_offset = (o.relations_offset + if w.y < 0.0 { 50.0 } else { -50.0 }).clamp(0.0, o.relations_range);
+                moved = true;
+            }
+        }
+        let bar = o.relations_canvas.and_then(|c| c.bar);
+        for m in scrolled.read() {
+            if Some(m.widget) == bar {
+                o.relations_offset = m.pos.round().clamp(0.0, o.relations_range);
+                moved = true;
+            }
+        }
+        // (testing) KENSHI_FACTION_WHEEL=n: n wheel notches down over the panel once it can scroll
+        if let Some(n) = std::env::var("KENSHI_FACTION_WHEEL").ok().and_then(|v| v.parse::<i32>().ok())
+            && o.relations_range > 0.0
+            && o.relations_offset == 0.0
+            && !o.ui.named.is_empty()
+        {
+            o.relations_offset = (50.0 * n as f32).clamp(0.0, o.relations_range);
             moved = true;
         }
         if moved {
-            redraw(&mut commands, o, &game, &gui, &assets);
+            relations_scrolled(&mut commands, o);
+        }
+        let now = time.elapsed_secs();
+        if o.map_drawn < 0.0 || now - o.map_drawn >= 2.0 {
+            o.map_drawn = now;
+            faction_lines(&mut commands, o, &game, &gui, &assets);
         }
     }
     // the dialogue tab: drawn again as the log grows, scrolled back by the wheel
@@ -1434,10 +1634,30 @@ pub fn update(
     } else if let Some((_, ghost)) = o.squad_drag.take() {
         commands.entity(ghost).despawn();
     }
-    // the faction's name typed (F035125)
-    for e in &squad_edits {
-        if o.ui.get("FactionNameText") == Some(e.widget) {
-            game.sim.faction_name = e.text.trim().to_string();
+    // @fn F035114
+    //
+    // The faction's name as typed, taken on Enter or as the box lets the keyboard go (F035125's
+    // eventEditSelectAccept, F035115 on eventKeyLostFocus): a name another faction has (F030301)
+    // is refused, "This faction name already exists" (title "Faction Name"), the box back to
+    // the name; any other new one is the faction's (GameWorld +8, the faction's +0x1a8).
+    // (stand-in) An empty name shows as the record's ("Nameless": Sim::player_faction_name).
+    for e in edits_done.read() {
+        if o.ui.get("FactionNameText") != Some(e.widget) {
+            continue;
+        }
+        let now = game.sim.player_faction_name();
+        if e.text == now {
+            continue;
+        }
+        let taken = game.sim.data.of_type(ItemType::Faction).any(|f| f.string_id != kenshi_game::sim::PLAYER_FACTION && f.name == e.text);
+        if taken {
+            game.ask = Some(super::message_box::Ask { title: "Faction Name".into(), text: "This faction name already exists".into(), question: super::message_box::Question::Note });
+            commands.queue(SetCaption(e.widget, now));
+        } else {
+            game.sim.faction_name = e.text.clone();
+            let name = game.sim.player_faction_name();
+            commands.queue(SetCaption(e.widget, name.clone()));
+            o.name_shown = Some(name);
         }
     }
     // the lists: left click chooses, right click learns (a blueprint) or takes off (the queue)
@@ -1594,8 +1814,22 @@ pub fn update(
 
 /// (testing) KENSHI_RESEARCH_AT=frame[@research name]: the window opens then; with a name, that
 /// research is queued (as a right click on it). KENSHI_CRAFTING_AT=frame: the crafting tab.
-pub fn script(mut frames: Local<u32>, mut keys: ResMut<ButtonInput<KeyCode>>, mut game: ResMut<Game>) {
+pub fn script(mut frames: Local<u32>, mut keys: ResMut<ButtonInput<KeyCode>>, mut game: ResMut<Game>, win: Res<ResearchWindow>, mut done: MessageWriter<kenshi_gui::GuiEditDone>) {
     *frames += 1;
+    // KENSHI_KNOW_ALL: every faction known to the player's at frame 30 (the faction tab full)
+    if *frames == 30 && std::env::var("KENSHI_KNOW_ALL").is_ok() {
+        let all: Vec<String> = game.sim.data.of_type(ItemType::Faction).map(|f| f.string_id.clone()).collect();
+        game.sim.world.known_factions.extend(all);
+    }
+    // KENSHI_FACTION_NAME=frame@name: that name typed into the faction tab's name box and
+    // taken (as on Enter)
+    if let Ok(v) = std::env::var("KENSHI_FACTION_NAME")
+        && let Some((f, name)) = v.split_once('@')
+        && f.parse::<u32>().ok() == Some(*frames)
+        && let Some(e) = win.open.as_ref().and_then(|o| o.ui.get("FactionNameText"))
+    {
+        done.write(kenshi_gui::GuiEditDone { widget: e, text: name.to_string() });
+    }
     // KENSHI_OVERVIEW_AT=frame@key: that key pressed (M map, T research, Y crafting)
     if let Ok(v) = std::env::var("KENSHI_OVERVIEW_AT")
         && let Some((f, k)) = v.split_once('@')

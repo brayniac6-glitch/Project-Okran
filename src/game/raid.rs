@@ -19,11 +19,17 @@
 //!   violent)", the Shek's tributes) does so as soon as it is there, its campaign won;
 //! - else ("Retreat and refresh", "Casual Raid Retreat") it goes home.
 //!
-//! (stand-in) The capturing packages' task handlers are not run: these are their outcomes. A captive
-//! carried by a squad that goes off-screen goes with it (hidden) and comes back carried when the
-//! squad is met again; reaching home (or its depot) with them, the squad leaves them as its
-//! faction's (the depot's) shackled slaves at that town's centre (its cages are not loaded
-//! there). (assumption) The cannibals' captives are kept as slaves too (the pot is not ported).
+//! (stand-in: needs the capture tasks on the planner, crate::law / crate::slavery: Capturing
+//! slave 167 and Carrying slaves 168 with their finders, Kidnapper 254's FINAL_GOT_A_KIDNAP_VICTIM
+//! and FINAL_FOUND_AND_PUT_CARRIED_IN_A_CAGE, 153 / 154, Travelling quickly 130 and Delivering
+//! slaves 192) The capturing packages' picking up is `capture_tick`'s routine; at home the
+//! cage Find and put in cage (112) would take them to is F047589's (`best_cage`), and at a depot
+//! the hand-over is the leader's Selling slaves (194) on the planner. (stand-in: needs the
+//! world's unloaded squads to keep their carried people, UnloadedPlatoon) A captive carried by a
+//! squad that goes off-screen goes with it (hidden) and comes back carried when the squad is met
+//! again; reaching home off-screen, they are left there as its faction's (the depot's) shackled
+//! slaves. (stand-in: needs the cannibals' prisoner tasks, Task_EatPrisoner / Task_KillPrisoner,
+//! and the packages that run them) The cannibals' captives are kept as their slaves.
 use crate::sim::Sim;
 use crate::world::{Goal, campaign_refs};
 use kenshi_data::GameData;
@@ -64,13 +70,15 @@ const BD_SLAVE_STORAGE: i32 = 10;
 const DEPOT_NEARER: f32 = 0.7;
 /// EventTriggerEnum EV_SLAVE_DELIVERY (Selling slaves, 194 / 218: TaskDef +0x130).
 pub const EV_SLAVE_DELIVERY: i32 = 39;
-/// (stand-in) How near the depot's centre its receiver is looked for (the finder F047544 is
-/// not ported): its radius as a town (F048768).
-const RECEIVER_RANGE: f32 = 2500.0;
-/// (assumption) How far from the target the player's storage is looted.
-const LOOT_RANGE: f32 = 3000.0;
-/// (assumption) How far from its home town's centre a cage takes a raid's captives.
-const HOME_CAGE_RANGE: f32 = 3000.0;
+/// F047588: a machine's score falls off over this squared distance (4608 units, 0x14172e248),
+/// at least 0.00001 (0x1416a2578); x 100 for one of my faction, and again for one of my home
+/// (0x141683250).
+const MACHINE_FALLOFF_SQ: f32 = 21_233_664.0;
+const MACHINE_FLOOR: f32 = 0.00001;
+const MACHINE_MINE: f32 = 100.0;
+/// F047558: an AI in no town searches the nearest town within this squared distance (3953
+/// units, 0x14172dd88).
+const SEARCH_TOWN_SQ: f32 = 15_625_000.0;
 
 /// The tasks (AI_TASK "enum") of campaign `c`'s package of phase `phase` ("pt2 AI leader",
 /// "victory AI leader").
@@ -193,20 +201,29 @@ impl Sim {
             }
             // the occupation: its people's jobs run (`sim`), the squad stays
             Victory::Occupy => {}
-            // looting food: its people's Looting food job takes it (`sim`); home once they carry
-            // food, or none is left about the target
+            // looting food: its people run the package's jobs, Looting food (131) taking the
+            // food (its finder F047552, `sim::food_finder`); a package with Retreating (128:
+            // "Loot food then run away") takes them home once they have their food, or there is
+            // none for them (Looting food done, HAVE_SOME_LOOT_FROM, or with no target): the
+            // squad sent home as one of it takes it up. (stand-in: needs a won campaign's end of
+            // its squads, CampaignInstance F050809) A package without it ("Assault Town and loot
+            // food") goes home once they carry food or the finder has none for its leader.
             Victory::LootFood => {
-                let target = match &self.world.squads[k].goal {
-                    Goal::Campaign { target, .. } => *target,
-                    _ => at,
-                };
+                if self.retreats_by_plan(k) {
+                    self.go_home(k);
+                    return;
+                }
+                if standing.iter().any(|&m| self.has_job(m, crate::raid_ai::RETREATING) || self.has_job(m, crate::raid_ai::RETREATING_FAST)) {
+                    return;
+                }
                 let carries = standing.iter().any(|&m| {
                     let inv = &self.folk[m].inventory;
                     inv.sections.iter().chain(inv.bag().into_iter().flat_map(|b| b.sections.iter())).any(|s| s.items.iter().any(|i| i.item.food.is_some()))
                 });
-                let left = (0..self.buildings.len())
-                    .filter(|&b| near(self.buildings[b].at, target) < LOOT_RANGE)
-                    .any(|b| self.buildings[b].storage.as_ref().is_some_and(|s| s.sections.iter().any(|sec| sec.items.iter().any(|i| i.item.food.is_some()))));
+                let l = standing[0];
+                let p = &self.folk[l];
+                let ignored: Vec<usize> = p.ignored.iter().map(|i| i.0).collect();
+                let left = crate::sim::food_finder(self.food_stores.iter().map(|(o, i)| (*o, i)), p.mover.position_units(), p.town, self.faction_id(l).as_deref(), p.race.is_some(), &ignored).is_some();
                 if carries || !left {
                     self.go_home(k);
                 }
@@ -217,8 +234,10 @@ impl Sim {
 
     /// Squad `k` goes off-screen: whom its people carry goes with it.
     pub(crate) fn captives_away(&mut self, k: usize) {
-        for &m in &self.world.squads[k].members.clone() {
-            if let Some(c) = self.folk[m].carrying {
+        let members = self.world.squads[k].members.clone();
+        for &m in &members {
+            // (a squad mate carried goes away as one of the squad, no captive)
+            if let Some(c) = self.folk[m].carrying.filter(|c| !members.contains(c)) {
                 self.folk[c].away = true;
                 if !self.world.squads[k].captives.contains(&c) {
                     self.world.squads[k].captives.push(c);
@@ -293,32 +312,97 @@ impl Sim {
         self.nearest_town_for(s.pos, TOWN_TOWN, &faction, max, Some(BD_SLAVE_STORAGE)).or(camp)
     }
 
-    /// Squad `k` is home (`to`) with its captives: left there caged, shackled, its faction's
-    /// slaves. A squad shipping its catch (`slave_depot`) hands it over there: its captives its
-    /// own slaves, then (Selling slaves, 194: Task_TalktoPlayer's EV_SLAVE_DELIVERY, its line's
-    /// DA_GIVE_TARGET_MY_SLAVES) given to whoever of the depot's faction its leader finds there
-    /// ((stand-in) the nearest within `RECEIVER_RANGE`); none there, the depot's faction's.
+    /// @fn F047589
+    /// @fn F047588
+    ///
+    /// The cage Find and put in cage (112) takes `me`'s carried to: of the buildings of the
+    /// town `me`'s AI searches (F047558: the one it is in, else the nearest within 3953 units)
+    /// whose function is BF_CAGE, those its AI does not ignore (F038789), no other's plan has
+    /// (F052a3b's reservations) and with a free place (vtable 0x4f0, F023203: fewer in it than
+    /// its "max operators"), each scored by nearness (1 - d^2 / 4608^2, at least 0.00001), x 100
+    /// for one of `faction` (one of another's taken only where `me` may use it, F03bd0e ->
+    /// F040005: an owner of none or an ally) and x 100 for one of `me`'s home building; the
+    /// best. (A cage's owners are its town's, F038257.)
+    pub(crate) fn best_cage(&self, me: usize, faction: &str) -> Option<usize> {
+        let p = &self.folk[me];
+        let at = p.mover.position_units();
+        let d2 = |q: [f32; 3]| (q[0] - at[0]).powi(2) + (q[1] - at[1]).powi(2) + (q[2] - at[2]).powi(2);
+        let town = p.town.or_else(|| (0..self.towns.len()).filter(|&t| d2(self.towns[t].position) < SEARCH_TOWN_SQ).min_by(|&a, &b| d2(self.towns[a].position).total_cmp(&d2(self.towns[b].position))))?;
+        let held: Vec<usize> = self.folk.iter().filter_map(|q| q.prison.as_ref().map(|r| r.cage)).collect();
+        let planned: Vec<usize> = self
+            .folk
+            .iter()
+            .filter(|q| q.id != me)
+            .flat_map(|q| q.ai.queue.iter())
+            .filter(|s| s.task == crate::law::PUT_IN_PRISON)
+            .filter_map(|s| match s.target {
+                crate::sim::Target::Furniture(f) => Some(f),
+                _ => None,
+            })
+            .collect();
+        let ignored: Vec<usize> = p.ignored.iter().map(|i| i.0).collect();
+        let ally = |f: Option<&str>| self.relations.get(faction).is_some_and(|r| r.is_ally(f));
+        let mut best: Option<(usize, f32)> = None;
+        for k in 0..self.furn.len() {
+            let f = &self.furn[k];
+            if f.function != kenshi_world::furniture::BF_CAGE || kenshi_world::town::current_town(&self.towns, f.position, None) != Some(town) {
+                continue;
+            }
+            if ignored.contains(&(crate::loot::BOX_OWNER + k)) || planned.contains(&k) || held.iter().filter(|&&c| c == k).count() >= f.max_operators.max(1) as usize {
+                continue;
+            }
+            let owner = self.towns[town].faction.as_deref();
+            let mut sc = (1.0 - d2(f.position) / MACHINE_FALLOFF_SQ).max(MACHINE_FLOOR);
+            if owner == Some(faction) {
+                sc *= MACHINE_MINE;
+            } else if !(owner.is_none() || ally(owner)) {
+                continue;
+            }
+            if p.home == Some(f.placement) {
+                sc *= MACHINE_MINE;
+            }
+            if best.is_none_or(|(_, b)| sc > b) {
+                best = Some((k, sc));
+            }
+        }
+        best.map(|(k, _)| k)
+    }
+
+    /// Squad `k` is home (`to`) with its captives: left there caged (`best_cage`), shackled,
+    /// its faction's slaves. A squad shipping its catch (`slave_depot`) there on foot makes its
+    /// captives its own squad's slaves, put down shackled by its people, and its leader's Selling
+    /// slaves (194, crate::talk: the buyer F047544 finds, Task_TalktoPlayer's EV_SLAVE_DELIVERY,
+    /// its line's DA_GIVE_TARGET_MY_SLAVES, crate::dialogue) hands them over. (stand-in: needs
+    /// the world's unloaded squads, UnloadedPlatoon, to keep their carried people) Reaching
+    /// home off-screen, the captives are left as its faction's (the depot's), at the town's
+    /// centre.
     pub(crate) fn captives_home(&mut self, k: usize, to: [f32; 3]) {
         let mut faction = self.world.squads[k].faction.clone().unwrap_or_default();
         // shipping: the depot's faction's (its town at `to`)
         if self.shipping_signal(k).is_some()
             && let Some(f) = self.towns.iter().find(|t| t.position == to).and_then(|t| t.faction.clone())
         {
-            if self.deliver_slaves(k, to, &f) {
-                self.world.squads[k].captives.clear();
+            if self.world.squads[k].active {
+                self.ship_captives(k);
                 return;
             }
             faction = f;
         }
         let mut captives = self.world.squads[k].captives.clone();
-        for &m in &self.world.squads[k].members {
+        let members = &self.world.squads[k].members;
+        for &m in members {
             if let Some(c) = self.folk[m].carrying
                 && !captives.contains(&c)
+                && !members.contains(&c)
             {
                 captives.push(c);
             }
         }
         for (j, c) in captives.into_iter().enumerate() {
+            // a cage its carrier finds takes them (Find and put in cage, 112: F047589), else they
+            // are kept shackled where left
+            let carrier = self.folk[c].carried_by.or_else(|| self.world.squads[k].members.iter().copied().find(|&m| !self.folk[m].dead && !self.folk[m].down));
+            let cage = carrier.and_then(|m| self.best_cage(m, &faction));
             if let Some(m) = self.folk[c].carried_by.take() {
                 self.folk[m].carrying = None;
                 self.folk[m].arrest = None;
@@ -327,11 +411,6 @@ impl Sim {
             self.folk[c].away = false;
             self.folk[c].mover.position = spot.map(|v| v * 0.1);
             self.arena.f[c].mover.position = self.folk[c].mover.position;
-            // a cage of theirs at home takes them, else they are kept shackled where left
-            let cage = self.free_cage(&faction, to, false).filter(|&q| {
-                let p = self.furn[q].position;
-                (p[0] - to[0]).hypot(p[2] - to[2]) < HOME_CAGE_RANGE
-            });
             match cage {
                 Some(q) => {
                     self.make_slave(c, None, &faction);
@@ -350,55 +429,36 @@ impl Sim {
         self.world.squads[k].captives.clear();
     }
 
-    /// Squad `k`'s leader hands its captives to someone of faction `f` near `to`: it says
-    /// EV_SLAVE_DELIVERY to the receiver, and they are the receiver's squad's slaves (its
-    /// owners then process them, crate::slavery). (stand-in) The hand-over is done here, as the
-    /// delivery lines' DA_GIVE_TARGET_MY_SLAVES would: their lines past the first are not
-    /// played out. Whether it did.
-    fn deliver_slaves(&mut self, k: usize, to: [f32; 3], f: &str) -> bool {
+    /// Squad `k` at its depot: whom its people carry, and its captives, become its squad's
+    /// slaves (their owner its leader's platoon, its faction's), put down where they stand and
+    /// shackled; its leader's Selling slaves (194) does the rest on the planner (crate::talk).
+    fn ship_captives(&mut self, k: usize) {
         let members = self.world.squads[k].members.clone();
-        let Some(&leader) = members.iter().find(|&&m| !self.folk[m].dead && !self.folk[m].down && !self.folk[m].away) else { return false };
-        let receiver = self
-            .folk
-            .iter()
-            .filter(|p| !p.player && !p.dead && !p.down && !p.away && p.slave.is_none() && p.faction.as_deref() == Some(f) && !members.contains(&p.id))
-            .map(|p| (p.id, (p.mover.position_units()[0] - to[0]).hypot(p.mover.position_units()[2] - to[2])))
-            .filter(|&(_, d)| d < RECEIVER_RANGE)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(id, _)| id);
-        let Some(r) = receiver else { return false };
-        let owner = self.folk[r].platoon;
+        let Some(&leader) = members.iter().find(|&&m| !self.folk[m].dead && !self.folk[m].down && !self.folk[m].away) else { return };
+        let owner = self.folk[leader].platoon;
+        let faction = self.world.squads[k].faction.clone().or_else(|| self.folk[leader].faction.clone()).unwrap_or_default();
         let mut captives = self.world.squads[k].captives.clone();
         for &m in &members {
             if let Some(c) = self.folk[m].carrying
                 && !captives.contains(&c)
+                && !members.contains(&c)
             {
                 captives.push(c);
             }
         }
-        let said = self.bark(leader, r, EV_SLAVE_DELIVERY);
-        let at = self.folk[r].mover.position_units();
-        for (j, &c) in captives.iter().enumerate() {
-            if let Some(m) = self.folk[c].carried_by.take() {
-                self.folk[m].carrying = None;
+        for &c in &captives {
+            if let Some(m) = self.folk[c].carried_by {
+                self.order_drop(&[m]);
                 self.folk[m].arrest = None;
             }
-            // (put down beside the receiver)
-            let spot = [at[0] + 30.0 + (j % 3) as f32 * 20.0, at[1], at[2] + (j / 3) as f32 * 20.0];
             self.folk[c].away = false;
-            self.folk[c].mover.position = spot.map(|v| v * 0.1);
-            self.arena.f[c].mover.position = self.folk[c].mover.position;
-            self.make_slave(c, owner, f);
+            if self.folk[c].slave.as_ref().is_none_or(|s| s.owner != owner) {
+                self.make_slave(c, owner, &faction);
+            }
             self.folk[c].shackled = true;
         }
-        if std::env::var("KENSHI_WORLD_DEBUG").is_ok() {
-            eprintln!("world: squad {k}'s {leader} delivers {captives:?} to {r} ({f}): said {said}");
+        if std::env::var("KENSHI_WORLD_DEBUG").is_ok() && !captives.is_empty() {
+            eprintln!("world: squad {k} at its depot: {captives:?} its slaves, for {leader}'s Selling slaves");
         }
-        for &c in &captives {
-            let name = self.display_name(c);
-            let town = self.data.get(f).map_or(f.to_string(), |r| r.name.clone());
-            self.messages.push(format!("{name} has been taken away as a slave by {town}."));
-        }
-        true
-    }
+        self.world.squads[k].captives.clear()    }
 }

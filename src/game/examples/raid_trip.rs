@@ -26,6 +26,20 @@ fn main() {
         b.storage.as_mut().unwrap().add(kenshi_char::inventory::Item::from_record(meat, 10), false);
         sim.buildings.push(b);
     }
+    // (testing) RAID_OUTPOST: a building that "creates player town" beside the squad, built: the
+    // player's outpost a territorial campaign's target finder looks for
+    if std::env::var("RAID_OUTPOST").is_ok() {
+        let data = sim.data.clone();
+        let mut town: Vec<&kenshi_data::GameData> = data.records.values().filter(|r| r.bools.get("creates player town").copied().unwrap_or(false)).collect();
+        town.sort_by(|a, b| a.string_id.cmp(&b.string_id));
+        let rec = town.first().expect("a building that creates a player town");
+        let at = sim.folk[players[0]].mover.position_units();
+        let mut b = kenshi_game::base::PlayerBuilding::new(rec, [at[0] + 150.0, at[1], at[2]], 0.0);
+        b.done = true;
+        b.confirmed = true;
+        sim.buildings.push(b);
+        println!("outpost building {} at {:?}", rec.name, [at[0] + 150.0, at[1], at[2]]);
+    }
     let mut last = String::new();
     let mut was_down: Vec<bool> = Vec::new();
     let mut knocked = false;

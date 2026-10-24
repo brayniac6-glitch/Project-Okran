@@ -223,6 +223,9 @@ pub struct KenshiObjectMaterial {
     /// The interior mask (CLIP_INTERIOR on grass and foliage, kenshi_render::interior_mask).
     #[texture(17)]
     pub interior_mask: Handle<Image>,
+    /// The shared main light (kenshi_render::light_buffer, kenshi_lighting.wgsl KenshiLight).
+    #[storage(70, read_only)]
+    pub light: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 impl Material for KenshiObjectMaterial {

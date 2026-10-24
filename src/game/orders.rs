@@ -559,14 +559,33 @@ impl Sim {
 
     // ---- auto-haul ----------------------------------------------------------------------------
 
-    /// "Auto-Haul" (order 0x7c / 0x98): the first of `ids` keeps machine `b` emptied into the
-    /// storage (as Task_EmptyMachine does for a full machine, whenever it has output).
+    /// "Auto-Haul": Operating automatic machine (order 0x98, 152; F044603's menu gives it for a
+    /// machine of no operators, Operate for the others, Hauling to (0x7c, 124) for a storage) on
+    /// machine `b`, an order on the task system's list for each of `ids`, planned (crate::jobs):
+    /// its output taken to the storages that keep it.
     pub fn order_auto_haul(&mut self, ids: &[usize], b: usize) {
-        let Some(&id) = ids.iter().find(|&&i| !self.folk[i].down) else { return };
-        self.folk[id].operate = None;
-        self.folk[id].auto_haul = Some(b);
+        if !self.is_machine(b) {
+            return;
+        }
         let at = self.buildings[b].at;
-        self.order_move(&[id], at);
+        let ids: Vec<usize> = ids.iter().copied().filter(|&id| self.folk.get(id).is_some_and(|p| !p.down)).collect();
+        for &id in &ids {
+            self.folk[id].operate = None;
+        }
+        self.order_task(&ids, crate::jobs::OPERATING_AUTOMATIC, crate::sim::Target::Building(b), at);
+    }
+
+    /// "Auto-Haul" on a storage (order 0x7c, Hauling to, 124; F044603's menu gives it for a
+    /// StorageBuilding): an order on the task system's list for each of `ids` on the storage,
+    /// planned (crate::jobs): what it keeps fetched (Try filling machine's finder, F038633) and
+    /// put in (Task_FillMachine, F031179), again while there is any.
+    pub fn order_haul_to(&mut self, ids: &[usize], b: usize) {
+        if !self.is_storage_building(b) {
+            return;
+        }
+        let at = self.buildings[b].at;
+        let ids: Vec<usize> = ids.iter().copied().filter(|&id| self.folk.get(id).is_some_and(|p| !p.down)).collect();
+        self.order_task(&ids, crate::jobs::HAULING_TO, crate::sim::Target::Store(crate::base::BUILDING_OWNER + b), at);
     }
 
     // ---- throwing out -------------------------------------------------------------------------
@@ -733,12 +752,18 @@ impl Sim {
         }
         if let Some(b) = target.checked_sub(crate::base::BUILDING_OWNER) {
             let pb = self.buildings.get(b)?;
+            // F044603's: built, a storage Hauling to (0x7c), a machine of no operators (+0x3ac)
+            // Operating automatic machine (0x98), another Operate (0x57)
             return if !pb.done {
                 Some(BUILDING)
             } else if self.needs_repair(b) {
                 Some(REPAIRING)
             } else if self.training(b).is_some() {
                 Some(TRAINING)
+            } else if self.is_storage_building(b) {
+                Some(crate::jobs::HAULING_TO)
+            } else if self.is_machine(b) && self.max_operators_of(b) == 0 {
+                Some(crate::jobs::OPERATING_AUTOMATIC)
             } else if self.is_operated(b) {
                 Some(OPERATING_MACHINE)
             } else {

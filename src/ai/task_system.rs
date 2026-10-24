@@ -10,7 +10,7 @@
 //! (highest key first) and starts the first whose plan (`planner`) scores above zero; the plan's
 //! running steps are queued to be carried out.
 
-use crate::planner::{Agent, Planner, Repertoire, holds, preconditions_hold};
+use crate::planner::{Agent, Planner, Repertoire, TalkEvents, holds, preconditions_hold};
 use crate::task_def::{TaskDef, def};
 
 /// Idleness, the default goal (F036876).
@@ -90,6 +90,11 @@ pub trait Mind: Agent {
     fn idle_goals(&mut self) -> IdleGoals {
         IdleGoals::default()
     }
+    /// F040846: the character's dialogue has lines for dialogue event `event` (its +0x1a0 map
+    /// of events to dialogues): a talk task (definition +0x130) without them is not ranked.
+    fn has_event_dialogue(&mut self, _event: i32) -> bool {
+        false
+    }
 }
 
 /// F036915's built-in goals, each allowed or not: for one of the player's faction with free
@@ -136,6 +141,9 @@ pub struct TaskSystem<T> {
     pub until: f64,
     /// +0x340: the plan's tasks to run, first first.
     pub queue: Vec<Task<T>>,
+    /// +0x264: the dialogue event of the plan queued last (`TalkEvents::plan`), which
+    /// Task_TalktoPlayer raises (F031276).
+    pub talk_event: i32,
 }
 
 /// Candidates ranked by key, highest first (the std::map the passes fill).
@@ -172,6 +180,7 @@ impl<T: Clone + PartialEq + std::fmt::Debug> TaskSystem<T> {
             classification: 0,
             until: 0.0,
             queue: vec![],
+            talk_event: 0,
         }
     }
 
@@ -250,14 +259,25 @@ impl<T: Clone + PartialEq + std::fmt::Debug> TaskSystem<T> {
     }
 
     /// F036914: orders and jobs by score * priority, crowded jobs scaled by the definition's
-    /// +0x34 per other worker, the running task favoured.
+    /// +0x34 per other worker, the running task favoured. A talk task (definition +0x130, a
+    /// dialogue event) becomes the event isDialogDelivered asks of (+0x268) and is passed over
+    /// when the character's dialogue has no lines for it (F040846; (not ported) the line the
+    /// game logs then).
     /// @fn F036914
     fn rank_list<M: Mind<Target = T>>(&self, m: &mut M, c: &mut Candidates<T>, list: &[Task<T>]) {
         let hour = m.hour();
         for t in list {
             let d = t.def();
-            if !in_hours(t.hours, hour) || d.f130 != 0 {
+            if !in_hours(t.hours, hour) {
                 continue;
+            }
+            if d.f130 != 0 {
+                if let Some(e) = m.talk_events() {
+                    e.planning = d.f130;
+                }
+                if !m.has_event_dialogue(d.f130) {
+                    continue;
+                }
             }
             let mut s = goal_score(m, t) * t.priority;
             for _ in 0..m.others_on_job(t) {
@@ -305,6 +325,14 @@ impl<T: Clone + PartialEq + std::fmt::Debug> TaskSystem<T> {
             if score <= 0.0 {
                 continue;
             }
+            // F036921: each task queued with a dialogue event above 0 (+0x130) makes it the
+            // plan's (+0x264)
+            for n in &steps {
+                let f = def(n.task).map_or(0, |d| d.f130);
+                if f > 0 {
+                    self.talk_event = f;
+                }
+            }
             let queue: Vec<Task<T>> = steps
                 .iter()
                 .map(|n| Task {
@@ -318,6 +346,9 @@ impl<T: Clone + PartialEq + std::fmt::Debug> TaskSystem<T> {
                 })
                 .collect();
             self.queue = queue;
+            if let Some(e) = m.talk_events() {
+                e.plan = self.talk_event;
+            }
             self.set_task(m, t, key as i32);
             return true;
         }
@@ -439,7 +470,15 @@ impl<T: Clone + PartialEq + std::fmt::Debug> TaskSystem<T> {
             self.current = None;
             self.classification = 0;
         }
-        self.decide(m, held)
+        // deciding (+0x1b1 set around it), then the planned talk event (+0x268) cleared
+        if let Some(e) = m.talk_events() {
+            *e = TalkEvents { plan: self.talk_event, planning: 0, deciding: true };
+        }
+        let r = self.decide(m, held);
+        if let Some(e) = m.talk_events() {
+            *e = TalkEvents { plan: self.talk_event, planning: 0, deciding: false };
+        }
+        r
     }
 }
 

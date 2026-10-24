@@ -11,6 +11,8 @@ fn main() {
     let seconds: f32 = a.get(3).map_or(120.0, |n| n.parse().unwrap());
     let stealth: f32 = a.get(4).map_or(0.0, |n| n.parse().unwrap());
     let mut sim = Sim::load(install, zx, zy, 0, &["player:1".to_string()]);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     let me = sim.folk.iter().find(|p| p.player).map(|p| p.id).expect("a player character");
     let Some(npc) = sim.folk.iter().find(|p| !p.player && p.inventory.equipped().filter(|i| i.uniform.is_some()).count() >= 2).map(|p| p.id) else {
         println!("no uniformed NPC in zone {zx}.{zy}");

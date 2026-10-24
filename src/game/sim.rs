@@ -77,6 +77,25 @@ use std::sync::atomic::Ordering;
 /// Real seconds per game hour at normal speed (F040805: SkyX time multiplier 0.55 / 60).
 pub const MINUTE_HOURS: f64 = 1.0 / (0.55f32 / 60.0) as f64;
 /// isAtLocation (F038667): within 12 units across, 20 up or down.
+/// @fn F039096
+///
+/// Getting up (Task_GetUp's start, F031044) hands the ragdoll's pose over to the get-up clip
+/// over this many seconds (F039096 passes 0.75 to the blend, F044963 / F044960).
+pub const GET_UP_BLEND: f32 = 0.75;
+/// @fn F030813
+///
+/// Task_GetUp's update: done once the hand-over is over (F044936, the blend's +0x61) and, unless
+/// it crawls (+0x78), its clip's normalised time (F038870, the clip's +0x54) is past this.
+pub const GET_UP_DONE: f32 = 0.86;
+
+/// How long getting up holds a person (Task_GetUp, F031044 / F030813): the hand-over, and standing
+/// up until 0.86 of "standing up 3" (`len` s), its clip playing from the task's start
+/// (F037164; AnimationLayer::update F038905 runs each active clip's time, the blend only
+/// holding the bones). One prone (crawling) is done with the hand-over.
+pub fn get_up_time(len: f32, prone: bool) -> f32 {
+    if prone { GET_UP_BLEND } else { GET_UP_BLEND.max(GET_UP_DONE * len) }
+}
+
 pub const AT_LOCATION_SQ: f32 = 144.0;
 pub const AT_LOCATION_DY: f32 = 20.0;
 /// atNode (F038684): within 0.95 of the node's radius, 50 up or down. The node radius
@@ -163,7 +182,9 @@ pub const STATIC_GUARD: u16 = 38;
 pub const PATROL_TOWN: u16 = 36;
 pub const PATROLLING: u16 = 22;
 pub const FOLLOWING_LEADER: u16 = 141;
-/// (assumption) How far behind the one followed (Follow, Bodyguard) a character lets itself get.
+/// How far behind the one followed (Follow, Bodyguard) a character keeps: Task_FollowBase's
+/// follow distance (+0x90, 40 for FollowLeader, F030758), its trailing spot the leader's place
+/// plus that along the way back to me (F030759).
 pub const ESCORT_GAP: f32 = 40.0;
 pub const RELAXING: u16 = 214;
 pub const OPERATING_MACHINE: u16 = 87;
@@ -205,12 +226,15 @@ pub const TURRET_HOME_GUARD: u16 = 222;
 pub const LOOTING_FOOD: u16 = 131;
 pub const LOOTING: u16 = 284;
 pub const GRABBING_FOOD: u16 = 244;
-/// (assumption) How far about a looter F047552's search for food reaches (units).
-pub const FOOD_SEARCH: f32 = 3000.0;
 /// (assumption) How near a container one must stand to take from it (units).
 pub const STORE_REACH: f32 = 60.0;
 /// F050284: how near (squared units) to the ally its attackers must be (0x1416e345c).
 const ATTACKERS_OF_RANGE_SQ: f32 = 22500.0;
+/// F033851: how near an aggressor makes the aggression flag (squared, 0x1416d4a28).
+const AGGRESSION_NEAR_SQ: f32 = 1600.0;
+/// F038603: how near an aggressor in a fight scores Self preservation 0.7 (squared,
+/// 0x1416efe4c).
+const SELF_PRESERVATION_NEAR_SQ: f32 = 33000.0;
 /// "attack enemies and neutrals" (AI_TASK enum 21): anyone not an ally is fought.
 pub const ATTACKING_NEUTRALS: u16 = 21;
 /// "Wandering trader" (enum 39): travelling town to town.
@@ -279,6 +303,8 @@ pub enum Target {
     Store(usize),
     /// A building of the player's (by index; crate::jobs).
     Building(usize),
+    /// An item lying loose (`Sim::ground`, by its id: the item search F038632's, crate::jobs).
+    Item(u64),
 }
 
 /// A door and its lock (the building state record's "locked{n}", "lock lvl{n}").
@@ -430,7 +456,7 @@ impl BarState {
 
 pub struct Lcg(pub u64);
 impl Lcg {
-    pub(crate) fn next(&mut self) -> f32 {
+    pub fn next(&mut self) -> f32 {
         self.0 = self
             .0
             .wrapping_mul(6364136223846793005)
@@ -442,6 +468,65 @@ impl Lcg {
     pub fn uniform(&mut self) -> f32 {
         self.next()
     }
+}
+
+/// What the food finder (F047552, BuildingFinder_LootFoodAndStuff) reads of a container, as
+/// `View::stores` lists them.
+#[derive(Debug, Clone, Default)]
+pub struct StoreInfo {
+    /// Its building's function (BuildingFunction, the zone's index by function F01ac4e).
+    pub function: i32,
+    /// The town its building stands in, the player's outpost it belongs to, and its zone.
+    pub town: Option<usize>,
+    pub outpost: Option<usize>,
+    pub zone: (i32, i32),
+    /// Its owners (vtable 0x58), as the doors' (F038257: a town's buildings its faction's).
+    pub owner: Option<String>,
+    /// In a building (vtable 0x1d8: a container that is not the building itself).
+    pub indoors: bool,
+    /// A machine (vtable 0x2f8: production, refining, crafting), with its output
+    /// (`ProductionBuilding`) not one to keep its own (vtable 0x3b0).
+    pub machine: bool,
+    /// Empty (F043540), with food (item function 3), with restricted food (15).
+    pub empty: bool,
+    pub food: bool,
+    pub restricted: bool,
+    /// Its position (vtable 0x40).
+    pub at: [f32; 3],
+}
+
+/// @fn F047552
+/// @fn F047711
+///
+/// Getting food / Looting food's finder (BuildingFinder_LootFoodAndStuff): of `stores` (each
+/// owner id with what the finder reads of it), those of town `scope` (the town my squad's
+/// package works, its handler's +0xf0, F036793, else the town I am in, +0x88), or with no town
+/// those of the nine zones about me (F051406), whose function is one of 0x2614 (resource
+/// storage, refinery, shop, crafting, general storage), the nearest to `me` (F051387) that
+/// takes me (F047711): with an inventory not empty; for the player's faction its own only;
+/// outdoors for an animal; not one my AI ignores (F038789); not a shop of my own faction; with
+/// food (item function 3, or the restricted 15 for an animal) in a store, and in a machine of
+/// another faction (a machine of my own is left) food, or restricted food for an animal.
+/// (not ported: needs the race's list of restricted foods it may eat, F033686's set)
+/// Restricted food for one not an animal. (not ported: needs the player's outposts as towns
+/// with their radius, F038707's first pass) One at the player's outpost searches the zones.
+pub fn food_finder<'s>(stores: impl Iterator<Item = (usize, &'s StoreInfo)>, me: [f32; 3], scope: Option<usize>, faction: Option<&str>, animal: bool, ignored: &[usize]) -> Option<usize> {
+    let player = faction == Some(PLAYER_FACTION);
+    let zone = kenshi_world::zone_of(me[0], me[2]);
+    let in_scope = |i: &StoreInfo| match scope {
+        Some(t) => i.town == Some(t),
+        None => (i.zone.0 - zone.0).abs() <= 1 && (i.zone.1 - zone.1).abs() <= 1,
+    };
+    let takes = |o: usize, i: &StoreInfo| {
+        let mine = i.owner.is_some() && i.owner.as_deref() == faction;
+        if ![2, 4, 9, 10, 13].contains(&i.function) || i.empty || (player && !mine) || (animal && i.indoors) || ignored.contains(&o) || (i.function == 9 && mine) {
+            return false;
+        }
+        let food = i.food || (animal && i.restricted);
+        if i.machine { !mine && food } else { food }
+    };
+    let d2 = |q: [f32; 3]| (q[0] - me[0]).powi(2) + (q[1] - me[1]).powi(2) + (q[2] - me[2]).powi(2);
+    stores.filter(|(o, i)| in_scope(i) && takes(*o, i)).min_by(|a, b| d2(a.1.at).total_cmp(&d2(b.1.at))).map(|(o, _)| o)
 }
 
 /// One resident: the character side the AI asks about.
@@ -495,10 +580,8 @@ pub struct Person {
     /// The player's building it is building (Task_Build: its Building step, crate::jobs).
     pub build: Option<usize>,
     /// The player's building it operates (Task_OperateMachine, Task_UseTrainingDummy: its step,
-    /// crate::jobs; a hauler's machine, crate::production).
+    /// crate::jobs).
     pub operate: Option<usize>,
-    /// Its errand emptying a full machine (Task_EmptyMachine).
-    pub haul: Option<crate::production::Haul>,
     /// Crime and law (`law`): the crime it is committing, its bounties, its heat, its cage, its
     /// picking of its locks, its shackles, its escape (faction, until), the one it arrests or
     /// enslaves, whether it gives itself up, the one it creeps up on to knock out.
@@ -530,8 +613,6 @@ pub struct Person {
     /// enemies to leave the area."); told to stand up ("Stand Up", order 0x1c).
     pub playing_dead: bool,
     pub stand_up: bool,
-    /// The machine it keeps emptied into storage ("Auto-Haul", `orders`).
-    pub auto_haul: Option<usize>,
     /// Where it is in the water (F039118, `water_state`: 0 dry, 1 shallow, 2 wading, 3 swimming)
     /// and, swimming at the surface, the height its body floats at (units).
     pub water: i32,
@@ -602,8 +683,8 @@ pub struct Person {
     pub putting_down: f32,
     /// Its move speed this tick (CharStats::updateMoveSpeed, F047064, units / s).
     pub own_speed: f32,
-    /// Seconds left getting up after coming round (Task_GetUp: "standing up 3", F037164), held
-    /// in place meanwhile.
+    /// Seconds left getting up after coming round (Task_GetUp: `get_up_time`), held in place
+    /// meanwhile.
     pub getting_up: f32,
     /// The furniture this person operates (Task_OperateMachine).
     pub operating: Option<usize>,
@@ -633,6 +714,15 @@ pub struct Person {
     /// The sensor's memory (its knowledge entries, F046540): each one sensed, where it was
     /// last placed and when it was last sensed (sim seconds); not saved.
     pub sensed: Vec<(usize, [f32; 3], f32)>,
+    /// The sensor's proximity list (CharSensor +0x68, F046548): those its mover pushes against
+    /// (crate::crowd); not saved.
+    pub near: Vec<usize>,
+    /// CharSensor +0x94: the enemies its last sensor tick perceived standing (F046546); not
+    /// saved.
+    pub sensor_enemies: u32,
+    /// The gate code it was last found in (Character +0xa0, F044467; crate::gate_codes); not
+    /// saved: -1 until the codes are first worked out.
+    pub area: i32,
     /// (metres) The path to my fight's target while the straight way there is blocked
     /// (CombatClass's path list, +0x200); not saved.
     pub fight_path: Vec<[f32; 3]>,
@@ -649,6 +739,9 @@ pub struct Person {
     /// CharMovement's road way (+0xf8) and road factor (+0x100, from the faction's "road
     /// preference", F040657).
     pub roads: kenshi_world::roads::CharRoads,
+    /// Character +0x2b0 as the last tick set it (F033851: an aggressor of mine close); a new
+    /// one makes the AI think at once.
+    pub aggressed: bool,
 }
 
 /// What the AI sees while it plans for one person.
@@ -710,6 +803,10 @@ pub struct View<'a> {
     alarm_near: bool,
     /// The law's conditions, scores and finders (crate::law).
     law: &'a crate::law::LawView,
+    /// The talk tasks' conditions, scores and finders (crate::talk), and the task system's
+    /// dialogue events (+0x264 / +0x268 / +0x1b1) isDialogDelivered asks of.
+    talk_view: &'a crate::talk::TalkView,
+    talk: kenshi_ai::planner::TalkEvents,
     /// The raid goals' (crate::raid_ai).
     raid: &'a crate::raid_ai::RaidView,
     /// Its shopping list done (condition 85, F050255) and the item functions still wanted.
@@ -755,8 +852,9 @@ pub struct View<'a> {
     excess_loot: bool,
     ditch_to: Vec<(usize, [f32; 3])>,
     store_state: &'a HashMap<usize, (bool, bool)>,
-    /// The town my squad calls home (F044526 +0x30): (assumption) the town of the building I
-    /// live in; a travelling squad's destination is not its home.
+    /// The town my squad calls home (F044526 +0x30): a homeless squad's as it was made
+    /// (F048137); (assumption) else the town of the building I live in; a travelling squad's
+    /// destination is not its home.
     home_town: Option<usize>,
     /// Each town's centre (units), for Going home's town fallback (F050303).
     town_centres: &'a [[f32; 3]],
@@ -764,6 +862,11 @@ pub struct View<'a> {
     attackers_of: &'a [Vec<usize>],
     in_fight: &'a [bool],
     fight_target: &'a [Option<usize>],
+    /// Each one's aggressors (the AI's +0x78 list), aggression flag (Character +0x2b0,
+    /// F033851) and whether it is in a fight on someone (state +0xa0 above 0, F038603).
+    aggressors: &'a [Vec<usize>],
+    aggression: &'a [bool],
+    aggressive: &'a [bool],
     /// The zone's turrets (furniture) with the town each stands in, and my hunger level and the
     /// food queued to digest (Character +0x4b8 / +0x4bc, F038553 reads them).
     turrets: &'a [(usize, Option<usize>)],
@@ -771,6 +874,12 @@ pub struct View<'a> {
     /// The containers about (owner, the navmesh point by it, whether it holds food) and
     /// whether I carry food (gotAFoodItem, F038549).
     stores: &'a [(usize, [f32; 3], bool)],
+    /// What the food finder reads of each of `stores` (F047552), and the town my squad's
+    /// package works (its handler's +0xf0, F036793).
+    store_info: &'a [StoreInfo],
+    package_town: Option<usize>,
+    /// An animal (Character vtable 0x248).
+    animal: bool,
     has_food: bool,
     hunger: (f32, f32),
     /// Each one's faction (as it passes), mine and my faction's relations.
@@ -788,6 +897,7 @@ impl View<'_> {
             Target::Door(d) => Some(self.doors[*d].inside),
             Target::Store(o) => self.stores.iter().find(|s| s.0 == *o).map(|s| s.1),
             Target::Building(b) => self.jobs.approach(*b, self.pos),
+            Target::Item(i) => self.jobs.ground_at(*i),
             Target::None => (pos != [0.0; 3]).then_some(pos),
         }
     }
@@ -894,8 +1004,11 @@ impl Agent for View<'_> {
                 Target::Door(d) => Some(self.doors[*d].door.placement) == self.home,
                 _ => true,
             },
-            // strangers in the house (F039856 / P): perception is not ported
-            108 | 141 => false,
+            // strangers in house (F039856), isDialogDelivered (109 / 110, 0x140792140),
+            // iHaveSomeSlaves (F038609): crate::talk
+            108 | 109 | 110 | 155 => return self.talk_view.check(self.me, c, self.talk.asked()),
+            // (P): perception is not ported
+            141 => false,
             // arms usable (F050241), no electricity wanted (F038522: a chair needs none)
             38 | 93 => true,
             // CARRYING_EXCESS_LOOT (F038624)
@@ -923,14 +1036,18 @@ impl Agent for View<'_> {
             // using target turret (0x140997d30) / using any turret
             104 => matches!(t, Target::Furniture(f) if self.operators[*f] == Some(self.me)),
             145 => self.turrets.iter().any(|&(f, _)| self.operators[f] == Some(self.me)),
-            // isAggressionTowards (F038635): the target character's flag at +0x2b0
-            // ((assumption) not identified: taken as its being in a fight)
+            // isAggressionTowards (F038635): the target character's flag at +0x2b0 (F033851: an
+            // aggressor of it close)
             16 => match t {
-                Target::Person(x) => self.in_fight[*x],
+                Target::Person(x) => self.aggression[*x],
                 _ => return None,
             },
             // isAggressionTowardsMe (F038686): condition 16's test on myself
-            39 => self.in_fight[self.me],
+            39 => self.aggression[self.me],
+            // iAmBeingMeleeAttacked general (F033835): the AI's aggressors list (Character
+            // vtable 0x68: the AI's +0x28 block, its +0x58 the count of the AI's +0x78 list) not
+            // empty
+            159 => !self.aggressors[self.me].is_empty(),
             // isAtHome (F050262): in the home building
             18 => self.home.is_some() && self.inside == self.home,
             // "I need a medkit." (a first aid kit carried); "My legs are messed up." (F050238)
@@ -999,6 +1116,7 @@ impl Agent for View<'_> {
             && !crate::raid_ai::RAID_RUNNABLE.contains(&d.task)
             && !crate::intruders::DOOR_RUNNABLE.contains(&d.task)
             && !crate::jobs::JOB_RUNNABLE.contains(&d.task)
+            && !crate::talk::TALK_RUNNABLE.contains(&d.task)
         {
             return 0.0;
         }
@@ -1007,6 +1125,8 @@ impl Agent for View<'_> {
             Score::Random => self.rng.next() * 0.4 + 0.01,
             // F038686 (the leader's factor object is not ported: 1)
             Score::Method(15) => kenshi_ai::follow::score(None),
+            // (crate::talk) the talk tasks' scores
+            Score::Method(m) if crate::talk::TALK_SCORES.contains(&m) => self.talk_view.score(self.me, m),
             // F038650, a townsperson's: half-hearted for 20 game minutes after getting up
             // (the trouble score F038651 and the own-bed-in-home test are not ported)
             // F038650 for the player's people (crate::jobs): none carrying someone or with
@@ -1145,13 +1265,17 @@ impl Agent for View<'_> {
                     0.0
                 }
             }
-            // Self preservation (F038603): 1 while I am fought (+0x2b0, isAggressionTowards);
-            // else 0.7 with one known within 181 units whose squad fights ((assumption)
-            // Character +0x1a0's +0xa0 taken as its being in a fight); else none
+            // Self preservation (F038603): 1 while an aggressor of mine is close (+0x2b0,
+            // F033851); else 0.7 with one of my aggressors (the AI's +0x78 list) within 181
+            // units whose state +0x1a0 +0xa0 is above 0 ((assumption) its being in a fight on
+            // someone); else none
             Score::Method(17) => {
-                if self.in_fight[self.me] {
+                if self.aggression[self.me] {
                     1.0
-                } else if self.known.iter().any(|k| self.in_fight[k.id] && (k.position[0] - self.pos[0]).powi(2) + (k.position[1] - self.pos[1]).powi(2) + (k.position[2] - self.pos[2]).powi(2) < 33_000.0) {
+                } else if self.aggressors[self.me].iter().any(|&a| {
+                    let q = self.positions[a];
+                    self.aggressive[a] && (q[0] - self.pos[0]).powi(2) + (q[1] - self.pos[1]).powi(2) + (q[2] - self.pos[2]).powi(2) < SELF_PRESERVATION_NEAR_SQ
+                }) {
                     0.7
                 } else {
                     0.0
@@ -1188,7 +1312,7 @@ impl Agent for View<'_> {
             // (crate::raid_ai) Retreating
             _ if crate::raid_ai::RaidView::scores(d) => self.raid.score(self.me, d, t),
             // (crate::jobs) the player's jobs' steps
-            _ if crate::jobs::JobsView::scores(d) => self.jobs.score(self.me, d, t),
+            _ if crate::jobs::JobsView::scores(d) => self.jobs.score(self.me, self.pos, d, t),
             _ => 0.0,
         }
     }
@@ -1300,21 +1424,16 @@ impl Agent for View<'_> {
                 Target::Person(e) if !self.downs[*e] => Some(*t),
                 _ => None,
             },
-            // Getting food / Looting food (F047552): a search about the package's area for a
-            // container with food: (assumption) the nearest within FOOD_SEARCH of me
-            GETTING_FOOD | LOOTING_FOOD => {
-                let me = self.pos;
-                if let Target::Store(o) = *t
-                    && self.stores.iter().any(|s| s.0 == o && s.2)
-                {
-                    return Some(*t);
-                }
-                self.stores
-                    .iter()
-                    .filter(|s| s.2 && (s.1[0] - me[0]).hypot(s.1[2] - me[2]) < FOOD_SEARCH)
-                    .min_by(|a, b| (a.1[0] - me[0]).hypot(a.1[2] - me[2]).total_cmp(&(b.1[0] - me[0]).hypot(b.1[2] - me[2])))
-                    .map(|s| Target::Store(s.0))
-            }
+            // Getting food / Looting food (F047552, `food_finder`)
+            GETTING_FOOD | LOOTING_FOOD => food_finder(
+                self.stores.iter().zip(self.store_info).map(|(s, i)| (s.0, i)),
+                self.pos,
+                self.package_town.or(self.town),
+                self.my_faction.as_deref(),
+                self.animal,
+                &self.ignored,
+            )
+            .map(Target::Store),
             // Turret guard (F047566): with a town to be in, the turret it has if free and in that
             // town, else (F047713's search, (assumption) the nearest) a free one of the town;
             // Turret home guard (F047567): a free turret of the home building
@@ -1531,9 +1650,14 @@ impl Agent for View<'_> {
             t if crate::raid_ai::RAID_FINDERS.contains(&t) => self.raid.find_target(self.me, t),
             // (crate::jobs) the player's jobs' finders
             k if crate::jobs::JOB_FINDERS.contains(&k) => self.jobs.find_target(self.me, self.pos, k, t),
+            // (crate::talk) the talk tasks' finders
+            k if crate::talk::TALK_FINDERS.contains(&k) => self.talk_view.find_target(self.me, k, t),
             // (crate::law) the law's and the slavers' finders
             _ => self.law.find_target(self.me, d.task),
         }
+    }
+    fn talk_events(&mut self) -> Option<&mut kenshi_ai::planner::TalkEvents> {
+        Some(&mut self.talk)
     }
 }
 
@@ -1702,6 +1826,9 @@ impl Mind for View<'_> {
     }
     fn free_will(&self) -> bool {
         self.will
+    }
+    fn has_event_dialogue(&mut self, event: i32) -> bool {
+        self.talk_view.has_event.contains(&(self.me, event))
     }
     fn idle_goals(&mut self) -> kenshi_ai::task_system::IdleGoals {
         self.jobs.people.get(&self.me).map(|k| k.idle).unwrap_or_default()
@@ -1889,6 +2016,14 @@ fn stand_on_ground(pos: &mut [f32; 3], terrain: &mut Terrain, nav: &NavWorld) {
             pos[1] = ground;
         }
     }
+}
+
+/// @fn F042730
+///
+/// An item traded across: buyback until it comes back (its count the stack's less what was
+/// buyback; none left takes it off the map), else all of the stack is.
+fn toggle_buyback(item: &mut kenshi_char::inventory::Item) {
+    item.buyback = if item.buyback != 0 { item.quantity as i32 - item.buyback } else { item.quantity as i32 };
 }
 
 /// @fn F044581
@@ -2107,6 +2242,8 @@ pub struct Sim {
     pub population: Option<Population>,
     /// The wilds' camps and dens (`crate::nests`).
     pub nests: Vec<crate::nests::Nest>,
+    /// TownList's turn among the nests (0x142135438, `nests_step`).
+    pub nest_turn: usize,
     /// The level's nest markers (kenshi_world::town::nest_markers), read when first wanted.
     pub nest_markers: Option<Vec<[f32; 3]>>,
     /// The zones whose buildings and residents are in (the first one's from `load`), in the
@@ -2121,16 +2258,47 @@ pub struct Sim {
     pub faction_numbers: std::collections::HashMap<String, u32>,
     pub barrier_of: Vec<Option<usize>>,
     pub barrier_door: Vec<usize>,
+    /// The gate codes (crate::gate_codes, kenshi_world::gates): the pairs, the navmesh's
+    /// generation they were worked out for, each door's (outside, inside) codes (its building's
+    /// and its +0x378) and last gate state, each placement's code (Building +0xa0).
+    pub gate_codes: kenshi_world::gates::GateCodes,
+    pub gate_generation: u64,
+    pub door_codes: Vec<(i32, i32)>,
+    pub gate_states: Vec<u8>,
+    pub building_codes: Vec<i32>,
+    /// Loose items picked up by the planner's Task_Pickup (crate::jobs), who and what, for their
+    /// sound (the game's sound system takes them).
+    pub ground_pickups: Vec<(usize, String)>,
     /// Buildings dismantled so far (for the sound), and whether the player's buildings changed
     /// in a way the navmesh must follow (crate::upkeep).
     pub dismantled: u32,
     pub buildings_changed: bool,
     /// Zones come in without their people (a save's people are put back instead).
     pub quiet_zones: bool,
+    /// The zones Kenshi has loaded now (`world::zones_tick`) and the seconds each stays; the
+    /// camera's focus (world units, the game's camera; none headless) and its current zone; the
+    /// option "Fast zone hopping"; whether the game drives the zones (its streaming calls
+    /// `zones_tick` with real time) rather than `step`.
+    pub live_zones: std::collections::BTreeMap<(i32, i32), f32>,
+    /// BiomeManager's cells' squads (`cells`: F048125, F048126).
+    pub cells: crate::cells::Cells,
+    pub camera_focus: Option<[f32; 3]>,
+    pub camera_zone: Option<(i32, i32)>,
+    pub fast_zone_hopping: bool,
+    pub zones_driven: bool,
+    /// A save loading (ZoneManager +0x08: no town takes its override as its zone loads), the
+    /// towns started this game load (ZoneManager +0x168148, `world::zone_loaded`), and those
+    /// overridden at their zone's load (their zone fresh: `loot`).
+    pub loading: bool,
+    pub towns_started: std::collections::BTreeSet<usize>,
+    pub overridden: std::collections::BTreeSet<usize>,
     /// A loaded save's world (squads, towns, relations), put back on the world's first tick.
     pub pending_world: Option<crate::save::SavedWorld>,
     /// Read once for zones added later: the building layouts.
     pub(crate) layouts: Option<Layouts>,
+    /// The foliage each zone's scatter reads, for the buildings its objects make (F041802,
+    /// `foliage_buildings`); read once (None inside: none to read).
+    pub(crate) foliage_data: Option<Option<std::sync::Arc<kenshi_world::foliage::FoliageData>>>,
     /// What hunger reads: GLOBAL CONSTANTS "starvation time" (game hours, F032933), "fed
     /// recovery rate mult", "bed hunger rate", "encumbrance hunger rate", and the race's
     /// "hunger rate" (CharStats +0x178).
@@ -2169,14 +2337,20 @@ pub struct Sim {
     pub power_demand: f32,
     pub battery: f32,
     pub battery_capacity: f32,
-    /// What is supplied over what is drawn, at most 1 (F037662).
+    /// What is supplied over what is drawn, at most 1 (F037662), and the same without the
+    /// batteries' help (for the consumers that may not run off them, F029341).
     pub power_eff: f32,
+    pub power_eff_mains: f32,
     /// The base's name and whether it is open to the public (the HUD's town panel, F043042).
     /// "Outpost" until named. Open to the public: Kenshi reads the flag only in the wandering
     /// traders' town finder (F048860, town types 2 3 5 6), which never picks a player town (type
     /// 1); its visitors are the factions' visit campaigns (crate::world).
     pub outpost_name: String,
     pub outpost_public: bool,
+    /// Whether an inventory window is open (ForgottenGUI +0xa8, its InventoryGUIs by hand, not
+    /// empty: F042066), set by the game's window (`inventory_ui`); a TRADER_VISIT campaign
+    /// stays while it is (F050809).
+    pub inventory_open: bool,
     /// The player's outposts' centres (`base::assign_outposts`, F036212).
     pub outposts: Vec<[f32; 3]>,
     /// The player's squads (crate::squads), in the order they are listed.
@@ -2242,6 +2416,11 @@ pub struct Sim {
     pub race_rolls: std::sync::Mutex<HashMap<(usize, Option<String>, Option<String>), Option<String>>>,
     /// Each RACE's "swims" and "swim speed mult" (F033689 +0x79, +0x60), as asked for.
     pub race_water: HashMap<String, (bool, f32)>,
+    /// (cache) The navmesh point by each container's place, as the step's `stores` finds it,
+    /// kept while the navmesh's faces are unchanged (its generation).
+    pub store_spots: (u64, HashMap<[u32; 3], [f32; 3]>),
+    /// (cache) The containers as the food finder read them last tick (owner id, `StoreInfo`).
+    pub food_stores: Vec<(usize, StoreInfo)>,
     /// The squads hired on contracts (crate::dialogue::Contract).
     pub contracts: Vec<crate::dialogue::Contract>,
     /// The Kenshi save the game was imported from (crate::save::SavedWorld::kenshi_base).
@@ -2254,6 +2433,9 @@ pub struct Sim {
     pub npc_talks: Vec<(crate::dialogue::Conversation, Vec<crate::dialogue::Effect>)>,
     /// Lines said aloud (speaker, text), for the game to show over their heads (`speech`).
     pub said: Vec<(usize, String)>,
+    /// Lines of a conversation the player's dialogue window shows (F040861): into the log, not
+    /// over a head (crate::conversation).
+    pub logged: Vec<(usize, String)>,
     /// Items on the ground (`loot`), the next one's number, and the towns whose loot is out.
     pub ground: Vec<crate::loot::GroundItem>,
     /// (testing) Plan steps of each task dropped for want of an executor, counted.
@@ -2274,6 +2456,13 @@ pub struct Sim {
     pub law_state: crate::law::LawState,
     /// The raid and return goals (crate::raid_ai).
     pub raid_state: crate::raid_ai::RaidState,
+    /// What the talk tasks read each second (crate::talk).
+    pub talk_view: crate::talk::TalkView,
+    /// The talk tasks running (crate::talk).
+    pub talk_state: crate::talk::TalkState,
+    /// Per person, what it wore and wielded when last equipped (`refresh_equipment`; 0 not yet
+    /// seen).
+    pub equip_seen: Vec<u64>,
     /// The player's jobs on the planner (crate::jobs).
     pub jobs_state: crate::jobs::JobsState,
     /// The buildings' item spots (crate::loot::ItemSpot).
@@ -2281,9 +2470,11 @@ pub struct Sim {
     /// A loaded game's empty item spots and when each fills (`loot::apply_spot_dues`).
     pub saved_spot_dues: Vec<([f32; 3], f64)>,
     pub next_ground: u64,
+    /// Severed limbs dropped this tick as physics bodies (F040471 -> Item drop with physics on):
+    /// the ground item, whose it was and its body part; the game places each at the limb's bone
+    /// and simulates it. Not saved.
+    pub limb_drops: Vec<(u64, usize, usize)>,
     pub looted: std::collections::HashSet<String>,
-    /// The zones loaded at the last loot tick (`loot_tick`: a zone loading now).
-    pub loot_zones: std::collections::HashSet<(i32, i32)>,
     /// The containers of the towns and ruins loaded, and what is in them (`loot`).
     pub boxes: Vec<crate::loot::WorldBox>,
     /// Saved containers' contents waiting for their zone (`loot::refill_boxes`).
@@ -2292,7 +2483,8 @@ pub struct Sim {
     pub artifacts: Option<crate::artifacts::Handout>,
     /// When each person may next speak, and next greet the player's characters (game hours);
     /// who was down at the last speech tick.
-    pub bark_next: HashMap<usize, f64>,
+    /// Each character's dialogue as it runs a conversation (crate::conversation).
+    pub runs: std::collections::BTreeMap<usize, crate::conversation::Run>,
     pub seen_player: HashMap<usize, f64>,
     pub was_down: std::collections::HashSet<usize>,
     /// Effects of NPC lines run on inside a conversation step.
@@ -2317,6 +2509,9 @@ pub struct Population {
     pub zones: Vec<Vec<(i32, i32)>>,
     /// The town each squad from a town's "roaming squads" came from (by its first member).
     pub homes: HashMap<usize, usize>,
+    /// Each homeless squad's home as it was made (the platoon's home, F044526 +0x30, from
+    /// F048137): a town (Ok) or a nest (Err), by its first member.
+    pub home_town: HashMap<usize, Result<usize, usize>>,
 }
 
 impl Sim {
@@ -2325,11 +2520,18 @@ impl Sim {
     pub fn load(install: &Path, zx: i32, zy: i32, people: usize, extras: &[String]) -> Sim {
         // the game's data with the player's mods over it (MODDING.md)
         let order = Install::new(install).game_order().unwrap();
-        let data = GameDataContainer::load(&order).unwrap();
+        let mut data = GameDataContainer::load(&order).unwrap();
+        // F046697: the ANIMATION records sharing a clip each get a copy of their own
+        kenshi_anim::select::split_shared_clips(&mut data);
         // (a zone without a file: open ground, no buildings)
-        let placed = kenshi_world::read_zone(install, zx, zy)
+        let mut placed = kenshi_world::read_zone(install, zx, zy)
             .map(|z| placements(&z))
             .unwrap_or_default();
+        // and the buildings its foliage makes (F041802: the resource rocks)
+        let foliage_data = kenshi_world::foliage::FoliageData::load(install, &data, WATER_LEVEL).map(std::sync::Arc::new);
+        if let (Some(fd), Ok(mut t)) = (&foliage_data, Terrain::open(install)) {
+            placed.extend(kenshi_world::foliage::zone_buildings(fd, &data, install, (zx, zy), |x, z| t.height_at(x, z).unwrap_or(0.0)));
+        }
         let layouts = Layouts::load(install);
         let all = nodes(&data, &layouts, &placed);
         let mut general: Vec<Node> = all
@@ -2382,6 +2584,8 @@ impl Sim {
                 ]
             })
             .collect();
+        // each placement's town, as Kenshi gives a building its town (F038257, `world`)
+        let placed_town = crate::world::placement_towns(&data, &towns, &placed, &placed_at);
         let bars: Vec<usize> = (0..placed.len())
             .filter(|&i| {
                 placed[i]
@@ -2390,7 +2594,7 @@ impl Sim {
                     .and_then(|r| data.get(r))
                     .and_then(|r| r.ints.get("building designation"))
                     == Some(&BD_BAR)
-                    && home_town.is_none_or(|t| towns[t].contains(placed_at[i], 1.0))
+                    && home_town.is_none_or(|t| placed_town[i] == Some(t))
             })
             .collect();
         eprintln!(
@@ -2600,7 +2804,6 @@ impl Sim {
                 escort: None,
                 build: None,
                 operate: None,
-                haul: None,
                 crime: None,
                 bounties: Vec::new(),
                 heat: 0.0,
@@ -2619,7 +2822,6 @@ impl Sim {
                 surrendered: false,
                 playing_dead: false,
                 stand_up: false,
-                auto_haul: None,
                 dust: 0.0,
                 hazard: None,
                 water: 0,
@@ -2645,6 +2847,9 @@ impl Sim {
                 gate_in_way: None,
                 ignored: Vec::new(),
                 sensed: Vec::new(),
+                near: Vec::new(),
+                sensor_enemies: 0,
+                area: -1,
                 fight_path: Vec::new(),
                 bash_order: None,
                 door_order: None,
@@ -2652,6 +2857,7 @@ impl Sim {
                 bash_timer: 0.0,
                 stalk: None,
                 roads: Default::default(),
+                aggressed: false,
             });
             id
         };
@@ -2753,57 +2959,10 @@ impl Sim {
                 leaders,
                 squad,
                 kind,
-                // F038271: the template's "faction", else its owner's (the town it lives in)
-                faction_of(t).or_else(|| kenshi_world::town::current_town(&towns, at, None).or(home_town).and_then(|k| towns[k].faction.clone())),
+                // F038271: the template's "faction", else its owner's (the town its building is
+                // the town's, F038257)
+                faction_of(t).or_else(|| placed_town[pi].or(home_town).and_then(|k| towns[k].faction.clone())),
             );
-        }
-        // the town's bar squads (TOWN "bar squads": the ref's first value how many, its second
-        // the % chance of each) at its bar. (stand-in) Rolled once as the zone first loads: the
-        // town population manager that times them is not ported
-        if let (Some(t), Some(&bar)) = (home_town, bars.first())
-            && let Some(town_rec) = data.get(&towns[t].record)
-        {
-            let mut wanted: Vec<String> = Vec::new();
-            for (sid, v) in town_rec.refs("bar squads") {
-                let chance = if v[1] > 0 { v[1] as f32 } else { 100.0 };
-                for _ in 0..v[0].max(1) {
-                    if rng.next() * 100.0 < chance {
-                        wanted.push(sid.clone());
-                    }
-                }
-            }
-            for sid in &wanted {
-                let Some(t) = data.get(sid) else { continue };
-                let Some(package) = t
-                    .refs("AI packages")
-                    .iter()
-                    .max_by_key(|(_, v)| v[0])
-                    .and_then(|(s, _)| data.get(s))
-                else {
-                    continue;
-                };
-                let roster = template_roster(t, squad_size_mult(install), &mut || rng.next());
-                let (leaders, squad) = (i32::from(!roster.is_empty()), roster.len().saturating_sub(1) as i32);
-                rosters.insert(folk.len(), roster);
-                eprintln!(
-                    "bar squad {}: {leaders} leader(s), {squad} others, package {}",
-                    t.name, package.name
-                );
-                kits.push((folk.len(), t.string_id.clone()));
-                spawn_squad(
-                    &mut folk,
-                    &mut platoons,
-                    &mut rng,
-                    placed_at[bar],
-                    Some(bar),
-                    package,
-                    leaders,
-                    squad,
-                    formation_of(&data, t),
-                    // F038271: the template's "faction", else the town's
-                    faction_of(t).or_else(|| home_town.and_then(|k| towns[k].faction.clone())),
-                );
-            }
         }
         // squads asked for on the command line, at the town's centre; (harness) they arrive facing
         // the residents' middle
@@ -3052,7 +3211,7 @@ impl Sim {
                     None => {
                         let mut inv = kenshi_char::inventory::Inventory::character();
                         for name in std::iter::once(KIT_WEAPON).chain(KIT_OUTFIT) {
-                            if let Some(r) = data.records.values().find(|r| r.name == name && r.item_type().is_some()) {
+                            if let Some(r) = data.order.iter().filter_map(|s| data.get(s)).find(|r| r.name == name && r.item_type().is_some()) {
                                 inv.add(kenshi_char::inventory::Item::from_record(r, 1), true);
                             }
                         }
@@ -3127,7 +3286,9 @@ impl Sim {
             .get("vision range mult")
             .copied()
             .unwrap_or(1.0);
-        let (lengths, roots) = skeleton_clips(&res, race_rec).expect("skeleton");
+        let mut clips = skeleton_clips(&res, race_rec).expect("skeleton");
+        kenshi_combat::arena::copy_clips(&mut clips, &data);
+        let (lengths, roots) = clips;
         let kit = Kit::new(&data, KIT_WEAPON, &KIT_OUTFIT).expect("kit");
         let mut arena = Arena::new(
             vec![],
@@ -3226,7 +3387,7 @@ impl Sim {
             owners,
             placed,
             placed_at,
-            placed_town: Vec::new(),
+            placed_town,
             relations,
             rng,
             terrain,
@@ -3258,21 +3419,39 @@ impl Sim {
                 mult: kenshi_io::cfg::load(install, "settings.cfg").get("Global population multiplier").and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(1.0),
                 zones: vec![],
                 homes: HashMap::new(),
+                home_town: HashMap::new(),
             }),
             nests: Vec::new(),
+            nest_turn: 0,
             nest_markers: None,
             zones: [(zx, zy)].into_iter().collect(),
             zone_offsets: [((zx, zy), 0)].into_iter().collect(),
             faction_numbers: Default::default(),
             barrier_of: Vec::new(),
             barrier_door: Vec::new(),
+            gate_codes: Default::default(),
+            gate_generation: 0,
+            door_codes: Vec::new(),
+            gate_states: Vec::new(),
+            building_codes: Vec::new(),
+            ground_pickups: Vec::new(),
             dismantled: 0,
             buildings_changed: false,
             zone_order: vec![(zx, zy)],
             quiet_zones: false,
+            live_zones: Default::default(),
+            cells: Default::default(),
+            camera_focus: None,
+            camera_zone: None,
+            fast_zone_hopping: false,
+            zones_driven: false,
+            loading: false,
+            towns_started: Default::default(),
+            overridden: Default::default(),
             pending_world: None,
             // (kept for the zones added later and the towns' residents, `world`)
             layouts: Some(layouts),
+            foliage_data: Some(foliage_data),
             money,
             met: HashMap::new(),
             pick_events: Vec::new(),
@@ -3302,10 +3481,15 @@ impl Sim {
             recognition: Default::default(),
             law_state: Default::default(),
             raid_state: Default::default(),
+            talk_view: Default::default(),
+            talk_state: Default::default(),
+            equip_seen: Vec::new(),
             jobs_state: Default::default(),
             spots: Vec::new(),
             saved_spot_dues: Vec::new(),
             race_water: HashMap::new(),
+            store_spots: (0, HashMap::new()),
+            food_stores: Vec::new(),
             climate: Default::default(),
             harms: Vec::new(),
             shelters: None,
@@ -3316,14 +3500,15 @@ impl Sim {
             mem_down: Vec::new(),
             npc_talks: Vec::new(),
             said: Vec::new(),
+            logged: Vec::new(),
             ground: Vec::new(),
             next_ground: 0,
+            limb_drops: Vec::new(),
             looted: Default::default(),
-            loot_zones: Default::default(),
             boxes: Vec::new(),
             saved_boxes: Vec::new(),
             artifacts: None,
-            bark_next: HashMap::new(),
+            runs: std::collections::BTreeMap::new(),
             seen_player: HashMap::new(),
             was_down: Default::default(),
             pending_effects: Vec::new(),
@@ -3341,10 +3526,12 @@ impl Sim {
             battery: 0.0,
             battery_capacity: 0.0,
             power_eff: 1.0,
+            power_eff_mains: 1.0,
             outpost_name: "Outpost".into(),
             player_squads: Vec::new(),
             faction_name: String::new(),
             outpost_public: false,
+            inventory_open: false,
             outposts: Vec::new(),
             ai_options: AiOptions::default(),
             wind: 0.0,
@@ -3384,6 +3571,13 @@ impl Sim {
         sim.add_containers(&first, 0);
         // a town the zone state left unpeopled: its residents handed out (`world`)
         sim.setup_residents(0);
+        // the home town's bar squads (F051414)
+        if let Some(t) = home_town
+            && !sim.quiet_zones
+        {
+            let rec = sim.towns[t].record.clone();
+            sim.spawn_bar_squads(t, &rec);
+        }
         // the game start's "research" done and "faction relations" set (both ways: the player's
         // faction toward them and theirs toward it)
         sim.research_done.extend(start_research);
@@ -3399,7 +3593,12 @@ impl Sim {
                     r.relations.entry(b).or_insert(kenshi_ai::faction::Relation { forced_ally: false, relation: v }).relation = v;
                 }
             }
+            // F046699: each one known to the player's faction (F045557)
+            sim.world.known_factions.insert(f.clone());
         }
+        // the first zone's towns' overrides as its content loads (F051436, `world::zone_loaded`:
+        // the world states read with the start's relations set)
+        sim.zone_loaded((zx, zy));
         for (start, t) in &shop_kits {
             if let Some(pl) = sim.folk.get(*start).and_then(|p| p.platoon) {
                 sim.squad_template.insert(pl, t.clone());
@@ -3598,7 +3797,9 @@ impl Sim {
     pub fn buy(&mut self, trader: usize, idx: usize, person: usize, to: usize, at: Option<(u32, u32)>) -> Result<i32, String> {
         let Some(shop) = self.folk[trader].shop.as_ref() else { return Err("not a trader".into()) };
         let Some(item) = shop.stock.sections[0].items.get(idx).map(|p| p.item.clone()) else { return Err("no such item".into()) };
-        let price = self.price(&item, shop.town, true) * item.quantity as i32;
+        // F042770 / F042775: buyback (what the player sold here) goes back at the sale price
+        // (the item's price with the side flag flipped by a buyback count, F042723)
+        let price = self.price(&item, shop.town, item.buyback == 0) * item.quantity as i32;
         if self.money < price {
             return Err(format!("can't afford {} (c.{price}, have c.{})", item.name, self.money));
         }
@@ -3612,9 +3813,10 @@ impl Sim {
             return Err("doesn't fit there".into());
         }
         let shop = self.folk[trader].shop.as_mut().expect("shop");
-        let item = shop.stock.take(0, idx).expect("item");
+        let mut item = shop.stock.take(0, idx).expect("item");
         shop.money += price;
         self.money -= price;
+        toggle_buyback(&mut item);
         let _ = self.folk[person].inventory.put(to, item, x, y);
         Ok(price)
     }
@@ -3650,7 +3852,8 @@ impl Sim {
             return Err("no such item".into());
         };
         let Some(shop) = self.folk[trader].shop.as_ref() else { return Err("not a trader".into()) };
-        let price = self.price(&item, shop.town, false) * item.quantity as i32;
+        // F042770 / F042775: what the player bought here sells back at its buying price
+        let price = self.price(&item, shop.town, item.buyback != 0) * item.quantity as i32;
         if shop.money < price {
             return Err(format!("the trader can't afford {} (c.{price}, has c.{})", item.name, shop.money));
         }
@@ -3668,10 +3871,11 @@ impl Sim {
                 }
             },
         };
-        let item = self.folk[person].inventory.take(from, idx).expect("item");
+        let mut item = self.folk[person].inventory.take(from, idx).expect("item");
         let shop = self.folk[trader].shop.as_mut().expect("shop");
         shop.money -= price;
         self.money += price;
+        toggle_buyback(&mut item);
         let _ = shop.stock.put(0, item, x, y);
         Ok(price)
     }
@@ -3733,6 +3937,29 @@ impl Sim {
         self.sync_ammo(id);
     }
 
+    /// What each fighter wields and wears kept to its inventory: re-equipped (`equip`) once the
+    /// items in its equipping sections change (a weapon or armour looted, stripped, handed over
+    /// or put on), so a looted fighter no longer swings the weapon it lost. (stand-in) Kenshi
+    /// re-reads them as items leave or enter those sections; here each tick compares them.
+    pub fn refresh_equipment(&mut self) {
+        self.equip_seen.resize(self.folk.len(), 0);
+        for id in 0..self.folk.len() {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for i in self.folk[id].inventory.equipped() {
+                std::hash::Hash::hash(&i.record, &mut h);
+                std::hash::Hash::hash(&i.quality.to_bits(), &mut h);
+            }
+            let sig = std::hash::Hasher::finish(&h) | 1;
+            let seen = self.equip_seen[id];
+            if seen != sig {
+                self.equip_seen[id] = sig;
+                if seen != 0 {
+                    self.equip(id);
+                }
+            }
+        }
+    }
+
     /// The ammo charges a fighter carries for its crossbow, from its inventory.
     pub fn sync_ammo(&mut self, id: usize) {
         let f = &mut self.arena.f[id];
@@ -3773,7 +4000,6 @@ impl Sim {
             p.build = None;
             p.operate = None;
             p.escort = None;
-            p.haul = None;
             let f = &mut self.arena.f[id];
             if f.active && std::env::var("KENSHI_RANGED_DEBUG").is_ok() {
                 eprintln!("{} ordered out of the fight (task {task})", f.name);
@@ -3814,6 +4040,27 @@ impl Sim {
         }
         let item = self.inv(giver).and_then(|i| i.sections.get(from)).and_then(|s| s.items.get(idx)).map(|p| p.item.clone()).ok_or("no such item")?;
         let sec = self.inv(taker).and_then(|i| i.sections.get(to)).ok_or("no such section")?;
+        // a machine's container (F029392) takes onto its stack, up to its size, what it keeps
+        if !sec.only.is_empty()
+            && sec.takes(&item)
+            && let Some(room) = sec.items.first().filter(|p| p.item.record == item.record).map(|p| sec.stack_of(&p.item).saturating_sub(p.item.quantity))
+        {
+            if room == 0 {
+                return Err("doesn't fit there".into());
+            }
+            let n = room.min(item.quantity);
+            if let Some(g) = self.inv_mut(giver).and_then(|i| i.sections.get_mut(from)) {
+                if g.items[idx].item.quantity > n {
+                    g.items[idx].item.quantity -= n;
+                } else {
+                    g.items.remove(idx);
+                }
+            }
+            if let Some(p) = self.inv_mut(taker).and_then(|i| i.sections.get_mut(to)).and_then(|s| s.items.first_mut()) {
+                p.item.quantity += n;
+            }
+            return Ok(());
+        }
         let (x, y) = match at {
             Some(c) => c,
             None => sec.first_fit(&item).ok_or("no room")?,
@@ -3821,7 +4068,17 @@ impl Sim {
         if !sec.takes(&item) || !sec.fits(&item, x, y, None) {
             return Err("doesn't fit there".into());
         }
-        let item = self.inv_mut(giver).and_then(|i| i.take(from, idx)).expect("item");
+        // (a container takes no more than its stack size: the rest stays)
+        let most = if !sec.only.is_empty() { sec.stack_of(&item) } else { u32::MAX };
+        let item = if item.quantity > most {
+            let g = self.inv_mut(giver).and_then(|i| i.sections.get_mut(from)).expect("section");
+            g.items[idx].item.quantity -= most;
+            let mut part = item;
+            part.quantity = most;
+            part
+        } else {
+            self.inv_mut(giver).and_then(|i| i.take(from, idx)).expect("item")
+        };
         if let Some(i) = self.inv_mut(taker) {
             let _ = i.put(to, item, x, y);
         }
@@ -4021,9 +4278,9 @@ impl Sim {
     /// picks whom to loot within 100 units: the dead first, then the knocked out (the player's
     /// only with "Bandits loot the player"), none it has looted already, none a squadmate is
     /// looting; it goes there and loots them ([`Sim::looting_tick`]).
-    /// F050277's tests: within 100 units (squared 10000), and (F038528) not shut in a building
-    /// of another's whose doors are all locked; (assumption) one so near stands on the same
-    /// navmesh island (F038529's connectivity test not ported).
+    /// F050277's tests: within 100 units (squared 10000), (F038528) not shut in a building of
+    /// another's whose doors are all locked, and (F038529, crate::gate_codes) in a region openly
+    /// joined to mine.
     pub fn looter_tick(&mut self, dt: f32) {
         const REACH2: f32 = 10_000.0;
         const SEARCH_EVERY: f32 = 2.0;
@@ -4061,6 +4318,10 @@ impl Sim {
                         if !doors.is_empty() && doors.iter().all(|d| d.locked && d.level >= 1 && !d.broken) {
                             return false;
                         }
+                    }
+                    // F038529: in a region openly joined to mine
+                    if !self.can_use(id, k) {
+                        return false;
                     }
                     // a squadmate on them already
                     !claimed.iter().enumerate().any(|(m, c)| *c == Some(k) && m != id && self.folk[m].platoon == self.folk[id].platoon)
@@ -4213,7 +4474,7 @@ impl Sim {
         f.medical.knockout_time = f.medical.knockout_time.max(120.0);
     }
 
-    /// Bring a knocked-out person round at once: they get up (held for the "standing up 3" clip,
+    /// Bring a knocked-out person round at once: they get up (held for `get_up_time`: "standing up 3",
     /// F037164) and carry on. (The knockout's own end is the medical step's, "comes round";
     /// this is for callers that end it themselves.)
     pub fn wake(&mut self, id: usize) {
@@ -4224,7 +4485,10 @@ impl Sim {
         }
         p.down = false;
         f.down = false;
-        p.getting_up = len;
+        // the character comes round on the floor under where its ragdoll lay (F044942)
+        stand_on_ground(&mut p.mover.position, &mut self.terrain, &self.nav);
+        f.mover.position = p.mover.position;
+        p.getting_up = get_up_time(len, f.prone());
         p.rethink = true;
     }
 
@@ -4273,13 +4537,29 @@ impl Sim {
         for &id in ids {
             let Some(w) = self.folk.get_mut(id).and_then(|p| p.carrying.take()) else { continue };
             let p = &self.folk[id];
+            if std::env::var("KENSHI_CARRY_DEBUG").is_ok() {
+                eprintln!(
+                    "t {:.1} person {id} puts down {w}: goal {:?} queue {:?}, inside {:?} / {:?}, at {:?} / {:?}",
+                    self.t,
+                    p.ai.current.as_ref().map(|c| c.task),
+                    p.ai.queue.iter().map(|s| s.task).collect::<Vec<_>>(),
+                    p.inside,
+                    self.folk[w].inside,
+                    p.mover.position_units().map(|v| v as i32),
+                    self.folk[w].mover.position_units().map(|v| v as i32)
+                );
+            }
             let at = p.mover.position;
             let side = [p.facing[2] * 0.6, 0.0, -p.facing[0] * 0.6];
             let drop = [at[0] + side[0], at[1], at[2] + side[2]];
             let spot = self.nav.closest_point(drop, 3.0).map_or(at, |(_, q)| q);
+            let inside = building_at(&self.inner, spot.map(|v| v * 10.0));
             let c = &mut self.folk[w];
             c.carried_by = None;
             c.mover.position = spot;
+            // (where it now lies: out of a building once put down outside, as the next update
+            // has it, Character vtable 0x1d8)
+            c.inside = inside;
             self.arena.f[w].mover.position = spot;
         }
     }
@@ -4494,10 +4774,24 @@ impl Sim {
 
     /// One tick (1/60 s): thinking, the plans' steps, path answers, fights and movement.
     pub fn step(&mut self) {
+        let mut prof = kenshi_render::prof::Marks::start();
+        // the zones Kenshi keeps loaded (`world::zones_tick`; the game drives them itself, with
+        // real time): those come in whose content is here load again (their towns' overrides);
+        // a save loaded is done loading once they are in
+        if !self.zones_driven {
+            let (came, _) = self.zones_tick(self.dt);
+            for z in came {
+                if self.zones.contains(&z) {
+                    self.zone_loaded(z);
+                }
+            }
+            self.loading = false;
+        }
         // the turrets and who mans them (crate::turrets)
         self.sync_turrets();
         let hunger_c = self.hunger_c;
         let hunger_caps = self.hunger_caps();
+        prof.mark("sim: pre: turrets, hunger");
         // what target scoring reads of each (kenshi_combat::arena::Targeting)
         for id in 0..self.folk.len() {
             let crippled = self.limb_lost(id, 2) || self.limb_lost(id, 3) || (self.limb_lost(id, 0) && self.limb_lost(id, 1));
@@ -4513,6 +4807,7 @@ impl Sim {
                 self.arena.f[id].ignored = ignored;
             }
         }
+        prof.mark("sim: pre: targeting");
         let (dt, run, walk, start_hour, hour_secs, vision_mult, sunrise, sunset, t, tick) = (
             self.dt,
             self.run,
@@ -4546,28 +4841,99 @@ impl Sim {
         // navmesh point by it and whether it holds food (Getting food and Looting food look for
         // them)
         let has_food = |inv: &kenshi_char::inventory::Inventory| inv.sections.iter().any(|s| s.items.iter().any(|i| i.item.food.is_some()));
-        let by = |at: [f32; 3]| {
-            self.nav
-                .closest_point(at.map(|v| v * METRES), 300.0 * METRES)
-                .map_or(at, |(_, q)| q.map(|v| v / METRES))
+        // (the navmesh points kept while its faces are as they were: the same answers)
+        if self.store_spots.0 != self.nav.generation() {
+            self.store_spots = (self.nav.generation(), HashMap::new());
+        }
+        let (nav, spots) = (&self.nav, &mut self.store_spots.1);
+        let mut by = |at: [f32; 3]| {
+            *spots.entry(at.map(f32::to_bits)).or_insert_with(|| {
+                nav.closest_point(at.map(|v| v * METRES), 300.0 * METRES)
+                    .map_or(at, |(_, q)| q.map(|v| v / METRES))
+            })
         };
-        let stores: Vec<(usize, [f32; 3], bool)> = self
-            .boxes
-            .iter()
-            .enumerate()
-            .map(|(k, b)| (crate::loot::BOX_OWNER + k, by(b.at.position), has_food(&b.inventory)))
-            .chain(self.buildings.iter().enumerate().filter_map(|(k, b)| {
-                let s = b.storage.as_ref().filter(|_| b.done)?;
-                Some((crate::base::BUILDING_OWNER + k, by(b.at), has_food(s)))
-            }))
+        let mut stores: Vec<(usize, [f32; 3], bool)> = Vec::with_capacity(self.boxes.len());
+        let mut store_info: Vec<StoreInfo> = Vec::with_capacity(self.boxes.len());
+        let data = &self.data;
+        let fn_of = |inv: &kenshi_char::inventory::Inventory, f: i32| inv.sections.iter().any(|s| s.items.iter().any(|i| data.get(&i.item.record).and_then(|r| r.ints.get("item function").copied()) == Some(f)));
+        let function_of = |rec: &str| data.get(rec).and_then(|r| kenshi_world::furniture::functionality(data, r)).map_or(0, |f| f.0);
+        // (the refineries and crafting benches are ProductionBuilding / CraftingBuilding, as
+        // F038257 makes them by function: vtable 0x2f8 set)
+        let machine_of = |f: i32| f == 4 || f == 10;
+        for (k, b) in self.boxes.iter().enumerate() {
+            stores.push((crate::loot::BOX_OWNER + k, by(b.at.position), has_food(&b.inventory)));
+            let town = self.placed_town.get(b.at.placement).copied().flatten().or_else(|| current_town(&self.towns, b.at.position, None));
+            let owner = town.and_then(|t| self.towns[t].faction.clone()).or_else(|| {
+                let p = self.placed.get(b.at.placement)?;
+                [&p.squad, &p.residents].into_iter().flatten().find_map(|t| data.get(t)?.refs("faction").first().map(|(f, _)| f.clone()))
+            });
+            let function = function_of(&b.at.record);
+            store_info.push(StoreInfo {
+                function,
+                town,
+                outpost: None,
+                zone: kenshi_world::zone_of(b.at.position[0], b.at.position[2]),
+                owner,
+                indoors: self.placed.get(b.at.placement).is_some_and(|p| p.building != b.at.record),
+                machine: machine_of(function),
+                empty: b.inventory.sections.iter().all(|s| s.items.is_empty()),
+                food: fn_of(&b.inventory, 3),
+                restricted: fn_of(&b.inventory, 15),
+                at: b.at.position,
+            });
+        }
+        for (k, b) in self.buildings.iter().enumerate() {
+            if let Some(s) = b.storage.as_ref().filter(|_| b.done) {
+                stores.push((crate::base::BUILDING_OWNER + k, by(b.at), has_food(s)));
+                let function = function_of(&b.record);
+                store_info.push(StoreInfo {
+                    function,
+                    town: None,
+                    outpost: b.outpost,
+                    zone: kenshi_world::zone_of(b.at[0], b.at[2]),
+                    owner: Some(PLAYER_FACTION.to_string()),
+                    indoors: false,
+                    machine: machine_of(function),
+                    empty: s.sections.iter().all(|s| s.items.is_empty()),
+                    food: fn_of(s, 3),
+                    restricted: fn_of(s, 15),
+                    at: b.at,
+                });
+            }
+        }
+        // each one's squad package's town (its handler's +0xf0, F036793): the wandering
+        // trader's target town (WanderingTrader::start, F028938), the bar's town
+        // (Package_HangAroundBar's, F029188), a slaver squad's depot (SlaverPrisonerShipping,
+        // F028971)
+        let package_towns: Vec<Option<usize>> = (0..self.folk.len())
+            .map(|i| {
+                let p = &self.folk[i];
+                if let Some(k) = p.world_squad
+                    && let Some(t) = self.slave_depot(k)
+                {
+                    return Some(t);
+                }
+                let pl = p.platoon?;
+                if let Some(t) = self.folk.iter().filter(|q| q.platoon == Some(pl)).find_map(|q| q.caravan.as_ref().and_then(|c| c.target)) {
+                    return Some(t);
+                }
+                let bar = self.bar_states.get(pl)?.as_ref()?.bar?;
+                self.placed_town.get(bar).copied().flatten()
+            })
             .collect();
+        self.food_stores = stores.iter().map(|s| s.0).zip(store_info.iter().cloned()).collect();
+        prof.mark("sim: pre: swimmers, stores");
         // F040015: the player's people get their faction's "AI Goals" as jobs (F036828 ->
         // F036811, by classification): Nameless's Protect allies (urgent, so planned without
         // free will too)
         if self.placed_town.len() != self.placed_at.len() {
-            let towns = &self.towns;
-            self.placed_town = self.placed_at.iter().map(|&q| current_town(towns, q, None)).collect();
+            self.update_placed_towns();
         }
+        // the gate codes kept up with the navmesh and the doors, and the codes each one stands
+        // in kept (F044467, crate::gate_codes)
+        self.gate_codes_tick();
+        self.keep_areas();
+        prof.mark("sim: pre: gate codes");
         let placed_town = self.placed_town.clone();
         // each town's gateways (F038707 keeps a character within 300 units of one in that town):
         // the placements whose BUILDING "is wall gate" (F038257 builds those a GatewayBuilding,
@@ -4602,6 +4968,7 @@ impl Sim {
             .enumerate()
             .map(|(k, b)| (crate::loot::BOX_OWNER + k, (b.inventory.sections.iter().all(|s| s.items.is_empty()), inventory_full(&b.inventory))))
             .collect();
+        prof.mark("sim: pre: gates, storages");
         // the shops Shopping looks for (F050263)
         let counters = self.counters();
         let public = self.public_buildings();
@@ -4610,6 +4977,7 @@ impl Sim {
         // its race's "AI Goals" (F036828: "Heal my legs when crippled", animals' feeding, ...),
         // by race. (not ported) Idleness's own entry (the task system idles anyway) and the
         // faction's "AI Goals" for a character without its own (Character +0x210 unidentified).
+        prof.mark("sim: pre: shops");
         let mut race_goals: HashMap<String, [Vec<Task<Target>>; 4]> = HashMap::new();
         // (each one's race as it is drawn, `race_of`)
         let person_race: Vec<Option<String>> = (0..self.folk.len()).map(|i| if self.folk[i].player { None } else { self.race_of(i) }).collect();
@@ -4636,7 +5004,10 @@ impl Sim {
             .map(|f| jobs_of(kenshi_ai::package::record_goals(&self.data, f), None, None))
             .unwrap_or_default();
         // (crate::dialogue) the squads' temporary enemies, for the enemy test below
+        prof.mark("sim: pre: goals");
         let temp_enemies = self.temp_enemies();
+        // each furniture's function (BUILDING "function"), for who sits on a chair (crate::crowd)
+        let furn_functions: Vec<i32> = self.furn.iter().map(|f| f.function).collect();
         let Sim {
             data: _,
             general,
@@ -4669,9 +5040,11 @@ impl Sim {
             boxes,
             raid_state,
             jobs_state,
+            talk_view,
+            gate_codes,
             ..
         } = self;
-        let mut prof = kenshi_render::prof::Marks::start();
+        prof.mark("sim: pre: temp enemies");
         let now = t as f64 / hour_secs;
         let positions: Vec<[f32; 3]> = folk.iter().map(|p| p.mover.position_units()).collect();
         let downs: Vec<bool> = folk.iter().map(|p| p.down).collect();
@@ -4761,6 +5134,17 @@ impl Sim {
         }
         // the towns' centres (Going home's town fallback, F050303)
         let town_centres: Vec<[f32; 3]> = towns.iter().map(|t| t.position).collect();
+        // the homeless squads' home towns as they were made (F048137), by member
+        let homeless_home: HashMap<usize, usize> = population
+            .as_ref()
+            .map(|pop| {
+                pop.squads
+                    .iter()
+                    .filter_map(|(m, _, _)| Some((m, *pop.home_town.get(m.first()?)?.as_ref().ok()?)))
+                    .flat_map(|(m, t)| m.iter().map(move |&i| (i, t)))
+                    .collect()
+            })
+            .unwrap_or_default();
         // Gate guards: each gate's guard spot and facing (`GATE_SPOT_OUT`)
         let gate_spots: HashMap<usize, ([f32; 3], [f32; 3])> = gate_doors
             .iter()
@@ -4813,6 +5197,81 @@ impl Sim {
                 targeted[v] = true;
             }
         }
+        // @fn F033851
+        //
+        // Each one's aggression flag (Character +0x2b0: isAggressionTowards, conditions 16 / 39,
+        // and Self preservation's score F038603), set each update of the character (F039255):
+        // one of its AI's aggressors (the AI's +0x78 list: those melee-attacking it, whose count
+        // is iAmBeingMeleeAttacked general, F033835, and which F039210 also hands the
+        // attackers-of finder) within 40 units (1600 squared, in 3D), standing (+0xe0 under 3),
+        // in no bed or cage (+0x2f8 0), not getting up (+0x278) and not carried (+0x3d4).
+        // (assumption) The list, whose writer is not found, taken as those whose fight is on it
+        // (their focus or combat target, not running off through the fight) and those whose
+        // plan's Attacking step is on it; none in a region cut off from it (F038557: its gate
+        // code and mine, F044467 / F044464, differ and are not openly joined, F030342; crate::
+        // gate_codes). F038603 reads the list too: one within 181 units
+        // (33000 squared) whose state +0x1a0 +0xa0 is above 0 ((assumption) taken as its being
+        // in a fight on someone).
+        let mut aggressors: Vec<Vec<usize>> = vec![Vec::new(); folk.len()];
+        for i in 0..folk.len() {
+            let f = &arena.f[i];
+            if f.active
+                && !f.ordered_away
+                && !folk[i].down
+                && let Some(v) = f.focus.or(f.combat.target)
+                && v < folk.len()
+                && v != i
+            {
+                aggressors[v].push(i);
+            }
+            if let Some(s) = folk[i].ai.queue.first()
+                && s.task == ATTACKING
+                && let Target::Person(v) = s.target
+                && v < folk.len()
+                && v != i
+                && !aggressors[v].contains(&i)
+            {
+                aggressors[v].push(i);
+            }
+        }
+        let aggressive: Vec<bool> = (0..folk.len()).map(|i| arena.f[i].active && !arena.f[i].ordered_away && fight_target[i].is_some()).collect();
+        let aggression: Vec<bool> = (0..folk.len())
+            .map(|me| {
+                let at = internal[me];
+                aggressors[me].iter().any(|&a| {
+                    let q = &folk[a];
+                    let p = internal[a];
+                    let d2 = ((p[0] - at[0]).powi(2) + (p[1] - at[1]).powi(2) + (p[2] - at[2]).powi(2)) * 100.0;
+                    let (mine, theirs) = (folk[me].area, q.area);
+                    let cut_off = mine != theirs && mine != -1 && theirs != -1 && gate_codes.state(mine, theirs) != kenshi_world::gates::PAIR_OPEN as i32;
+                    !cut_off && !q.down && !q.dead && q.bed.is_none() && q.prison.is_none() && q.getting_up <= 0.0 && q.carried_by.is_none() && d2 < AGGRESSION_NEAR_SQ
+                })
+            })
+            .collect();
+        // (a new aggressor close: the AI thinks at once)
+        for p in folk.iter_mut() {
+            if aggression[p.id] && !p.aggressed && !p.player {
+                p.rethink = true;
+            }
+            p.aggressed = aggression[p.id];
+        }
+        // how each one's sensor sees the others for its proximity list (F046548)
+        let proximity: Vec<crate::crowd::Sensed> = folk
+            .iter()
+            .map(|p| {
+                let seated = p.operating.is_some_and(|k| matches!(furn_functions[k], BF_CHAIR | kenshi_world::furniture::BF_THRONE));
+                // in a bed or a cage (Character +0x2f8 1 / 2)
+                let lying = p.bed.is_some() || p.prison.as_ref().is_some_and(|pr| !pr.out);
+                // carried (+0x3d4) or a ragdoll (the knocked out and the dead, F044938)
+                let limp = p.carried_by.is_some() || p.down || p.dead;
+                crate::crowd::Sensed {
+                    position: p.mover.position_units(),
+                    radius: p.mover.radius / kenshi_char::movement::TO_METRES,
+                    listed: !p.away && !seated && !lying && !limp,
+                    lists: !seated && !lying,
+                }
+            })
+            .collect();
         prof.mark("sim: setup");
         // think once a second, staggered by person
         for p in folk.iter_mut() {
@@ -4848,6 +5307,8 @@ impl Sim {
                 has_78: false,
             };
             let range = vision_range(vision_mult, false, dl);
+            // CharSensor::update's proximity list (F046548), for its mover's push (F024363)
+            p.near = crate::crowd::proximity(p.id, &proximity, range);
             let mine = p.faction.as_ref().map(|f| &relations[f]);
             let mut known: Vec<Known<usize>> = vec![];
             let mut enemies = 0;
@@ -4938,6 +5399,13 @@ impl Sim {
                         e.2 = t;
                     }
                     None => p.sensed.push((k.id, k.position, t)),
+                }
+                // F046546: one the player's people sense, its faction known to theirs (F045557)
+                if p.player
+                    && let Some(f) = &factions[k.id]
+                    && !world.known_factions.contains(f)
+                {
+                    world.known_factions.insert(f.clone());
                 }
             }
             let units = |since: f32| ((t - since) as f64 / hour_secs * 3600.0 / 33.0 * 0.5) as f32;
@@ -5085,6 +5553,9 @@ impl Sim {
             // @fn F050269
             //
             // isAlliesFighting (condition 12): a friendly known in need.
+            // CharSensor +0x94 (F046546): the enemies perceived standing, as the campaigns ask
+            // (F050774)
+            p.sensor_enemies = enemies as u32;
             let friendly = |x: usize| factions[x] == p.faction || mine.is_some_and(|r| r.is_ally(factions[x].as_deref()));
             let mut protect_any: Option<(usize, f32)> = None;
             let mut protect_close: Option<(usize, f32)> = None;
@@ -5175,11 +5646,16 @@ impl Sim {
                 attacked: arena.f[p.id].active || targeted[p.id],
                 alarm_near: law_state.alarm_near.get(p.id).copied().unwrap_or(false),
                 law: &law_state.view,
+                talk_view,
+                talk: kenshi_ai::planner::TalkEvents { plan: p.ai.talk_event, ..Default::default() },
                 raid: &raid_state.view,
                 hold: if p.stance.hold { p.hold_at } else { None },
                 turrets: &turrets,
                 turret_taken: &turret_taken,
                 stores: &stores,
+                store_info: &store_info,
+                package_town: package_towns.get(p.id).copied().flatten(),
+                animal: p.race.is_some(),
                 has_food: p.inventory.sections.iter().chain(p.inventory.bag().into_iter().flat_map(|b| b.sections.iter())).any(|s| s.items.iter().any(|i| i.item.food.is_some())),
                 hunger: (arena.f[p.id].medical.hunger.level, arena.f[p.id].medical.hunger.queued),
                 ignored: p.ignored.iter().map(|i| i.0).collect(),
@@ -5194,7 +5670,7 @@ impl Sim {
                 caged: &caged,
                 disposals: &disposals,
                 town_factions: &town_factions,
-                home_town: p.home.and_then(|h| placed_town.get(h).copied().flatten()),
+                home_town: homeless_home.get(&p.id).copied().or_else(|| p.home.and_then(|h| placed_town.get(h).copied().flatten())),
                 town_centres: &town_centres,
                 excess_loot: carries_loot(p),
                 ditch_to: if carries_loot(p) { ditch_candidates(p, &storages, boxes, towns, &placed_town, &stores) } else { vec![] },
@@ -5208,6 +5684,9 @@ impl Sim {
                 attackers_of: &attackers_of,
                 in_fight: &in_fight,
                 fight_target: &fight_target,
+                aggressors: &aggressors,
+                aggression: &aggression,
+                aggressive: &aggressive,
                 factions: &factions,
                 my_faction: p.faction.clone(),
                 mine,
@@ -5233,6 +5712,22 @@ impl Sim {
                         .iter()
                         .map(|l| l.iter().map(|j| j.task).collect::<Vec<_>>())
                         .collect::<Vec<_>>()
+                );
+            }
+            // (debug) KENSHI_PLAN_DEBUG=<person>:<task>:<building>: that task planned on that
+            // building of the player's, each think
+            if let Ok(w) = std::env::var("KENSHI_PLAN_DEBUG")
+                && let [who, task, b] = w.split(':').collect::<Vec<_>>()[..]
+                && who == p.id.to_string()
+                && let (Ok(task), Ok(b)) = (task.parse::<u16>(), b.parse::<usize>())
+            {
+                let pos = v.pos;
+                let mut pl = kenshi_ai::planner::Planner::new(&mut v, kenshi_ai::planner::Repertoire::Human);
+                let r = pl.plan(task, Target::Building(b), pos);
+                eprintln!(
+                    "plan {task} on {b}: {:?}; nodes {:?}",
+                    r.as_ref().map(|plan| plan.iter().map(|&n| (pl.nodes[n].task, pl.nodes[n].target, pl.nodes[n].score)).collect::<Vec<_>>()),
+                    pl.nodes.iter().map(|n| (n.task, n.target, n.score, n.branches.iter().map(|b| b.0).collect::<Vec<_>>())).collect::<Vec<_>>()
                 );
             }
             p.ai.think(&mut v);
@@ -5427,6 +5922,11 @@ impl Sim {
                 (a[0] - b[0]).hypot(a[2] - b[2]) < reach && folk[w].carried_by.is_none()
             });
             let q = &mut folk[c];
+            // a lift broken off once the body was taken (let go before the lift was done): the
+            // next lift plays the clip from its start again (Task_LiftSomething's start, F031290)
+            if q.lifting >= LIFT_TAKE * lift_len {
+                q.lifting = 0.0;
+            }
             let Some(w) = near.filter(|_| !q.down && !q.dead) else {
                 q.lifting = 0.0;
                 continue;
@@ -5438,8 +5938,18 @@ impl Sim {
             }
         }
         for (c, w) in lifts {
+            // (one lifting the same body this tick took it first: the rest let it be)
+            if folk[w].carried_by.is_some() {
+                folk[c].pickup = None;
+                folk[c].lifting = 0.0;
+                continue;
+            }
             if !folk[c].player {
                 eprintln!("t {t:.1} person {c} picks up {w}");
+            }
+            if std::env::var("KENSHI_CARRY_DEBUG").is_ok() {
+                let q = &folk[c];
+                eprintln!("  {c} ({:?}) goal {:?} queue {:?} jobs {:?}", q.faction, q.ai.current.as_ref().map(|g| g.task), q.ai.queue.iter().map(|s| s.task).collect::<Vec<_>>(), q.ai.jobs.iter().flatten().map(|j| j.task).collect::<Vec<_>>());
             }
             folk[c].pickup = None;
             folk[c].carrying = Some(w);
@@ -5506,8 +6016,20 @@ impl Sim {
                                 continue;
                             }
                         },
+                        // a loose item (crate::jobs): where it lies
+                        Target::Item(i) => match jobs_state.view.ground_at(i) {
+                            Some(q) => q,
+                            None => {
+                                p.ai.queue.remove(0);
+                                continue;
+                            }
+                        },
                         // an ordered point (the task's position)
                         Target::None if step.pos != [0.0; 3] => step.pos,
+                        // (assumption) a character: where it stands, for the talk tasks' way to
+                        // their target (Talking 159's condition 1, crate::talk). (not ported)
+                        // Moving to a character before any other step: it is passed over
+                        Target::Person(e) if p.ai.queue.get(1).is_some_and(|s| crate::talk::TALK_RUNNABLE.contains(&s.task)) => positions[e],
                         _ => {
                             p.ai.queue.remove(0);
                             continue;
@@ -5516,6 +6038,12 @@ impl Sim {
                     let me = p.mover.position_units();
                     let there =
                         (goal[0] - me[0]).powi(2) + (goal[2] - me[2]).powi(2) < AT_LOCATION_SQ;
+                    // (stand-in) a character moved off the point ordered: ordered again
+                    let chase = matches!(step.target, Target::Person(_)) && !p.pathing.pending && p.run_goal.is_none_or(|o| (o[0] - goal[0]).hypot(o[2] - goal[2]) > 50.0);
+                    if chase && !there {
+                        p.started = false;
+                        p.run_goal = Some(goal);
+                    }
                     if there {
                         p.ai.queue.remove(0);
                         p.started = false;
@@ -5737,6 +6265,8 @@ impl Sim {
                 // Closing door (73), Locking door from inside (162): crate::intruders'
                 // `door_tasks_tick` (Task_CloseDoor F030907, Task_LockDoor F030911)
                 t if crate::intruders::DOOR_RUNNABLE.contains(&t) => {}
+                // Talking (159 / 161, Task_TalktoPlayer): crate::talk's `talk_tasks_tick`
+                t if crate::talk::TALK_RUNNABLE.contains(&t) => {}
                 SLEEPING => {
                     let Target::Furniture(b) = step.target else {
                         p.ai.queue.remove(0);
@@ -5955,7 +6485,9 @@ impl Sim {
                         }
                         continue;
                     }
-                    if !p.started {
+                    // (a fight left while the step still stands, as one runs off and is caught up
+                    // with: joined again)
+                    if !p.started || !arena.f[p.id].active {
                         stop(&mut p.mover, &mut p.pathing);
                         p.mover.set_max_speed(walk);
                         let my_side = arena.f[p.id].team;
@@ -6026,7 +6558,7 @@ impl Sim {
                         && p.roads.active()
                     {
                         let done = !p.pathing.pending && p.pathing.follow.is_none();
-                        let failed = done && p.pathing.failed.is_some();
+                        let failed = done && p.pathing.failed;
                         // (stand-in for the paging: Kenshi unloads one walking off the loaded
                         // world into an UnloadedPlatoon) a way whose next marker lies off the
                         // loaded navmesh waits there
@@ -6205,18 +6737,35 @@ impl Sim {
                     p.rethink = true;
                 }
             }
-            folk[who].pathing.answer(result);
+            let p = &mut folk[who];
+            p.pathing.answer(result, &p.mover, nav);
         }
         prof.mark("sim: paths");
         // the fights: the arena runs its fighters; a fighter with no one left to fight leaves it
         // those out of the fight stand where they are (bolts and lines of fire meet them there)
         for p in folk.iter() {
             let f = &mut arena.f[p.id];
-            // a player's character sent elsewhere runs there through the fight
-            f.ordered_away = p.player && p.ai.orders.first().is_some_and(|o| !matches!(o.task, ATTACKING | ATTACKING_ENEMIES | ATTACKING_NEUTRALS));
+            // a player's character sent elsewhere runs there through the fight; (stand-in) so
+            // does anyone else whose plan's next step is no attack: Kenshi fights by the
+            // Attacking task (Task_Attack), and one whose AI takes up another goal (Retreating
+            // fast, F038688, once no aggressor is close, F038603) leaves the fight by it
+            f.ordered_away = if p.player {
+                p.ai.orders.first().is_some_and(|o| !matches!(o.task, ATTACKING | ATTACKING_ENEMIES | ATTACKING_NEUTRALS))
+            } else {
+                p.ai.queue.first().is_some_and(|s| s.task != ATTACKING)
+            };
             if !f.active || f.ordered_away {
                 f.mover.position = p.mover.position;
             }
+        }
+        // the fighters' movers push against their sensors' lists (F024363 / F046548), less
+        // those that push no one (carried, seated: `crate::crowd::Body::pushes`)
+        let pushes: Vec<bool> = folk
+            .iter()
+            .map(|p| p.carried_by.is_none() && !p.operating.is_some_and(|k| matches!(furn_functions[k], BF_CHAIR | kenshi_world::furniture::BF_THRONE)))
+            .collect();
+        for p in folk.iter() {
+            arena.f[p.id].near = p.near.iter().copied().filter(|&o| pushes.get(o).copied().unwrap_or(false)).collect();
         }
         // CombatClass keeps a path to its target (+0x200; AttackState::canEnter, F029603, asks
         // whether the target is reachable along it): (harness) a fighter whose straight way to
@@ -6447,17 +6996,28 @@ impl Sim {
             if p.carried_by.is_none() {
                 p.down = false;
                 arena.f[id].down = false;
-                p.getting_up = len;
+                // the character comes round on the floor under where its ragdoll lay (F044942)
+                stand_on_ground(&mut p.mover.position, terrain, nav);
+                arena.f[id].mover.position = p.mover.position;
+                p.getting_up = get_up_time(len, arena.f[id].prone());
                 p.rethink = true;
                 eprintln!("t {t:.1} person {id} comes round");
             }
         }
         for k in 0..arena.f.len() {
             let f = &arena.f[k];
+            // (stand-in) one leaving by its plan (not the player's) is out of the fight once no
+            // one fighting is on it
+            let left = f.ordered_away
+                && !f.targeting.player
+                && !(0..arena.f.len()).any(|o| {
+                    let g = &arena.f[o];
+                    o != k && g.active && !g.down && !g.ordered_away && (g.focus == Some(k) || g.combat.target == Some(k))
+                });
             if f.active
                 && !f.down
                 && f.act.is_none()
-                && !(0..arena.f.len()).any(|o| o != k && opponent(&arena.f[k], &arena.f[o]))
+                && (left || !(0..arena.f.len()).any(|o| o != k && opponent(&arena.f[k], &arena.f[o])))
                 && !shooting_at(&arena.f, k)
             {
                 if std::env::var("KENSHI_RANGED_DEBUG").is_ok() {
@@ -6465,27 +7025,38 @@ impl Sim {
                 }
                 arena.f[k].active = false;
                 arena.f[k].focus = None;
+                kenshi_combat::arena::Arena::release_slots(&mut arena.f, k);
             }
         }
         prof.mark("sim: wake, leave fights");
+        // (stand-in for F041469, the camera's view: the simulation has none) every point is
+        // out of view
+        let out_of_view = |_: [f32; 3]| false;
+        // the crowd as each mover meets it when it steps (crate::crowd, F024363): where each
+        // one stands, and who pushes (not one carried, nor one sitting on a chair or throne)
+        let mut crowd = crate::crowd::Crowd::new(folk.iter().filter(|p| !p.away).map(|p| crate::crowd::Body {
+            id: p.id,
+            position: p.mover.position,
+            radius: p.mover.radius,
+            pushes: p.carried_by.is_none() && !p.operating.is_some_and(|k| matches!(furn_functions[k], BF_CHAIR | kenshi_world::furniture::BF_THRONE)),
+        }));
         for p in folk.iter_mut() {
             if p.away {
                 continue;
             }
             let before = p.mover.position_units();
             if (arena.f[p.id].active && !arena.f[p.id].ordered_away) || p.down || p.getting_up > 0.0 {
-                // the arena moves a fighter: (harness) its step is walked across the navmesh
-                // and refused where the mesh ends; the knocked out lie still, and stay put
-                // while getting up
+                // the arena moves a fighter (its CombatClass steering sets the velocity,
+                // CharMovement mode 1, F040650 / F024339): the held mover's step goes against
+                // the walls (F024365); the knocked out lie still, and stay put while getting up
                 if arena.f[p.id].active {
                     let (from, to) = (p.mover.position, arena.f[p.id].mover.position);
-                    // (harness for the Havok character) a step into a wall slides along it
-                    let face = nav.closest_point(from, 5.0).map(|(f, _)| f);
-                    if let Some((f, to)) = face.and_then(|f| nav.slide(f, from, to)) {
-                        p.mover.position = [to[0], nav.height_on(f, to), to[2]];
-                        if p.inside.is_none() {
-                            stand_on_ground(&mut p.mover.position, terrain, nav);
-                        }
+                    p.pathing.settle(&mut p.mover, nav);
+                    // (the arena's step, from where it last stood)
+                    kenshi_char::movement::walk_step(&mut p.mover, nav, &mut p.pathing.face, &mut p.pathing.walls, [to[0] - from[0], to[1] - from[1], to[2] - from[2]], dt);
+                    p.pathing.stepped(&p.mover);
+                    if p.inside.is_none() {
+                        stand_on_ground(&mut p.mover.position, terrain, nav);
                     }
                     arena.f[p.id].mover.position = p.mover.position;
                 }
@@ -6497,28 +7068,38 @@ impl Sim {
                 if speed > 0.1 {
                     p.facing = v.map(|c| c / speed);
                 }
+                crowd.moved(p.id, p.mover.position);
                 continue;
             }
-            if let Some((dir, dist)) = p.straight {
-                // CharMovement mode 2; (harness) the Havok character keeps to the navmesh: it
-                // walks from face to face and stops where the mesh ends
-                let from_m = p.mover.position;
-                let face = nav.closest_point(from_m, 5.0).map(|(f, _)| f);
-                direct(&mut p.mover, dir, dist, dt);
-                match face.and_then(|f| nav.walk(f, from_m, p.mover.position)) {
-                    Some(f) => p.mover.position[1] = nav.height_on(f, p.mover.position),
-                    None => {
-                        p.mover.position = from_m;
-                        p.mover.velocity = [0.0; 3];
-                    }
-                }
+            // held in place (operating a machine or sitting, in bed, caged, carried): no step
+            let held = p.operating.is_some() || p.bed.is_some() || p.prison.is_some() || p.carried_by.is_some() || p.dead;
+            // AICharacter::step (F024365) with the push it meets (F024363)
+            let goal = p.pathing.follow.as_ref().map(|f| f.path.goal);
+            let (push, taken) = if held { (None, false) } else { crowd.push(p.mover.position, p.mover.radius, goal, &p.near, || rng.next()) };
+            p.mover.avoid = push;
+            if held {
+                // no step
+            } else if let Some((dir, dist)) = p.straight {
+                // CharMovement mode 2 (F040650): the mover held (state 3); steered, then its
+                // step meets the crowd again and moves against the walls
+                p.pathing.prelude(p.id, &mut p.mover, nav, manager, &out_of_view);
+                let cut = direct(&mut p.mover, nav, p.pathing.face, &mut p.pathing.walls, dir, dist, dt);
+                let (again, _) = crowd.push(p.mover.position, p.mover.radius, None, &p.near, || rng.next());
+                kenshi_char::movement::paused_step(&mut p.mover, nav, &mut p.pathing.face, &mut p.pathing.walls, again, cut);
+                p.pathing.stepped(&p.mover);
             } else {
-                p.pathing.tick(&mut p.mover, nav, dt);
+                p.pathing.tick(p.id, &mut p.mover, nav, manager, &out_of_view, dt);
+                // someone stands on the goal: the path ends where the mover is (+0x88 = 1)
+                if taken {
+                    p.pathing.follow = None;
+                }
             }
+            p.mover.avoid = None;
             // outdoors the body stands on the terrain, not the navmesh
             if p.inside.is_none() {
                 stand_on_ground(&mut p.mover.position, terrain, nav);
             }
+            crowd.moved(p.id, p.mover.position);
             // F040650: the measured velocity, its speed (+0xb8) and, when moving, its
             // direction (+0xd0)
             let (v, speed) = measured_velocity(before, p.mover.position_units(), dt);
@@ -6548,35 +7129,6 @@ impl Sim {
                 let gain = kenshi_char::encumbrance::strength_xp_from_walking(load, p.carrying.is_some(), &ec);
                 if gain > 0.0 {
                     f.skills.train(StatStrength, gain * dt, 1.0);
-                }
-            }
-        }
-        // people outside fights don't overlap (crate::crowd, F024363); a push is walked across
-        // the navmesh like a fighter's step, and bends the next steer
-        let bodies: Vec<crate::crowd::Body> = folk
-            .iter()
-            .filter(|p| !p.away && !p.dead && !p.down && p.carried_by.is_none() && p.getting_up <= 0.0 && !(arena.f[p.id].active && !arena.f[p.id].ordered_away))
-            .map(|p| crate::crowd::Body {
-                id: p.id,
-                position: p.mover.position,
-                radius: p.mover.radius,
-                free: p.operating.is_none() && p.bed.is_none() && p.claimed.is_none() && p.prison.is_none(),
-            })
-            .collect();
-        for b in &bodies {
-            folk[b.id].mover.avoid = None;
-        }
-        for (id, n, depth) in crate::crowd::pushes(&bodies) {
-            let p = &mut folk[id];
-            p.mover.avoid = Some((n, depth));
-            let v = n.map(|c| c * depth);
-            let from = p.mover.position;
-            let to = [from[0] + v[0], from[1], from[2] + v[2]];
-            let face = nav.closest_point(from, 5.0).map(|(f, _)| f);
-            if let Some((f, to)) = face.and_then(|f| nav.slide(f, from, to)) {
-                p.mover.position = [to[0], nav.height_on(f, to), to[2]];
-                if p.inside.is_none() {
-                    stand_on_ground(&mut p.mover.position, terrain, nav);
                 }
             }
         }
@@ -6623,6 +7175,8 @@ impl Sim {
         self.first_aid_tick(dt);
         self.orders_tick(dt);
         self.shopping_tick(dt);
+        self.runs_tick(dt);
+        self.talk_tick(dt);
         self.routines_tick(dt);
         prof.mark("sim: first aid, orders, routines");
         self.hazards_tick(dt);
@@ -6645,6 +7199,7 @@ impl Sim {
         self.raid_ai_tick(dt);
         self.jobs_tick(dt);
         self.put_down_tick(dt);
+        self.refresh_equipment();
         prof.mark("sim: law");
         self.world_tick(dt);
         prof.mark("sim: world");
@@ -6769,7 +7324,6 @@ impl Sim {
                 escort: None,
                 build: None,
                 operate: None,
-                haul: None,
                 crime: None,
                 bounties: Vec::new(),
                 heat: 0.0,
@@ -6788,7 +7342,6 @@ impl Sim {
                 surrendered: false,
                 playing_dead: false,
                 stand_up: false,
-                auto_haul: None,
                 dust: 0.0,
                 hazard: None,
                 water: 0,
@@ -6814,6 +7367,9 @@ impl Sim {
             gate_in_way: None,
             ignored: Vec::new(),
             sensed: Vec::new(),
+            near: Vec::new(),
+            sensor_enemies: 0,
+            area: -1,
             fight_path: Vec::new(),
             bash_order: None,
             door_order: None,
@@ -6821,6 +7377,7 @@ impl Sim {
             bash_timer: 0.0,
             stalk: None,
             roads: Default::default(),
+            aggressed: false,
         });
         self.folk[id].attacks_neutrals = attacks_neutrals;
         // CharMovement::init (F040657): the road factor of the faction's "road preference"
@@ -6867,14 +7424,32 @@ impl Sim {
     /// world's (their placement indices offset past the ones already in), the navmesh round it,
     /// its buildings' resident squads (building state "squad template") at home, and its town's
     /// bar squads at its bar, each kitted from its template's characters. Zones already in are
-    /// left alone.
+    /// left alone, but for their towns' overrides (`world::zone_loaded`: the zone's content loads
+    /// again).
+    /// @fn F041802
+    ///
+    /// The buildings zone `zone`'s foliage makes where its objects stand
+    /// (`kenshi_world::foliage::zone_buildings`), on the terrain's heights.
+    pub(crate) fn foliage_buildings(&mut self, zone: (i32, i32)) -> Vec<kenshi_world::Placement> {
+        if self.foliage_data.is_none() {
+            self.foliage_data = Some(kenshi_world::foliage::FoliageData::load(&self.install, &self.data, WATER_LEVEL).map(std::sync::Arc::new));
+        }
+        let Some(Some(fd)) = self.foliage_data.clone() else { return Vec::new() };
+        let terrain = &mut self.terrain;
+        kenshi_world::foliage::zone_buildings(&fd, &self.data, &self.install, zone, |x, z| terrain.height_at(x, z).unwrap_or(0.0))
+    }
+
     pub fn add_zone(&mut self, zx: i32, zy: i32, res: &kenshi_io::resources::Resources) -> usize {
         if !self.zones.insert((zx, zy)) {
+            if !self.quiet_zones {
+                self.zone_loaded((zx, zy));
+            }
             return 0;
         }
         self.zone_order.push((zx, zy));
-        let Some(zone) = kenshi_world::read_zone(&self.install, zx, zy) else { return 0 };
-        let placed = placements(&zone);
+        let mut placed = kenshi_world::read_zone(&self.install, zx, zy).map(|z| placements(&z)).unwrap_or_default();
+        // and the buildings its foliage makes (F041802: the resource rocks)
+        placed.extend(self.foliage_buildings((zx, zy)));
         if placed.is_empty() {
             return 0;
         }
@@ -6945,32 +7520,37 @@ impl Sim {
             let state = DoorState::new(&data, &placed[door.placement - off], door, locked, level, inside);
             self.door_states.push(state);
         }
-        // the zone's town, and its bars
+        // the zone's town, its placements' towns (F038257) and its bars
         let mid = [c(zx), 0.0, c(zy)];
         let town = current_town(&self.towns, mid, None);
+        self.placed.extend(placed.iter().cloned());
+        self.update_placed_towns();
         for (i, pl) in placed.iter().enumerate() {
             let bar = pl.residents.as_deref().and_then(|r| data.get(r)).and_then(|r| r.ints.get("building designation")) == Some(&BD_BAR);
-            if bar && town.is_none_or(|t| self.towns[t].contains(self.placed_at[off + i], 1.0)) {
+            if bar && town.is_none_or(|t| self.placed_town[off + i] == Some(t)) {
                 self.bars.push(off + i);
             }
         }
-        self.placed.extend(placed.iter().cloned());
         let first = self.folk.len();
+        // its towns' overrides as its content loads (F051436, `world::zone_loaded`)
+        if !self.quiet_zones {
+            self.zone_loaded((zx, zy));
+        }
         // the town as it is now (`world`: an override town once the world states call for one)
         let now = town.map(|t| self.town_record(t));
-        let override_rec = town
-            .zip(now.as_ref())
-            .filter(|(t, n)| **n != self.towns[*t].record)
-            .and_then(|(_, n)| data.get(n))
-            .filter(|r| r.bools.get("residents override").copied().unwrap_or(false));
+        // a building's town as it is now, when that is an override with "residents override"
+        let override_of = |sim: &Sim, k: usize| {
+            let t = sim.placed_town.get(k).copied().flatten()?;
+            let n = sim.town_record(t);
+            (n != sim.towns[t].record).then(|| data.get(&n)).flatten().filter(|r| r.bools.get("residents override").copied().unwrap_or(false))
+        };
         // residents at home (an override's: those of the building's designation, none if it has
         // none)
         let quiet = self.quiet_zones;
         for (pi, pl) in placed.iter().enumerate().filter(|_| !quiet) {
             let Some(t) = pl.squad.as_deref().and_then(|s| data.get(s)) else { continue };
             let at = [pl.position[0], pl.world_y.unwrap_or(pl.position[1]), pl.position[2]];
-            let in_town = town.is_some_and(|tw| self.towns[tw].contains(at, 1.0));
-            let t = match override_rec.filter(|_| in_town) {
+            let t = match override_of(self, off + pi) {
                 Some(o) => {
                     let d = t.ints.get("building designation").copied().unwrap_or(0);
                     let Some(sq) = o.refs("residents").iter().find(|(_, v)| v.get(1).copied().unwrap_or(0) == d).and_then(|(s, _)| data.get(s)) else { continue };
@@ -6982,22 +7562,10 @@ impl Sim {
         }
         // a town the zone state left unpeopled: its residents handed out (`world`)
         self.setup_residents(off);
-        // the town's bar squads at its bar (the home town's are in already)
-        if let Some(t) = town.filter(|_| !self.quiet_zones)
-            && let Some(&bar) = self.bars.iter().rev().find(|&&b| b >= off)
-            && let Some(town_rec) = data.get(now.as_deref().unwrap_or(&self.towns[t].record))
-        {
-            for (sid, v) in town_rec.refs("bar squads") {
-                let chance = if v[1] > 0 { v[1] as f32 } else { 100.0 };
-                for _ in 0..v[0].max(1) {
-                    if self.rng.uniform() * 100.0 < chance
-                        && let Some(sq) = data.get(sid)
-                    {
-                        let at = self.placed_at[bar];
-                        self.spawn_resident_squad(sq, at, Some(bar));
-                    }
-                }
-            }
+        // the town's bar squads (F051414; the home town's are in already)
+        if let Some(t) = town.filter(|_| !self.quiet_zones) {
+            let rec = now.clone().unwrap_or_else(|| self.towns[t].record.clone());
+            self.spawn_bar_squads(t, &rec);
         }
         let added = self.folk.len() - first;
         eprintln!(
@@ -7007,6 +7575,55 @@ impl Sim {
             town.map_or(String::new(), |t| format!(" (town {})", self.towns[t].name))
         );
         added
+    }
+
+    /// @fn F051414
+    /// @fn F031806
+    ///
+    /// A town's bar squads as its zone loads (ZoneMapContent::collectNewBuildings, F051420, for
+    /// each town standing in the zone): the list Town::setupResidents (F048905) makes of the
+    /// TOWN's "bar squads" (Town +0x318: the ref's first value the count, its second the %
+    /// chance), each entry: of a count over 2, count x chance x 0.01 x 0.5 (whole) to start,
+    /// then one more while randInt(0, 100) is not above the chance, up to the count; each squad
+    /// made (F038271) at a random location node of the town no one holds (F031806: the node
+    /// manager's list for the town, its +0xf8 handle null; else at the town's centre), of the
+    /// template's faction, else the town's, homed at the town. The list is then emptied.
+    pub(crate) fn spawn_bar_squads(&mut self, t: usize, rec: &str) {
+        let data = self.data.clone();
+        let Some(town_rec) = data.get(rec) else { return };
+        if self.layouts.is_none() {
+            self.layouts = Some(Layouts::load(&self.install));
+        }
+        // the town's location nodes, in the order they came in, and those taken
+        let all = nodes(&data, self.layouts.as_ref().unwrap(), &self.placed);
+        let taken: Vec<[f32; 3]> = self.general.iter().zip(self.owners.iter()).filter(|(_, o)| o.is_some()).map(|(n, _)| n.position).collect();
+        let free: Vec<[f32; 3]> = all
+            .iter()
+            .filter(|n| self.placed_town.get(n.placement).copied().flatten() == Some(t) && !taken.contains(&n.position))
+            .map(|n| n.position)
+            .collect();
+        for (sid, v) in town_rec.refs("bar squads") {
+            let (count, chance) = (v[0], v[1]);
+            let mut n = if 2 < count { (chance as f64 * 0.5 * 0.01f32 as f64 * count as f64) as i32 } else { 0 };
+            while n < count {
+                if chance < self.rand_int(0, 100) {
+                    break;
+                }
+                n += 1;
+            }
+            let Some(sq) = data.get(sid) else { continue };
+            for _ in 0..n {
+                let at = if free.is_empty() {
+                    self.towns[t].position
+                } else {
+                    free[self.rand_int(0, free.len() as i32 - 1) as usize]
+                };
+                if std::env::var("KENSHI_BAR_DEBUG").is_ok() {
+                    eprintln!("bar squad {} of {} at {:?}", sq.name, self.towns[t].name, at.map(|v| v as i32));
+                }
+                self.spawn_resident_squad(sq, at, None);
+            }
+        }
     }
 
     /// A squad of a template living at placement `home`: its leaders on the package's leader
@@ -7021,8 +7638,10 @@ impl Sim {
         let rng = &mut self.rng;
         let roster = template_roster(t, self.squad_size_mult, &mut || rng.uniform());
         let (leaders, squad) = (i32::from(!roster.is_empty()), roster.len().saturating_sub(1) as i32);
-        // F038271: the template's "faction", else its owner's (the town it lives in)
-        let faction = faction_of(t).or_else(|| kenshi_world::town::current_town(&self.towns, at, None).and_then(|k| self.towns[k].faction.clone()));
+        // F038271: the template's "faction", else its owner's (the town its building is the
+        // town's, F038257; else the town where it is)
+        let town = home.and_then(|h| self.placed_town.get(h).copied().flatten()).or_else(|| kenshi_world::town::current_town(&self.towns, at, None));
+        let faction = faction_of(t).or_else(|| town.and_then(|k| self.towns[k].faction.clone()));
         let pid = self.bar_states.len();
         self.squad_template.insert(pid, t.string_id.clone());
         self.note_squad_hunger(pid, t);
@@ -7093,7 +7712,9 @@ impl Sim {
         self.regen_check = now + 1.0;
         let data = self.data.clone();
         let players: Vec<[f32; 3]> = self.folk.iter().filter(|p| p.player && !p.dead).map(|p| p.mover.position_units()).collect();
-        let squads: Vec<(usize, String)> = self.squad_template.iter().map(|(k, v)| (*k, v.clone())).collect();
+        // (in a fixed order: the map's own is the hasher's, and a regeneration rolls dice)
+        let mut squads: Vec<(usize, String)> = self.squad_template.iter().map(|(k, v)| (*k, v.clone())).collect();
+        squads.sort_unstable();
         for (pid, sid) in squads {
             let Some(t) = data.get(&sid) else { continue };
             if !t.bools.get("regenerates").copied().unwrap_or(false) || self.regenerated.get(&pid).is_some_and(|&at| now < at + 24.0) {
@@ -7149,16 +7770,19 @@ impl Sim {
         } else {
             (leaders, squad)
         };
-        // its animals (the "animals" refs, fcs.def: min and max count, and age, 100 adult; the
-        // age randomised by up to "animal age random" either way, (assumption) uniformly)
+        // its animals (F038271: the "animals" then "animals2" refs: the count the first value
+        // or, when the second is above 0 and not 100, randInt(first, second), times the squad
+        // size multiplier (1 for "dont multiply"), at least one when any; each one's age
+        // rand01 x "animal age random" - 0.1 + the third value x 0.01, not below 0)
         let mut beasts: Vec<(String, f32)> = Vec::new();
-        let age_random = t.floats.get("animal age random").copied().unwrap_or(0.1);
+        let age_random = t.floats.get("animal age random").copied().unwrap_or(0.0);
+        let mult = if t.bools.get("dont multiply").copied().unwrap_or(false) { 1.0 } else { self.squad_size_mult };
         for (sid, v) in t.refs("animals").iter().chain(t.refs("animals2").iter()) {
-            let lo = v[0].max(1);
-            let hi = v[1].max(lo);
-            let n = lo + ((self.rng.next() * (hi - lo + 1) as f32) as i32).min(hi - lo);
+            let first = v[0];
+            let n = if 0 < v[1] && v[1] != 100 { self.rand_int(first, v[1]) } else { first };
+            let n = if n < 1 { 0 } else { ((n as f32 * mult) as i32).max(1) };
             for _ in 0..n {
-                let age = (v[2] as f32 * 0.01 + (self.rng.next() * 2.0 - 1.0) * age_random).clamp(0.0, 1.0);
+                let age = (self.rng.uniform() * age_random - 0.1 + v[2] as f32 * 0.01).max(0.0);
                 beasts.push((sid.clone(), age));
             }
         }
@@ -7269,14 +7893,15 @@ impl Sim {
 
     /// @fn F038271
     ///
-    /// createRandomSquad's prisoners, for the squads loaded with them: the free cages about the
-    /// leader (F051407's search; (assumption) within PRISON_SEARCH units), then each "prisoners"
+    /// createRandomSquad's prisoners, for the squads loaded with them: the free cages of the
+    /// building the squad is made in (BuildingFinder_CagesWithinBuilding through F051407: its
+    /// town's buildings, or the zones round it, F051406; F038333 takes a cage, type 8, whose
+    /// parent is that building and that holds no one; none without a building), then each "prisoners"
     /// template's people made beside it (in their own squad, of the template's faction), each
     /// put in one of those cages at random, the cage taken; one with no cage left is not made
     /// (Kenshi destroys it). Prisoners for good: no sentence ends (the "imprisoned"
     /// messages not shown, as for slaves made at the start).
     pub fn spawn_prisoners(&mut self) {
-        const PRISON_SEARCH: f32 = 1000.0;
         let pending = std::mem::take(&mut self.prisoner_squads);
         let data = self.data.clone();
         let said = self.messages.len();
@@ -7284,12 +7909,13 @@ impl Sim {
             let Some(t) = data.get(&template) else { continue };
             let Some(leader) = self.folk.get(first) else { continue };
             let at = leader.mover.position_units();
+            let Some(building) = leader.home else { continue };
             let jailers = leader.faction.clone().or_else(|| faction_of(t));
             let Some(jailers) = jailers else { continue };
             let taken: Vec<usize> = self.folk.iter().filter_map(|p| p.prison.as_ref().map(|q| q.cage)).collect();
             let mut cages: Vec<usize> = (0..self.furn.len())
                 .filter(|&k| self.furn[k].function == kenshi_world::furniture::BF_CAGE && !taken.contains(&k))
-                .filter(|&k| (self.furn[k].position[0] - at[0]).hypot(self.furn[k].position[2] - at[2]) < PRISON_SEARCH)
+                .filter(|&k| self.furn[k].placement == building)
                 .collect();
             for (sid, _) in t.refs("prisoners") {
                 let Some(members) = self.spawn_template(sid, at) else { continue };
@@ -7297,7 +7923,7 @@ impl Sim {
                     if cages.is_empty() {
                         if std::env::var("KENSHI_PRISON_DEBUG").is_ok() {
                             let near = (0..self.furn.len()).filter(|&k| self.furn[k].function == kenshi_world::furniture::BF_CAGE).map(|k| (self.furn[k].position[0] - at[0]).hypot(self.furn[k].position[2] - at[2]) as i32).min();
-                            eprintln!("prisoner {m} of {template}: no free cage within {PRISON_SEARCH} units (nearest cage {near:?})");
+                            eprintln!("prisoner {m} of {template}: no free cage in building {building} (nearest cage {near:?})");
                         }
                         // no cage: the prisoner goes (left dead and away, out of the world)
                         let p = &mut self.folk[m];
@@ -7320,139 +7946,164 @@ impl Sim {
         self.messages.truncate(said);
     }
 
+    /// (testing) No roaming squads and no new nests from here on, for a headless test that a
+    /// random squad wandering in must not break: the global population multiplier (F048109's
+    /// mult) and the nests option at 0, as the game's options can set them. The population
+    /// itself stays: its biome map also gives the farms' fertility and the patrol areas, which
+    /// `population = None` takes away.
+    pub fn no_spawns(&mut self) {
+        if let Some(pop) = self.population.as_mut() {
+            pop.mult = 0.0;
+        }
+        self.advanced.nests = 0.0;
+    }
+
     /// @fn F048140
     ///
-    /// The population's tick, every 2 s: the zones round the player's characters (their loaded
-    /// tiles) hold squads up to the player's share (F048109: the multiplier times each player
-    /// squad's zone's biome "homeless spawn amount"); below it a zone is picked by its shortfall
-    /// (mult x amount + 1 - its squads; halved with a town; doubled plus one when empty) and
-    /// a homeless squad spawned in it (F048137).
+    /// The population's tick. Every step the platoons' cells are kept up (F045409, `cells`);
+    /// every 2 s (ZoneManager +0xc0, not while a loading screen shows: F042026 / F042024) the
+    /// BiomeManager's nests first (F048131), then over the zones loaded (ZoneManager's set
+    /// +0x1680c8; F051612 calls this once for each of their Zone +0x20, which only the Zone
+    /// constructor F051596 writes, 0: one call over them all, the timer shared): each zone's
+    /// cell kept (F048126) and its squads summed, +0x70 + +0x98 x 0.5, held to 0..2 for a zone
+    /// with its own town (F048114) or flagged as a town's (+0x30). Below the cap (F048109: the
+    /// multiplier times the sum of each loaded zone's biome "homeless spawn amount") the zones
+    /// are weighed (F048454: those above 0; none for a flagged cell): mult x amount + 1 -
+    /// squads, not below 0, halved with its own town, (w + 1) x 2 for one with none. The
+    /// heaviest is tried first (F048137, the first of equals in zone order: Kenshi's is its
+    /// hash set's); failing, it is taken out (F048468) and the rest drawn by weight
+    /// (randRange(0, total) along their running sums, in cell order) until one spawns
+    /// (F048135, which is F048137 again), each drawn taken out; a draw that is the camera's
+    /// zone, flagged, or already holds mult x amount roaming squads is passed over.
     fn population_tick(&mut self, dt: f32) {
+        self.cells_update();
+        self.nests_step();
         let Some(pop) = self.population.as_mut() else {
             return;
         };
         pop.timer += dt;
-        if pop.timer < 2.0 {
+        if pop.timer < 2.0 || self.loading {
             return;
         }
         pop.timer = 0.0;
         // BiomeManager's nests first (F048140 -> F048131), then those near built
         self.spawn_nests();
         self.nests_tick();
+        // (the homeless squads out, for F048137's weights: those with anyone standing)
+        let folk = &self.folk;
         let Some(pop) = self.population.as_mut() else {
             return;
         };
-        // standing squads per zone (their leader's zone)
-        let mut count: HashMap<(i32, i32), f32> = HashMap::new();
-        pop.squads
-            .retain(|(m, _, _)| m.iter().any(|&i| !self.folk[i].down));
-        for (m, _, _) in &pop.squads {
-            if let Some(&l) = m.iter().find(|&&i| !self.folk[i].down) {
-                let q = self.folk[l].mover.position_units();
-                *count.entry(zone_at(q[0], q[2])).or_default() += 1.0;
+        pop.squads.retain(|(m, _, _)| m.iter().any(|&i| !folk[i].down));
+        // the zones loaded (Zone +0x20 all 0), each cell kept and its squads summed
+        let zones: Vec<(i32, i32)> = self.live_zones.keys().copied().collect();
+        let mut here = 0.0;
+        for &z in &zones {
+            self.cell_tick(z);
+            let mut c = self.cells.squads(z);
+            if self.zone_town(z).is_some() || self.zone_flagged(z) {
+                c = c.clamp(0.0, 2.0);
             }
+            here += c;
         }
-        let players: Vec<(i32, i32)> = self
-            .folk
-            .iter()
-            .filter(|p| p.player)
-            .map(|p| {
-                let q = p.mover.position_units();
-                zone_at(q[0], q[2])
-            })
-            .collect();
-        if players.is_empty() {
+        if zones.is_empty() {
             return;
         }
-        let amount = |pop: &Population, z: (i32, i32)| {
-            biome_of_zone(&pop.map, &pop.biomes, z.0, z.1)
-                .map_or(0.0, |b| pop.biomes[b].homeless_spawn_amount)
-        };
-        // the player's share: one squad (the player's platoon), its zone's biome
-        let cap = pop.mult * amount(pop, players[0]);
-        let has_town = |z: (i32, i32)| {
-            self.towns
-                .iter()
-                .any(|t| zone_at(t.position[0], t.position[2]) == z)
-        };
-        let mut active: Vec<(i32, i32)> = vec![];
-        for &(x, y) in &players {
-            for dx in -1..=1 {
-                for dy in -1..=1 {
-                    let z = (x + dx, y + dy);
-                    if self.nav.tiles.contains(&z) && !active.contains(&z) {
-                        active.push(z);
-                    }
-                }
-            }
-        }
-        let here: f32 = active
-            .iter()
-            .map(|&z| {
-                let c = count.get(&z).copied().unwrap_or(0.0);
-                if has_town(z) { c.clamp(0.0, 2.0) } else { c }
-            })
-            .sum();
+        let pop = self.population.as_ref().unwrap();
+        let amount = |z: (i32, i32)| biome_of_zone(&pop.map, &pop.biomes, z.0, z.1).map_or(0.0, |b| pop.biomes[b].homeless_spawn_amount);
+        // F048109
+        let cap: f32 = zones.iter().map(|&z| pop.mult * amount(z)).sum();
         if std::env::var("POP_DEBUG").is_ok() {
-            eprintln!(
-                "t {:.1} population: here {here} cap {cap} active {active:?} players {players:?}",
-                self.t
-            );
+            let per: Vec<String> = zones.iter().map(|&z| format!("{}.{}:{:?}", z.0, z.1, self.cells.counts(z))).collect();
+            eprintln!("t {:.1} population: here {here} cap {cap} zones {}", self.t, per.join(" "));
         }
-        if here >= cap {
+        if cap <= here {
             return;
         }
-        // the zone, weighted by its shortfall; not a zone a player character stands in
-        let weights: Vec<((i32, i32), f32)> = active
-            .iter()
-            .filter(|z| !players.contains(z))
-            .map(|&z| {
-                let c = count.get(&z).copied().unwrap_or(0.0);
-                let mut w = (pop.mult * amount(pop, z) + 1.0 - c).max(0.0);
-                if has_town(z) {
-                    w *= 0.5;
-                }
-                if c == 0.0 {
-                    w = (w + 1.0) * 2.0;
-                }
-                (z, w)
-            })
-            .filter(|(_, w)| *w > 0.0)
-            .collect();
-        let total: f32 = weights.iter().map(|(_, w)| w).sum();
-        if total <= 0.0 {
-            return;
+        // F048454: the weights (above 0), the heaviest kept
+        let mut weights: Vec<((i32, i32), f32)> = Vec::new();
+        let mut best: Option<((i32, i32), f32)> = None;
+        for &z in &zones {
+            let n = self.cells.squads(z);
+            let mut w = (pop.mult * amount(z) + 1.0 - n).max(0.0);
+            if self.zone_town(z).is_some() {
+                w *= 0.5;
+            }
+            if n == 0.0 {
+                w = (w + 1.0) * 2.0;
+            }
+            if self.zone_flagged(z) || w <= 0.0 {
+                continue;
+            }
+            weights.push((z, w));
+            if best.is_none_or(|(_, b)| b < w) {
+                best = Some((z, w));
+            }
         }
-        let mut r = self.rng.next() * total;
-        let zone = weights
-            .iter()
-            .find(|(_, w)| {
-                r -= w;
-                r < 0.0
-            })
-            .map_or(weights[0].0, |(z, _)| *z);
-        self.spawn_homeless(zone, count.get(&zone).copied().unwrap_or(0.0), active.len());
+        let active = self.live_zones.len();
+        if let Some((z, _)) = best {
+            let (a, _) = self.cells.counts(z);
+            if self.spawn_homeless(z, a as f32, active) {
+                return;
+            }
+            weights.retain(|(k, _)| *k != z);
+        }
+        let camera = self.camera_at().map(|c| zone_at(c[0], c[2]));
+        while !weights.is_empty() {
+            // F048468 keeps them in cell order; one left is taken as it is
+            let k = if weights.len() == 1 {
+                0
+            } else {
+                let total: f32 = weights.iter().map(|(_, w)| w).sum();
+                let r = self.rng.next() * total;
+                let mut run = 0.0;
+                weights.iter().position(|(_, w)| {
+                    run += w;
+                    r < run
+                }).unwrap_or(weights.len() - 1)
+            };
+            let (z, _) = weights.remove(k);
+            if Some(z) == camera || self.zone_flagged(z) {
+                continue;
+            }
+            let pop = self.population.as_ref().unwrap();
+            let amount = biome_of_zone(&pop.map, &pop.biomes, z.0, z.1).map_or(0.0, |b| pop.biomes[b].homeless_spawn_amount);
+            let (a, _) = self.cells.counts(z);
+            if pop.mult * amount <= a as f32 {
+                continue;
+            }
+            if self.spawn_homeless(z, a as f32, active) {
+                return;
+            }
+        }
     }
 
     /// @fn F048137
     ///
-    /// A homeless squad for a zone below its biome's amount: from the biome's homeless list, each
-    /// weighed down by the squads of that template already out (weight - existing x ratio, the
-    /// ratio being the list's total weight over the active zones times mult x amount); placed at
-    /// a random point in the zone (F048102 / F048115: (harness) the middle 80%, on the navmesh,
-    /// 1500 units clear of the player's characters and outside towns). An entry with world
-    /// states spawns only while they stand (F050367).
-    fn spawn_homeless(&mut self, zone: (i32, i32), squads_here: f32, active: usize) {
+    /// A homeless squad for a zone below its biome's amount (none for the camera's zone or one
+    /// flagged as a town's): from the biome's homeless list, each weighed down by the squads of
+    /// that template already out (weight - existing x ratio, the ratio being the list's total
+    /// weight over the active zones times mult x amount). An entry with world states spawns
+    /// only while they stand (F050367). Its place: the zone's spawn point (F048102, the camera
+    /// kept clear, towns' radius x 2, other factions' nests' x 1; none found, no squad); its
+    /// home town: a town list's entry's own town; else the zone's town when of its faction;
+    /// else the nearest town of its faction, or the nearest nest of it when that is nearer by
+    /// 9216 units, none beyond 50000. No squad inside the nearest town within 10000 units
+    /// (F048795, F048764).
+    fn spawn_homeless(&mut self, zone: (i32, i32), squads_here: f32, active: usize) -> bool {
+        if self.camera_at().map(|c| zone_at(c[0], c[2])) == Some(zone) || self.zone_flagged(zone) {
+            return false;
+        }
         let Some(pop) = self.population.as_ref() else {
-            return;
+            return false;
         };
         let Some(b) = biome_of_zone(&pop.map, &pop.biomes, zone.0, zone.1) else {
-            return;
+            return false;
         };
         let biome = &pop.biomes[b];
         let amount = pop.mult * biome.homeless_spawn_amount;
         if squads_here >= amount {
-            return;
+            return false;
         }
         // F048135: the zone's town (F048114) or else the nearest (TownManager::nearest, any type
         // but 8); its "roaming squads" join the biome's when it is within 11566 units (squared
@@ -7461,7 +8112,7 @@ impl Sim {
         // town of its own.
         let (cx, cz) = zone_centre(zone.0, zone.1);
         let d2 = |t: &kenshi_world::town::Town| (t.position[0] - cx).powi(2) + (t.position[2] - cz).powi(2);
-        let own = self.towns.iter().position(|t| t.kind != 8 && zone_at(t.position[0], t.position[2]) == zone);
+        let own = self.zone_town(zone);
         let town = own.or_else(|| (0..self.towns.len()).filter(|&t| self.towns[t].kind != 8).min_by(|&a, &b| d2(&self.towns[a]).total_cmp(&d2(&self.towns[b]))));
         let player_faction = self.folk.iter().find(|p| p.player).and_then(|p| p.faction.clone());
         let near = town.filter(|&t| d2(&self.towns[t]) < 133772080.0 && (player_faction.is_none() || self.towns[t].faction != player_faction));
@@ -7471,12 +8122,12 @@ impl Sim {
             .map(|r| r.refs("roaming squads").iter().filter(|(sq, v)| v[0] > 0 && self.data.get(sq).is_some_and(|t| t.item_type() == Some(kenshi_data::ItemType::SquadTemplate))).map(|(sq, v)| (sq.clone(), v[0], v[1])).collect())
             .unwrap_or_default();
         if biome.homeless.is_empty() && roam.is_empty() {
-            return;
+            return false;
         }
         let mut total: i32 = if own.is_none() { biome.homeless.iter().map(|s| s.weight).sum() } else { 0 };
         total += roam.iter().map(|r| r.1).sum::<i32>();
         let ratio = total as f32 / (active.max(1) as f32 * amount.max(1e-3));
-        let mut candidates: Vec<(String, f32, Option<usize>)> = biome
+        let mut candidates: Vec<(String, f32, Option<usize>, String)> = biome
             .homeless
             .iter()
             .filter(|s| {
@@ -7491,9 +8142,9 @@ impl Sim {
                     .filter(|(_, _, t)| *t == s.template)
                     .count();
                 let w = (s.weight as f32 - out as f32 * ratio).max(0.0);
-                (s.template.clone(), w, None)
+                (s.template.clone(), w, None, s.faction.clone())
             })
-            .filter(|(_, w, _)| *w > 0.0)
+            .filter(|(_, w, _, _)| *w > 0.0)
             .collect();
         if let Some(t) = near {
             // TownPopulationManager list 2 (F048143): its budget the town faction's "roaming
@@ -7508,50 +8159,63 @@ impl Sim {
                 }
                 let out = from_town.iter().filter(|tp| **tp == sq).count();
                 let w = (*w as f32 - out as f32 * ratio).max(0.0);
-                if w > 0.0 && self.data.get(sq).is_some_and(|d| self.template_states_hold(d)) {
-                    candidates.push((sq.clone(), w, Some(t)));
+                if w > 0.0
+                    && let Some(d) = self.data.get(sq)
+                    && self.template_states_hold(d)
+                {
+                    let faction = d.refs("faction").first().map_or(kenshi_world::biome::DEFAULT_SPAWN_FACTION.to_string(), |(f, _)| f.clone());
+                    candidates.push((sq.clone(), w, Some(t), faction));
                 }
             }
         }
-        let sum: f32 = candidates.iter().map(|(_, w, _)| w).sum();
+        let sum: f32 = candidates.iter().map(|(_, w, _, _)| w).sum();
         if sum <= 0.0 {
-            return;
+            return false;
         }
         let mut r = self.rng.next() * sum;
-        let (template, home) = candidates
+        let (template, listed, faction) = candidates
             .iter()
-            .find(|(_, w, _)| {
+            .find(|(_, w, _, _)| {
                 r -= w;
                 r < 0.0
             })
-            .map_or((candidates[0].0.clone(), candidates[0].2), |(t, _, h)| (t.clone(), *h));
-        // the place
-        let half = kenshi_world::ZONE_SIZE * 0.4;
-        let players: Vec<[f32; 3]> = self
-            .folk
-            .iter()
-            .filter(|p| p.player)
-            .map(|p| p.mover.position_units())
-            .collect();
-        let mut at = None;
-        for _ in 0..10 {
-            let x = cx + (self.rng.next() * 2.0 - 1.0) * half;
-            let z = cz + (self.rng.next() * 2.0 - 1.0) * half;
-            let y = self.terrain.height_at(x, z).unwrap_or(0.0);
-            let Some((_, q)) = self.nav.closest_point([x, y, z].map(|v| v * METRES), 60.0) else {
-                continue;
-            };
-            let q = q.map(|v| v / METRES);
-            let clear = players
-                .iter()
-                .all(|p| (p[0] - q[0]).hypot(p[2] - q[2]) > 1500.0)
-                && self.towns.iter().all(|t| !t.contains(q, 1.0));
-            if clear {
-                at = Some(q);
-                break;
+            .map_or((candidates[0].0.clone(), candidates[0].2, candidates[0].3.clone()), |(t, _, h, f)| (t.clone(), *h, f.clone()));
+        // the place (F048102)
+        let Some(at) = self.zone_spawn_point(zone, true, Some(&faction), 2.0, 1.0) else { return false };
+        // its home: a town (Ok) or a nest (Err)
+        let home: Option<Result<usize, usize>> = match (listed, town) {
+            (Some(t), _) => Some(Ok(t)),
+            (None, None) => None,
+            (None, Some(t)) if self.towns[t].faction.as_deref() == Some(faction.as_str()) => Some(Ok(t)),
+            (None, Some(_)) => {
+                let d = |p: [f32; 3]| (p[0] - at[0]).hypot(p[2] - at[2]);
+                let mine = (0..self.towns.len())
+                    .filter(|&k| self.towns[k].kind != 8 && self.towns[k].faction.as_deref() == Some(faction.as_str()))
+                    .min_by(|&a, &b| d(self.towns[a].position).total_cmp(&d(self.towns[b].position)));
+                match mine {
+                    None => None,
+                    Some(m) => {
+                        // a nest of its faction nearer by 9216 units is taken instead
+                        let home = match self.nearest_nest(at, Some(&faction)) {
+                            Some(k) if d(self.nests[k].at) + 9216.0 < d(self.towns[m].position) => Err(k),
+                            _ => Ok(m),
+                        };
+                        let at_home = match home {
+                            Ok(t) => self.towns[t].position,
+                            Err(k) => self.nests[k].at,
+                        };
+                        (d(at_home) <= 50000.0).then_some(home)
+                    }
+                }
             }
+        };
+        // none inside a town (the nearest within 10000 units)
+        let d2 = |p: [f32; 3]| (p[0] - at[0]).powi(2) + (p[2] - at[2]).powi(2);
+        if let Some(t) = (0..self.towns.len()).filter(|&t| self.towns[t].kind != 8 && d2(self.towns[t].position) < 1.0e8).min_by(|&a, &b| d2(self.towns[a].position).total_cmp(&d2(self.towns[b].position)))
+            && self.towns[t].contains(at, 1.0)
+        {
+            return false;
         }
-        let Some(at) = at else { return };
         if let Some(members) = self.spawn_template(&template, at) {
             let name = self
                 .data
@@ -7567,11 +8231,17 @@ impl Sim {
                 at.map(|v| v.round())
             );
             if let Some(pop) = self.population.as_mut() {
-                if let (Some(t), Some(&l)) = (home, members.first()) {
+                if let (Some(t), Some(&l)) = (listed, members.first()) {
                     pop.homes.insert(l, t);
+                }
+                if let (Some(h), Some(&l)) = (home, members.first()) {
+                    pop.home_town.insert(l, h);
                 }
                 pop.squads.push((members, zone, template));
             }
+            true
+        } else {
+            false
         }
     }
 
@@ -7720,8 +8390,10 @@ pub fn water_state(ground: f32, size: f32, swims: bool) -> i32 {
 /// patrolling (`Person::caravan`), a goal targeting the leader on `leader`, one targeting the
 /// squad's mission on `mission` (a contract's hirer). "Following" (44) a mission target is
 /// Task_Follow (factory case 14), whose update is Task_FollowLeader's (F031009): it runs as
-/// following the leader; (assumption) Bodyguard (45), a generic task followed by Staying close
-/// (31, Task_Follow too), likewise; Task_Follow's own distance (random 20 .. 40) not kept.
+/// following the leader. Bodyguard (45) is the factory's generic task (case 107, F030716: it
+/// moves nobody) and Staying close (31) a Task_Follow (case 14); (assumption) a bodyguard with
+/// a mission target follows it as Staying close would: what hands the goal from 45 to 31 is not
+/// traced. Task_Follow's own distance (random 20 .. 40) not kept.
 pub(crate) fn jobs_of(goals: Vec<PackageGoal>, leader: Option<usize>, mission: Option<usize>) -> [Vec<Task<Target>>; 4] {
     let mut jobs: [Vec<Task<Target>>; 4] = Default::default();
     for mut g in goals {

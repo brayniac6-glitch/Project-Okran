@@ -87,7 +87,8 @@ fn main() {
             }
         }
     }
-    // the factions' "special squads" (UNIQUE_SQUAD_TEMPLATEs, F030223): not spawned here
+    // the factions' "special squads" (UNIQUE_SQUAD_TEMPLATEs, F030223): Kenshi keeps them but
+    // never sends one out (F030219 / F030218, kenshi_game::world::SpecialSquads)
     let mut unique_squads: Vec<String> = Vec::new();
     for f in c.of_type(ItemType::Faction) {
         for (t, _) in f.refs("special squads") {
@@ -172,5 +173,5 @@ fn main() {
     }
     println!("{blocked_total} dialogues with lasting effects on events not raised");
     println!("uniques no spawned squad brings: {never:?}");
-    println!("factions' special squads (UNIQUE_SQUAD_TEMPLATE, not spawned): {unique_squads:?}");
+    println!("factions' special squads (UNIQUE_SQUAD_TEMPLATE, never sent out in Kenshi): {unique_squads:?}");
 }

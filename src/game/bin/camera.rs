@@ -519,6 +519,12 @@ pub fn camera(
     if turn != 0.0 {
         game.yaw += (s.pan * turn * dt * s.invert_x).to_radians();
     }
+    // (testing) KENSHI_CAM_SPIN=<radians a second>: the camera orbits its centre slowly, for
+    // video captures (with KENSHI_FIXED_DT the step is that fixed time, so frames stay even)
+    if let Some(spin) = std::env::var("KENSHI_CAM_SPIN").ok().and_then(|v| v.parse::<f32>().ok()) {
+        let step = std::env::var("KENSHI_FIXED_DT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(dt);
+        game.yaw += spin * step;
+    }
     if tilt != 0.0 {
         let d = s.tilt * tilt * dt * s.invert_y;
         let view_y = -game.pitch.sin();

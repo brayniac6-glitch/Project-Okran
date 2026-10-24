@@ -90,6 +90,9 @@ pub struct KenshiWaterMaterial {
     #[sampler(14)]
     pub reflection: Handle<Image>,
     pub distant: bool,
+    /// The shared main light (kenshi_render::light_buffer, kenshi_lighting.wgsl KenshiLight).
+    #[storage(70, read_only)]
+    pub light: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 impl Material for KenshiWaterMaterial {
@@ -131,6 +134,7 @@ impl TerrainLook {
     ) -> KenshiWaterMaterial {
         let or = |s: &str, d: &str| if s.is_empty() { d.to_string() } else { s.to_string() };
         KenshiWaterMaterial {
+            light: crate::light_buffer::LIGHT,
             params,
             colour: self.image(assets, "data/newland/land/overlaymaps/watercolourmap.png"),
             flow: self.image(assets, "data/newland/land/overlaymaps/flowmap.png"),
@@ -214,18 +218,5 @@ impl TerrainLook {
         };
         params.set_light(&self.light);
         self.water_material(assets, params, ["", "", "", ""], true)
-    }
-}
-
-/// Light every water material and move its clock to `game_hours` (gameTime, F040805: the
-/// controller's hours (day x 24 + hour, F040806) less its start).
-pub fn relight_water(
-    light: &MainLight,
-    game_hours: f32,
-    materials: &mut Assets<KenshiWaterMaterial>,
-) {
-    for (_, m) in materials.iter_mut() {
-        m.params.set_light(light);
-        m.params.origin_time.w = game_hours;
     }
 }

@@ -4,7 +4,7 @@
 
 #import bevy_pbr::forward_io::VertexOutput
 #import bevy_pbr::mesh_view_bindings::view
-#import kenshi::lighting::{apply_fog, local_lights, main_light, make_wet, reflection_dir, reflection_mip,
+#import kenshi::lighting::{KenshiLight, apply_fog, local_lights, main_light, make_wet, reflection_dir, reflection_mip,
     sun_shadow, to_screen}
 
 struct CharacterParams {
@@ -35,6 +35,7 @@ struct CharacterParams {
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> p: CharacterParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(70) var<storage, read> kl: KenshiLight;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var diffuse_map: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var diffuse_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var normal_map: texture_2d<f32>;
@@ -175,10 +176,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
     let refl = textureSampleLevel(specularity_cube, cube_sampler,
         reflection_dir(world_normal, view_dir, gloss), reflection_mip(gloss));
     let lit = main_light(world_normal, view_dir, albedo, gloss, metalness, 0.0, 0.0,
-        p.sun_direction.xyz, p.sun_colour, p.env_colour.w, p.ambient_params.w,
+        kl.sun_direction.xyz, kl.sun_colour, kl.env_colour.w, kl.ambient_params.w,
         ambient_mult, irr, refl, sun_shadow(in.world_position, n, shadow_jitter));
     let lit_all = lit + local_lights(in.world_position.xyz, in.position.xy, world_normal, view_dir, albedo, gloss, metalness);
-    let fogged = apply_fog(lit_all, camera, world_pos, p.sun_real.xyz, p.horizon, p.fog, p.fog_colour,
-        p.sun_colour.w);
-    return vec4<f32>(to_screen(fogged, p.origin_exposure.w), 1.0);
+    let fogged = apply_fog(lit_all, camera, world_pos, kl.sun_real.xyz, kl.horizon, kl.fog, kl.fog_colour,
+        kl.sun_colour.w);
+    return vec4<f32>(to_screen(fogged, kl.misc.x), 1.0);
 }

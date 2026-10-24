@@ -20,18 +20,19 @@ fn main() {
     let mut pathing = Pathing::default();
     pathing.go_to(0, &mover, g, false, &mut manager);
     let (_, r) = manager.update(&nav).expect("answer");
-    pathing.answer(r);
+    pathing.answer(r, &mover, &nav);
     let mut t = 0.0;
     let mut last = None;
     while t < secs && !mover.arrived {
-        pathing.tick(&mut mover, &nav, 1.0 / 60.0);
+        pathing.tick(0, &mut mover, &nav, &mut manager, &|_| false, 1.0 / 60.0);
         t += 1.0 / 60.0;
-        let face = pathing.follow.as_ref().map(|f| f.face);
+        let face = pathing.face;
         if (16.4..16.9).contains(&t)
             && let Some(f) = pathing.follow.as_mut()
         {
             let q = mover.position;
-            let tg = f.path.target(q);
+            let h = f.path.heading(q, mover.velocity, mover.radius, false, None);
+            let tg = [q[0] + h.dir[0], q[1] + h.dir[1], q[2] + h.dir[2]];
             println!(
                 "  t {t:.3} pos {:?} next {} of {} target {:?} last {}",
                 q.map(|v| v / METRES),

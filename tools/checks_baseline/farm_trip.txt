@@ -1,0 +1,281 @@
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1628313635\CheatTrainings.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2766413504\Cheat Trainings (No Research).mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1577062693\Cheat Start.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\726254871\RecruitPrisoners.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\1396056759\Peeler Machine.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\705119823\256 Squad Limit.mod
+mod: C:/Program Files (x86)/Steam/steamapps\workshop/content\233860\2697336337\Own the Hub.mod
+136 town nodes (34 general)
+town Shark at [-47040.98, 120.94015, 48137.1], type 2, radius 2500
+417 pieces of furniture, bars: ["Swamp Dome", "Swamp Dome"]
+15 interior volumes, 15 doors
+swamper fish and drugs at Swamp Store: 1 leader(s), 0 others, package Shop
+Swamper Blackshifter at Swamp Shack: 1 leader(s), 4 others, package Guard building, residents
+the dancing skeleton at Swamp Dome: 1 leader(s), 4 others, package Shop-24hr
+swamp trade goods at Swamp House: 1 leader(s), 1 others, package Shop
+swamp travel shop at Swamp House: 1 leader(s), 1 others, package Shop
+swamper fish and drugs at Swamp Store: 1 leader(s), 0 others, package Shop
+swamp shop mechanical at Swamp Shack: 1 leader(s), 0 others, package Shop
+swamp smithy at Swamp House: 1 leader(s), 1 others, package Shop
+Swamper resident solo at Swamp Shack: 1 leader(s), 1 others, package worker fighter indie resident
+Swamper resident solo at Swamp Shack: 1 leader(s), 0 others, package worker fighter indie resident
+Swamper resident solo at Swamp House: 1 leader(s), 0 others, package worker fighter indie resident
+Swamper resident solo at Swamp House: 1 leader(s), 1 others, package worker fighter indie resident
+Swamper resident solo at Swamp Shack: 1 leader(s), 1 others, package worker fighter indie resident
+hound hq at Swamp Dome: 1 leader(s), 8 others, package Guard building, residents
+blsh casino guy at Swamp Dome: 1 leader(s), 5 others, package Shop-24hr
+player squad: 1
+43 people (arresting 0, watching slaves 0, getting food 0, kidnapping 0, capturing 0)
+faction Swampers: enemies here []
+faction Blackshifters: enemies here []
+faction Hounds: enemies here []
+faction Nameless: enemies here []
+world: 0 squads abroad, 304 towns
+fertility 1.00, the crop's fit 1.00
+Hemp Farm M (40 plants), containers Some([("in1", 10), ("out", 20)]); Water Tank holds 30 Water
+operator's jobs [87]
+farm 0: stage 0.98, death 0.00, water 0.00, harvested 0/40, watered false
+farm 0: stage 0.98, death 0.00, water 0.00, harvested 0/40, watered false
+farm 0: stage 0.98, death 0.00, water 0.00, harvested 0/40, watered false
+farm 0: stage 0.98, death 0.00, water 0.00, harvested 0/40, watered false
+farm 0: stage 0.98, death 0.00, water 0.00, harvested 0/40, watered false
+farm 0: stage 0.98, death 0.00, water 0.00, harvested 0/40, watered false
+t 30: queue [1, 93, 87]; water in 0 (level 0.00), stage 0.980, harvested 0/40, output 0
+farm 0: stage 0.98, death 0.00, water 1.00, harvested 0/40, watered true
+farm 0: stage 0.98, death 0.00, water 0.99, harvested 0/40, watered true
+farm 0: stage 0.99, death 0.00, water 0.98, harvested 0/40, watered true
+farm 0: stage 0.99, death 0.00, water 0.97, harvested 0/40, watered true
+farm 0: stage 0.99, death 0.00, water 0.96, harvested 0/40, watered true
+farm 0: stage 0.99, death 0.00, water 0.95, harvested 0/40, watered true
+t 60: queue [87]; water in 1 (level 0.95), stage 0.993, harvested 0/40, output 0
+farm 0: stage 1.00, death 0.00, water 0.94, harvested 0/40, watered true
+farm 0: stage 1.00, death 0.00, water 0.93, harvested 0/40, watered true
+farm 0: stage 1.00, death 0.00, water 0.92, harvested 0/40, watered true
+farm 0: stage 1.00, death 0.00, water 0.91, harvested 0/40, watered true
+farm 0 harvested 1 (chance 0.51)
+farm 0: stage 1.00, death 0.00, water 0.90, harvested 1/40, watered true
+farm 0: stage 1.00, death 0.00, water 0.89, harvested 1/40, watered true
+t 90: queue [87]; water in 1 (level 0.89), stage 1.003, harvested 1/40, output 1
+farm 0 harvested 1 (chance 0.51)
+farm 0: stage 1.00, death 0.00, water 0.88, harvested 2/40, watered true
+farm 0: stage 1.01, death 0.00, water 0.87, harvested 2/40, watered true
+farm 0 harvested 0 (chance 0.51)
+farm 0: stage 1.01, death 0.00, water 0.86, harvested 3/40, watered true
+farm 0: stage 1.01, death 0.00, water 0.85, harvested 3/40, watered true
+farm 0 harvested 0 (chance 0.52)
+farm 0: stage 1.01, death 0.00, water 0.84, harvested 4/40, watered true
+farm 0: stage 1.01, death 0.00, water 0.84, harvested 4/40, watered true
+t 120: queue [87]; water in 1 (level 0.84), stage 1.009, harvested 4/40, output 2
+farm 0 harvested 0 (chance 0.52)
+farm 0: stage 1.01, death 0.00, water 0.83, harvested 5/40, watered true
+farm 0: stage 1.01, death 0.00, water 0.82, harvested 5/40, watered true
+farm 0 harvested 0 (chance 0.52)
+farm 0: stage 1.01, death 0.00, water 0.81, harvested 6/40, watered true
+farm 0: stage 1.01, death 0.00, water 0.80, harvested 6/40, watered true
+farm 0 harvested 1 (chance 0.52)
+farm 0: stage 1.01, death 0.00, water 0.79, harvested 7/40, watered true
+farm 0: stage 1.01, death 0.00, water 0.78, harvested 7/40, watered true
+t 150: queue [87]; water in 1 (level 0.78), stage 1.015, harvested 7/40, output 3
+farm 0 harvested 1 (chance 0.52)
+farm 0: stage 1.02, death 0.00, water 0.77, harvested 8/40, watered true
+farm 0: stage 1.02, death 0.00, water 0.76, harvested 8/40, watered true
+farm 0 harvested 0 (chance 0.53)
+farm 0: stage 1.02, death 0.00, water 0.75, harvested 9/40, watered true
+farm 0: stage 1.02, death 0.00, water 0.74, harvested 9/40, watered true
+farm 0 harvested 1 (chance 0.53)
+farm 0: stage 1.02, death 0.00, water 0.73, harvested 10/40, watered true
+farm 0: stage 1.02, death 0.00, water 0.72, harvested 10/40, watered true
+t 180: queue [87]; water in 1 (level 0.72), stage 1.021, harvested 10/40, output 5
+farm 0 harvested 1 (chance 0.53)
+farm 0: stage 1.02, death 0.00, water 0.71, harvested 11/40, watered true
+farm 0: stage 1.02, death 0.00, water 0.70, harvested 11/40, watered true
+farm 0 harvested 1 (chance 0.53)
+farm 0: stage 1.02, death 0.00, water 0.69, harvested 12/40, watered true
+farm 0: stage 1.02, death 0.00, water 0.68, harvested 12/40, watered true
+farm 0 harvested 0 (chance 0.53)
+farm 0: stage 1.03, death 0.00, water 0.67, harvested 13/40, watered true
+farm 0: stage 1.03, death 0.00, water 0.66, harvested 13/40, watered true
+t 210: queue [87]; water in 1 (level 0.66), stage 1.026, harvested 13/40, output 7
+farm 0 harvested 0 (chance 0.54)
+farm 0: stage 1.03, death 0.00, water 0.65, harvested 14/40, watered true
+farm 0: stage 1.03, death 0.00, water 0.64, harvested 14/40, watered true
+farm 0 harvested 1 (chance 0.54)
+farm 0: stage 1.03, death 0.00, water 0.63, harvested 15/40, watered true
+farm 0: stage 1.03, death 0.00, water 0.63, harvested 15/40, watered true
+farm 0 harvested 1 (chance 0.54)
+farm 0: stage 1.03, death 0.00, water 0.62, harvested 16/40, watered true
+farm 0: stage 1.03, death 0.00, water 0.61, harvested 16/40, watered true
+t 240: queue [87]; water in 1 (level 0.61), stage 1.032, harvested 16/40, output 9
+farm 0 harvested 1 (chance 0.54)
+farm 0: stage 1.03, death 0.00, water 0.60, harvested 17/40, watered true
+farm 0: stage 1.03, death 0.00, water 0.59, harvested 17/40, watered true
+farm 0 harvested 0 (chance 0.54)
+farm 0: stage 1.04, death 0.00, water 0.58, harvested 18/40, watered true
+farm 0: stage 1.04, death 0.00, water 0.57, harvested 18/40, watered true
+farm 0 harvested 1 (chance 0.54)
+farm 0: stage 1.04, death 0.00, water 0.56, harvested 19/40, watered true
+farm 0: stage 1.04, death 0.00, water 0.55, harvested 19/40, watered true
+t 270: queue [87]; water in 1 (level 0.55), stage 1.038, harvested 19/40, output 11
+farm 0 harvested 1 (chance 0.55)
+farm 0: stage 1.04, death 0.00, water 0.54, harvested 20/40, watered true
+farm 0: stage 1.04, death 0.00, water 0.53, harvested 20/40, watered true
+farm 0 harvested 1 (chance 0.55)
+farm 0: stage 1.04, death 0.00, water 0.52, harvested 21/40, watered true
+farm 0: stage 1.04, death 0.00, water 0.51, harvested 21/40, watered true
+farm 0 harvested 1 (chance 0.55)
+farm 0: stage 1.04, death 0.00, water 0.50, harvested 22/40, watered true
+farm 0: stage 1.04, death 0.00, water 0.49, harvested 22/40, watered true
+t 300: queue [87]; water in 1 (level 0.49), stage 1.044, harvested 22/40, output 14
+farm 0 harvested 1 (chance 0.55)
+farm 0: stage 1.04, death 0.00, water 0.48, harvested 23/40, watered true
+farm 0 harvested 0 (chance 0.55)
+farm 0: stage 1.05, death 0.00, water 0.47, harvested 24/40, watered true
+farm 0: stage 1.05, death 0.00, water 0.46, harvested 24/40, watered true
+farm 0 harvested 1 (chance 0.56)
+farm 0: stage 1.05, death 0.00, water 0.45, harvested 25/40, watered true
+farm 0: stage 1.05, death 0.00, water 0.44, harvested 25/40, watered true
+farm 0 harvested 0 (chance 0.56)
+farm 0: stage 1.05, death 0.00, water 0.43, harvested 26/40, watered true
+t 330: queue [87]; water in 1 (level 0.43), stage 1.050, harvested 26/40, output 16
+farm 0: stage 1.05, death 0.00, water 0.42, harvested 26/40, watered true
+farm 0 harvested 0 (chance 0.56)
+farm 0: stage 1.05, death 0.00, water 0.42, harvested 27/40, watered true
+farm 0: stage 1.05, death 0.00, water 0.41, harvested 27/40, watered true
+farm 0 harvested 1 (chance 0.56)
+farm 0: stage 1.05, death 0.00, water 0.40, harvested 28/40, watered true
+farm 0: stage 1.05, death 0.00, water 0.39, harvested 28/40, watered true
+farm 0 harvested 0 (chance 0.56)
+farm 0: stage 1.06, death 0.00, water 0.38, harvested 29/40, watered true
+t 360: queue [87]; water in 1 (level 0.38), stage 1.055, harvested 29/40, output 17
+farm 0: stage 1.06, death 0.00, water 0.37, harvested 29/40, watered true
+farm 0 harvested 1 (chance 0.56)
+farm 0: stage 1.06, death 0.00, water 0.36, harvested 30/40, watered true
+farm 0: stage 1.06, death 0.00, water 0.35, harvested 30/40, watered true
+farm 0 harvested 1 (chance 0.57)
+farm 0: stage 1.06, death 0.00, water 0.34, harvested 31/40, watered true
+farm 0: stage 1.06, death 0.00, water 0.33, harvested 31/40, watered true
+farm 0 harvested 0 (chance 0.57)
+farm 0: stage 1.06, death 0.00, water 0.32, harvested 32/40, watered true
+t 390: queue [87]; water in 1 (level 0.32), stage 1.061, harvested 32/40, output 19
+farm 0: stage 1.06, death 0.00, water 0.31, harvested 32/40, watered true
+farm 0 harvested 1 (chance 0.57)
+farm 0: stage 1.06, death 0.00, water 0.30, harvested 33/40, watered true
+farm 0: stage 1.06, death 0.00, water 0.29, harvested 33/40, watered true
+farm 0: stage 1.07, death 0.00, water 0.28, harvested 33/40, watered true
+farm 0: stage 1.07, death 0.00, water 0.27, harvested 33/40, watered true
+farm 0: stage 1.07, death 0.00, water 0.26, harvested 33/40, watered true
+t 420: queue []; water in 1 (level 0.26), stage 1.067, harvested 33/40, output 20
+farm 0: stage 1.07, death 0.00, water 0.25, harvested 33/40, watered true
+farm 0: stage 1.07, death 0.00, water 0.24, harvested 33/40, watered true
+farm 0: stage 1.07, death 0.00, water 0.23, harvested 33/40, watered true
+farm 0: stage 1.07, death 0.00, water 0.22, harvested 33/40, watered true
+farm 0: stage 1.07, death 0.00, water 0.21, harvested 33/40, watered true
+farm 0: stage 1.07, death 0.00, water 0.21, harvested 33/40, watered true
+t 450: queue []; water in 1 (level 0.21), stage 1.073, harvested 33/40, output 20
+farm 0: stage 1.07, death 0.00, water 0.20, harvested 33/40, watered true
+farm 0: stage 1.07, death 0.00, water 0.19, harvested 33/40, watered true
+farm 0: stage 1.08, death 0.00, water 0.18, harvested 33/40, watered true
+farm 0: stage 1.08, death 0.00, water 0.17, harvested 33/40, watered true
+farm 0: stage 1.08, death 0.00, water 0.16, harvested 33/40, watered true
+farm 0: stage 1.08, death 0.00, water 0.15, harvested 33/40, watered true
+t 480: queue []; water in 1 (level 0.15), stage 1.079, harvested 33/40, output 20
+farm 0: stage 1.08, death 0.00, water 0.14, harvested 33/40, watered true
+farm 0: stage 1.08, death 0.00, water 0.13, harvested 33/40, watered true
+farm 0: stage 1.08, death 0.00, water 0.12, harvested 33/40, watered true
+farm 0: stage 1.08, death 0.00, water 0.11, harvested 33/40, watered true
+farm 0: stage 1.08, death 0.00, water 0.10, harvested 33/40, watered true
+farm 0: stage 1.08, death 0.00, water 0.09, harvested 33/40, watered true
+t 510: queue []; water in 1 (level 0.09), stage 1.084, harvested 33/40, output 20
+farm 0: stage 1.09, death 0.00, water 0.08, harvested 33/40, watered true
+farm 0: stage 1.09, death 0.00, water 0.07, harvested 33/40, watered true
+farm 0: stage 1.09, death 0.00, water 0.06, harvested 33/40, watered true
+farm 0: stage 1.09, death 0.00, water 0.05, harvested 33/40, watered true
+farm 0: stage 1.09, death 0.00, water 0.04, harvested 33/40, watered true
+farm 0: stage 1.09, death 0.00, water 0.03, harvested 33/40, watered true
+t 540: queue []; water in 1 (level 0.03), stage 1.090, harvested 33/40, output 20
+farm 0: stage 1.09, death 0.00, water 0.02, harvested 33/40, watered true
+farm 0: stage 1.09, death 0.00, water 0.01, harvested 33/40, watered true
+farm 0: stage 1.09, death 0.00, water 0.00, harvested 33/40, watered true
+farm 0: stage 1.09, death 0.00, water 1.00, harvested 33/40, watered true
+farm 0: stage 1.09, death 0.00, water 0.99, harvested 33/40, watered true
+farm 0: stage 1.10, death 0.00, water 0.98, harvested 33/40, watered true
+t 570: queue []; water in 0 (level 0.98), stage 1.096, harvested 33/40, output 20
+farm 0: stage 1.10, death 0.00, water 0.97, harvested 33/40, watered true
+farm 0: stage 1.10, death 0.00, water 0.96, harvested 33/40, watered true
+farm 0: stage 1.10, death 0.00, water 0.95, harvested 33/40, watered true
+farm 0: stage 1.10, death 0.00, water 0.94, harvested 33/40, watered true
+farm 0: stage 1.10, death 0.00, water 0.93, harvested 33/40, watered true
+farm 0: stage 1.10, death 0.00, water 0.92, harvested 33/40, watered true
+t 600: queue []; water in 0 (level 0.92), stage 1.102, harvested 33/40, output 20
+farm 0: stage 1.10, death 0.00, water 0.91, harvested 33/40, watered true
+farm 0: stage 1.10, death 0.00, water 0.90, harvested 33/40, watered true
+farm 0: stage 1.10, death 0.00, water 0.89, harvested 33/40, watered true
+farm 0: stage 1.11, death 0.00, water 0.88, harvested 33/40, watered true
+farm 0: stage 1.11, death 0.00, water 0.87, harvested 33/40, watered true
+farm 0: stage 1.11, death 0.00, water 0.86, harvested 33/40, watered true
+t 630: queue []; water in 0 (level 0.86), stage 1.108, harvested 33/40, output 20
+farm 0: stage 1.11, death 0.00, water 0.85, harvested 33/40, watered true
+farm 0: stage 1.11, death 0.00, water 0.84, harvested 33/40, watered true
+farm 0: stage 1.11, death 0.00, water 0.83, harvested 33/40, watered true
+farm 0: stage 1.11, death 0.00, water 0.82, harvested 33/40, watered true
+farm 0: stage 1.11, death 0.00, water 0.81, harvested 33/40, watered true
+farm 0: stage 1.11, death 0.00, water 0.80, harvested 33/40, watered true
+t 660: queue []; water in 0 (level 0.80), stage 1.113, harvested 33/40, output 20
+farm 0: stage 1.11, death 0.00, water 0.79, harvested 33/40, watered true
+farm 0: stage 1.12, death 0.00, water 0.79, harvested 33/40, watered true
+farm 0: stage 1.12, death 0.00, water 0.78, harvested 33/40, watered true
+farm 0: stage 1.12, death 0.00, water 0.77, harvested 33/40, watered true
+farm 0: stage 1.12, death 0.00, water 0.76, harvested 33/40, watered true
+farm 0: stage 1.12, death 0.00, water 0.75, harvested 33/40, watered true
+t 690: queue []; water in 0 (level 0.75), stage 1.119, harvested 33/40, output 20
+farm 0: stage 1.12, death 0.00, water 0.74, harvested 33/40, watered true
+farm 0: stage 1.12, death 0.00, water 0.73, harvested 33/40, watered true
+farm 0: stage 1.12, death 0.00, water 0.72, harvested 33/40, watered true
+farm 0: stage 1.12, death 0.00, water 0.71, harvested 33/40, watered true
+farm 0: stage 1.12, death 0.00, water 0.70, harvested 33/40, watered true
+farm 0: stage 1.12, death 0.00, water 0.69, harvested 33/40, watered true
+t 720: queue []; water in 0 (level 0.69), stage 1.125, harvested 33/40, output 20
+farm 0: stage 1.13, death 0.00, water 0.68, harvested 33/40, watered true
+farm 0: stage 1.13, death 0.00, water 0.67, harvested 33/40, watered true
+farm 0: stage 1.13, death 0.00, water 0.66, harvested 33/40, watered true
+farm 0: stage 1.13, death 0.00, water 0.65, harvested 33/40, watered true
+farm 0: stage 1.13, death 0.00, water 0.64, harvested 33/40, watered true
+farm 0: stage 1.13, death 0.00, water 0.63, harvested 33/40, watered true
+t 750: queue []; water in 0 (level 0.63), stage 1.131, harvested 33/40, output 20
+farm 0: stage 1.13, death 0.00, water 0.62, harvested 33/40, watered true
+farm 0: stage 1.13, death 0.00, water 0.61, harvested 33/40, watered true
+farm 0: stage 1.13, death 0.00, water 0.60, harvested 33/40, watered true
+farm 0: stage 1.13, death 0.00, water 0.59, harvested 33/40, watered true
+farm 0: stage 1.14, death 0.00, water 0.58, harvested 33/40, watered true
+farm 0: stage 1.14, death 0.00, water 0.57, harvested 33/40, watered true
+t 780: queue []; water in 0 (level 0.57), stage 1.136, harvested 33/40, output 20
+farm 0: stage 1.14, death 0.00, water 0.57, harvested 33/40, watered true
+farm 0: stage 1.14, death 0.00, water 0.56, harvested 33/40, watered true
+farm 0: stage 1.14, death 0.00, water 0.55, harvested 33/40, watered true
+farm 0: stage 1.14, death 0.00, water 0.54, harvested 33/40, watered true
+farm 0: stage 1.14, death 0.00, water 0.53, harvested 33/40, watered true
+farm 0: stage 1.14, death 0.00, water 0.52, harvested 33/40, watered true
+t 810: queue []; water in 0 (level 0.52), stage 1.142, harvested 33/40, output 20
+farm 0: stage 1.14, death 0.00, water 0.51, harvested 33/40, watered true
+farm 0: stage 1.14, death 0.00, water 0.50, harvested 33/40, watered true
+farm 0: stage 1.15, death 0.00, water 0.49, harvested 33/40, watered true
+farm 0: stage 1.15, death 0.00, water 0.48, harvested 33/40, watered true
+farm 0: stage 1.15, death 0.00, water 0.47, harvested 33/40, watered true
+farm 0: stage 1.15, death 0.00, water 0.46, harvested 33/40, watered true
+t 840: queue []; water in 0 (level 0.46), stage 1.148, harvested 33/40, output 20
+farm 0: stage 1.15, death 0.00, water 0.45, harvested 33/40, watered true
+farm 0: stage 1.15, death 0.00, water 0.44, harvested 33/40, watered true
+farm 0: stage 1.15, death 0.00, water 0.43, harvested 33/40, watered true
+farm 0: stage 1.15, death 0.00, water 0.42, harvested 33/40, watered true
+farm 0: stage 1.15, death 0.00, water 0.41, harvested 33/40, watered true
+farm 0: stage 1.15, death 0.00, water 0.40, harvested 33/40, watered true
+t 870: queue []; water in 0 (level 0.40), stage 1.154, harvested 33/40, output 20
+farm 0: stage 1.15, death 0.00, water 0.39, harvested 33/40, watered true
+farm 0: stage 1.16, death 0.00, water 0.38, harvested 33/40, watered true
+farm 0: stage 1.16, death 0.00, water 0.37, harvested 33/40, watered true
+farm 0: stage 1.16, death 0.00, water 0.36, harvested 33/40, watered true
+farm 0: stage 1.16, death 0.00, water 0.36, harvested 33/40, watered true
+farm 0: stage 1.16, death 0.00, water 0.35, harvested 33/40, watered true
+t 900: queue []; water in 0 (level 0.35), stage 1.160, harvested 33/40, output 20
+check: the operator watered the farm from the storage true (water in at most 2, the tank 28), the crop ripened true, harvested true 33 (output 20)
+exit 0

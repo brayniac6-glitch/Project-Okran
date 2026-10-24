@@ -27,6 +27,8 @@ use kenshi_anim::select::{idle as idle_anim, movement};
 mod birds;
 #[path = "build_ui.rs"]
 mod build_ui;
+#[path = "building_ui.rs"]
+mod building_ui;
 #[path = "camera.rs"]
 mod camera;
 use camera::{PITCH_START, YAW_START, ZOOM_START, camera};
@@ -84,6 +86,7 @@ mod tutorial_table;
 mod tutorial_ui;
 #[path = "item_tip.rs"]
 mod item_tip;
+mod span_prof;
 #[path = "order_test.rs"]
 mod order_test;
 #[path = "stats_ui.rs"]
@@ -102,7 +105,7 @@ use kenshi_physics::ragdoll::Ragdoll;
 use kenshi_render::ragdoll::{PoseOverride, RagdollRig};
 use kenshi_combat::arena::{opponent, root_at};
 use kenshi_data::ItemType;
-use kenshi_game::sim::Sim;
+use kenshi_game::sim::{GET_UP_BLEND, Sim};
 use kenshi_io::{ogre_mesh, resources::Resources};
 
 /// The window as Kenshi's kenshi.cfg sets the Direct3D11 renderer up: "Video Mode" (width x
@@ -156,6 +159,7 @@ use kenshi_render::sky::SkySettings;
 use kenshi_render::water_material::{KenshiWaterMaterial, WATER_HEIGHT, ZONE_WATER_SIZE, DISTANT_WATER_SIZE};
 use kenshi_render::sky_dome::{KenshiSkyMaterial, KenshiSkyPlugin, spawn_sky_dome};
 use kenshi_render::terrain_material::{KenshiTerrainMaterial, KenshiTerrainPlugin, TerrainLook};
+use bevy::picking::mesh_picking::ray_cast::MeshRayCast;
 use kenshi_render::zone::{BuildingFloor, BuildingPiece, BuildingView, ZoneScene, ZoneTag, ground_on, load_zone, load_zone_shared};
 use kenshi_render::{appearance_material, to_bevy};
 use kenshi_world::{Terrain, WORLD_SIZE, ZONE_SIZE};
@@ -216,10 +220,6 @@ struct Game {
     /// for; zone loads come back over `loaded`.
     zones: HashMap<(i32, i32), ZoneScene>,
     pub(crate) asked: std::collections::HashSet<(i32, i32)>,
-    /// Zones' remaining activation time (s, Kenshi's zone timers: see `stream_zones`).
-    alive: HashMap<(i32, i32), f32>,
-    /// ZoneManager's current zone (under the camera's focus, F051615).
-    camera_zone: Option<(i32, i32)>,
     /// The first zone's (X, Y).
     home: (i32, i32),
     loaded: Mutex<Receiver<Loaded>>,
@@ -229,6 +229,12 @@ struct Game {
     outfits: Vec<CharacterAsset>,
     /// The loaded zones' building collision, for ragdolls.
     statics: std::sync::Arc<kenshi_physics::world::StaticWorld>,
+    /// Severed limbs lying as physics bodies (F040471 / F043917), and each one's turn (ground
+    /// items are drawn turned about the vertical only; these as their bodies lie).
+    limbs_lying: Vec<LyingLimb>,
+    pub(crate) limb_turns: HashMap<u64, Quat>,
+    /// Each "physics file"'s body (None: none it can make).
+    limb_bodies: HashMap<String, Option<Arc<kenshi_physics::ragdoll::Template>>>,
     /// Per outfit: its race's ragdoll ("male ragdoll" / "female ragdoll", F039259) bound to its
     /// skeleton: knocked out, and carried (F039247's 0x800 request takes the same file; the
     /// race's "male carry ragdoll" is never read by the game).
@@ -261,6 +267,9 @@ struct Game {
     uploads: Vec<CharacterHandles<KenshiCharacterMaterial>>,
     sword: Option<(Vec<Handle<Mesh>>, Handle<StandardMaterial>)>,
     selected: Vec<usize>,
+    /// The building picked (building_ui): the main panel shows it instead of the selected
+    /// characters until a character is picked or nothing is.
+    selected_building: Option<building_ui::Selected>,
     /// A crafting bench asked for in the overview's crafting tab (its menu's "Crafting").
     crafting_request: Option<usize>,
     /// A question for Kenshi's message box (message_box), asked next frame.
@@ -363,6 +372,8 @@ fn main() -> AppExit {
         need_kenshi(&e);
         return AppExit::error();
     }
+    // the heightmap into the system's file cache while the game loads (kenshi_world::warm_heightmap)
+    kenshi_world::warm_heightmap(&root);
     // with no zone or squads asked for, Kenshi's main menu starts the game
     let menu = args.len() <= 1;
     let zone_xy: (i32, i32) = args
@@ -405,7 +416,9 @@ fn main() -> AppExit {
                     // (the close is ours: `close_now`)
                     close_when_requested: false,
                     ..default()
-                }),
+                })
+                // (testing) KENSHI_SPAN_PROF: Bevy's spans timed (a `--features bevy/trace` build)
+                .set(bevy::log::LogPlugin { custom_layer: span_prof::layer, ..default() }),
         )
         .insert_resource(ClearColor(Color::srgb(0.72, 0.68, 0.6)))
         // the texture quality option (kenshi_render::texture_quality; 1 when missing)
@@ -448,6 +461,7 @@ fn main() -> AppExit {
         .add_systems(Update, prospect_ui::update.run_if(resource_exists::<WorldReady>))
         .init_resource::<tutorial_ui::Tutorials>()
         .add_systems(Update, order_test::script.run_if(resource_exists::<WorldReady>))
+        .add_systems(Update, building_ui::script.run_if(resource_exists::<WorldReady>))
         .add_systems(Update, tutorial_ui::update.run_if(resource_exists::<WorldReady>.and_then(resource_exists::<hud_ui::Hud>)))
         .add_systems(Update, tutorial_ui::pointer.after(tutorial_ui::update).after(hud_ui::jobs_panel).run_if(resource_exists::<WorldReady>.and_then(resource_exists::<hud_ui::Hud>)))
         .add_systems(Update, (research_ui::script, research_ui::update).chain().run_if(resource_exists::<WorldReady>))
@@ -468,7 +482,7 @@ fn main() -> AppExit {
         )
         .add_systems(Update, (key_script, save_keys).chain().run_if(resource_exists::<WorldReady>))
         .add_systems(Update, light_visibility.after(hide_roofs).run_if(resource_exists::<WorldReady>))
-        .add_systems(Update, (door_show.before(move_doors), move_doors, move_player_doors, sound::doors, sound::dismantled, cut_player_buildings, player_masks).run_if(resource_exists::<WorldReady>))
+        .add_systems(Update, (door_show.before(move_doors), move_doors, move_player_doors, sound::doors, sound::machines, sound::door_locks, sound::dismantled, sound::ground_pickups, cut_player_buildings, player_masks).run_if(resource_exists::<WorldReady>))
         .init_resource::<kenshi_render::local_lights::LightClock>()
         .add_systems(Update, kenshi_render::local_lights::animate.run_if(resource_exists::<WorldReady>))
         .init_resource::<saves_ui::SavesPanel>()
@@ -490,7 +504,7 @@ fn main() -> AppExit {
         .add_systems(Update, nav_debug.run_if(resource_exists::<WorldReady>))
         .init_resource::<speech_ui::Speech>()
         .init_resource::<ground_items::GroundItems>()
-        .add_systems(Update, (ground_items::update, ground_items::highlight).chain().run_if(resource_exists::<WorldReady>))
+        .add_systems(Update, (ground_items::update, ground_items::follow_bodies.after(ragdolls), ground_items::highlight).chain().run_if(resource_exists::<WorldReady>))
         .init_resource::<birds::Birds>()
         .add_systems(Update, birds::update.after(camera).run_if(resource_exists::<WorldReady>))
         .add_systems(Update, move_marker::update.after(command).run_if(resource_exists::<WorldReady>))
@@ -548,6 +562,7 @@ fn main() -> AppExit {
                 debug_text.run_if(resource_exists::<WorldReady>),
             ),
         )
+        .add_systems(PostUpdate, no_ui_shots)
         .add_systems(
             Update,
             (
@@ -560,6 +575,7 @@ fn main() -> AppExit {
                 inventory_ui::bag_window.after(inventory_ui::toggle),
                 inventory_ui::arrange_button.after(inventory_ui::toggle).before(inventory_ui::draw),
                 inventory_ui::machine_window.after(inventory_ui::toggle),
+                inventory_ui::mark_open.after(inventory_ui::toggle),
                 inventory_ui::drag.after(inventory_ui::toggle),
                 inventory_ui::draw.after(inventory_ui::drag),
             )
@@ -1160,14 +1176,15 @@ fn build_world(root: PathBuf, args: Vec<String>, zone_xy: (i32, i32), extras: Ve
             zone,
             zones: HashMap::new(),
             asked: [zone_xy].into_iter().collect(),
-            alive: HashMap::new(),
-            camera_zone: None,
             home: zone_xy,
             loaded: Mutex::new(loaded),
             loader,
             root: root.clone(),
             res: res.clone(),
             statics: Default::default(),
+            limbs_lying: Vec::new(),
+            limb_turns: HashMap::new(),
+            limb_bodies: HashMap::new(),
             ragdoll_rigs: outfits
                 .iter()
                 .map(|o| o.ragdoll.as_ref().map(|r| Arc::new(RagdollRig::new(r, &o.rig))))
@@ -1193,6 +1210,7 @@ fn build_world(root: PathBuf, args: Vec<String>, zone_xy: (i32, i32), extras: Ve
             ask: None,
             log: Vec::new(),
             dismantle_request: None,
+            selected_building: None,
             paused: false,
             speed: std::env::var("KENSHI_SPEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0),
             carry: 0.0,
@@ -1592,9 +1610,31 @@ fn select(
     mut nodes: Query<&mut Node>,
     ui: Query<&Interaction>,
     build: Res<build_ui::BuildMode>,
+    (mut ray, pieces, mut frame): (MeshRayCast, Query<PickPiece>, Local<u32>),
 ) {
     if build.is_open() {
         return;
+    }
+    // (testing) KENSHI_CLICK_AT=frame@x,y: the building at window point (x, y) picked then, as
+    // a left click there on no character
+    *frame += 1;
+    if let Ok(v) = std::env::var("KENSHI_CLICK_AT")
+        && let Some((f, xy)) = v.split_once('@')
+        && f.parse::<u32>().ok() == Some(*frame)
+        && let Some((x, y)) = xy.split_once(',')
+        && let (Ok(x), Ok(y)) = (x.parse::<f32>(), y.parse::<f32>())
+        && let Ok((cam, at)) = cams.single()
+    {
+        let place = pick_building(cam, at, &game, Vec2::new(x, y), &mut ray, &pieces);
+        game.selected_building = place.and_then(|p| building_ui::Selected::new(&game.sim, p));
+        let name = place.and_then(|p| match p {
+            building_ui::Place::Town(k) => game.sim.placed.get(k).map(|q| q.building.clone()),
+            building_ui::Place::Furniture(k) => game.sim.furn.get(k).map(|q| q.record.clone()),
+            building_ui::Place::Container(k) => game.sim.boxes.get(k).map(|q| q.at.record.clone()),
+            building_ui::Place::Door(k) => game.sim.door_states.get(k).map(|q| q.door.record.clone()),
+            building_ui::Place::Player(k) => game.sim.buildings.get(k).map(|q| q.record.clone()),
+        });
+        eprintln!("click at {x},{y}: {place:?} {:?}", name.and_then(|r| game.sim.data.get(&r)).map(|r| r.name.clone()));
     }
     if buttons.just_pressed(MouseButton::Left) && on_ui(&ui) {
         return;
@@ -1629,7 +1669,8 @@ fn select(
             node.display = Display::None;
         }
         let add = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-        let mut chosen: Vec<usize> = if (cursor - start).length() > 6.0 {
+        let dragged = (cursor - start).length() > 6.0;
+        let mut chosen: Vec<usize> = if dragged {
             let (lo, hi) = (start.min(cursor), start.max(cursor));
             game.sim
                 .folk
@@ -1644,6 +1685,16 @@ fn select(
         } else {
             pick(cam, at, &game, cursor, true).into_iter().collect()
         };
+        // a click on no character but on a building picks the building (the characters
+        // selected stay so, F045559); a character picked, or nothing, lets it go
+        game.selected_building = None;
+        if !dragged
+            && chosen.is_empty()
+            && let Some(place) = pick_building(cam, at, &game, cursor, &mut ray, &pieces)
+        {
+            game.selected_building = building_ui::Selected::new(&game.sim, place);
+            return;
+        }
         if add {
             for &i in &game.selected {
                 if !chosen.contains(&i) {
@@ -1653,6 +1704,58 @@ fn select(
         }
         game.selected = chosen;
     }
+}
+
+/// What a building part drawn tells of its building: its building and floor, a town door's or
+/// one of the player's doors, and where it stands.
+type PickPiece = (Option<&'static BuildingFloor>, Option<&'static kenshi_render::zone::DoorPiece>, Option<&'static build_ui::PlayerDoorPiece>, &'static GlobalTransform);
+
+/// The building under the cursor, as GameWorld's pick (F045559) takes the object its ray meets
+/// first: the nearest visible building part along the ray short of the ground. A door's part
+/// is its door; a part standing where one of a town building's containers or a piece of its
+/// furniture stands is that; any other its building (a town's, or one of the player's).
+/// (stand-in for the physics ray: the parts' meshes) Meeting none, the ground point under the
+/// cursor within the footprint of one of the player's picks that (a site has no parts up yet).
+fn pick_building(cam: &Camera, at: &GlobalTransform, game: &Game, cursor: Vec2, ray: &mut MeshRayCast, pieces: &Query<PickPiece>) -> Option<building_ui::Place> {
+    use bevy::picking::mesh_picking::ray_cast::{MeshRayCastSettings, RayCastVisibility};
+    use building_ui::Place;
+    let r = cam.viewport_to_world(at, cursor).ok()?;
+    let ground = terrain_at(game, r.origin, *r.direction).map(|p| p.distance(r.origin));
+    let filter = |e: Entity| pieces.get(e).is_ok_and(|(f, d, pd, _)| f.is_some() || d.is_some() || pd.is_some());
+    let settings = MeshRayCastSettings::default().with_filter(&filter).with_visibility(RayCastVisibility::Visible);
+    let hit = ray.cast_ray(r, &settings).first().map(|(e, h)| (*e, h.distance));
+    if let Some((e, distance)) = hit
+        && ground.is_none_or(|g| distance <= g + 1.0)
+        && let Ok((floor, door, player_door, t)) = pieces.get(e)
+    {
+        if let Some(d) = player_door {
+            return Some(Place::Door(d.0));
+        }
+        if let Some(d) = door
+            && let Some(off) = game.sim.zone_offsets.get(&d.zone)
+            && let Some(k) = game.sim.door_states.iter().position(|s| !s.gone && s.door.placement == off + d.building && s.door.index == d.index)
+        {
+            return Some(Place::Door(k));
+        }
+        if let Some(f) = floor {
+            if f.zone == build_ui::PLAYER_ZONE {
+                return Some(Place::Player(f.building));
+            }
+            let p = game.sim.zone_offsets.get(&f.zone)? + f.building;
+            let here = t.translation() + game.zone.origin;
+            let near = |q: [f32; 3]| Vec3::from(q).distance(here) < 2.0;
+            if let Some(k) = game.sim.boxes.iter().position(|x| x.at.placement == p && near(x.at.position)) {
+                return Some(Place::Container(k));
+            }
+            if let Some(k) = game.sim.furn.iter().position(|x| x.placement == p && near(x.position)) {
+                return Some(Place::Furniture(k));
+            }
+            return Some(Place::Town(p));
+        }
+    }
+    let q = ground_at(cam, at, game, cursor)?;
+    let w = q + game.zone.origin;
+    game.sim.building_at([w.x, w.y, w.z]).map(Place::Player)
 }
 
 /// The ground under the cursor (scene units): the ray marched down to the terrain.
@@ -2006,13 +2109,38 @@ fn part_motion(game: Res<Game>, time: Res<Time>, weather: Res<WeatherState>, mut
 fn rebuild_statics(game: &mut Game) {
     let parts: Vec<_> = std::iter::once(&game.zone)
         .chain(game.zones.values())
-        .flat_map(|z| z.collision.iter())
-        .map(|(t, s)| (t.compute_affine(), s.clone()))
+        .flat_map(|z| z.collision.iter().zip(z.collision_group.iter().copied()))
+        .map(|((t, s), g)| (t.compute_affine(), s.clone(), g))
         .collect();
-    game.statics = std::sync::Arc::new(kenshi_physics::world::StaticWorld::new(parts.iter().map(|(a, s)| (*a, &**s))));
-    eprintln!("ragdoll collision: {} solids", game.statics.len());
-    // the same solids stop bolts and block lines of fire in the fights (scene frame: from the
-    // zone's origin)
+    // and the foliage objects' (F041802)
+    let foliage: Vec<_> = std::iter::once(&game.zone)
+        .chain(game.zones.values())
+        .flat_map(|z| z.foliage_collision.iter())
+        .map(|(t, s, g)| (t.compute_affine(), s.clone(), *g))
+        .collect();
+    game.statics = std::sync::Arc::new(kenshi_physics::world::StaticWorld::grouped(parts.iter().chain(foliage.iter()).map(|(a, s, g)| (*a, &**s, *g))));
+    let passed = parts.iter().filter(|p| kenshi_physics::world::ragdoll_ignores(false) & 1 << (p.2 & 31) != 0).count();
+    let walkable = foliage.iter().filter(|p| p.2 == kenshi_render::zone::FEATURE_GROUP).count();
+    // (testing) KENSHI_FOLIAGE_DEBUG: the buildings the foliage made (the sim's) and the foliage
+    // collision standing at each
+    if std::env::var("KENSHI_FOLIAGE_DEBUG").is_ok() {
+        let origin = game.zone.origin;
+        let me = game.sim.folk.iter().find(|p| p.player).map(|p| Vec3::from(p.mover.position_units())).unwrap_or(origin);
+        for f in game.sim.furn.iter().filter(|f| game.sim.data.get(&f.record).is_some_and(|r| r.bools.get("is foliage").copied().unwrap_or(false))) {
+            let at = Vec3::from(f.position) - origin;
+            let near = foliage.iter().filter(|p| Vec3::from(p.0.translation).with_y(0.0).distance(at.with_y(0.0)) < 1.0).map(|p| p.2).collect::<Vec<_>>();
+            eprintln!("foliage building {} ({}) at {:?}, {:.0} from the squad (off {:?}): collision groups there {near:?}", f.name, f.function, f.position.map(|v| v as i32), (Vec3::from(f.position) - me).with_y(0.0).length(), (Vec3::from(f.position) - me).to_array().map(|v| v as i32));
+        }
+    }
+    eprintln!(
+        "ragdoll collision: {} solids ({passed} of {} parts passed through outside: doors, passable; {} foliage objects, {walkable} walkable)",
+        game.statics.len(),
+        parts.len(),
+        foliage.len()
+    );
+    // the same solids stop bolts and block lines of fire in the fights, each trace taking its own
+    // groups (`arena::LINE_OF_FIRE_GROUPS`, `arena::BOLT_GROUPS`) (scene frame: from the zone's
+    // origin)
     game.sim.arena.obstacles = Some((game.statics.clone(), game.zone.origin.to_array()));
     // the navmesh cut round what each zone stands on the ground (`navcut`), once a zone
     let origin = game.zone.origin;
@@ -2204,12 +2332,14 @@ fn player_masks(
             interior: None,
             exterior: None,
             town: None,
+            inside: false,
             squad: None,
             residents: None,
             locks: Vec::new(),
             door_saved: Vec::new(),
             destroyed: false,
             power_on: None,
+            handle: None,
         })
         .collect();
     for i in kenshi_world::interior::interiors(&game.sim.data, &game.res, &places) {
@@ -2225,6 +2355,38 @@ struct Limp {
     locals: Vec<Transform>,
     /// Seconds since getting up.
     up: Option<f32>,
+    /// Getting up, the hand-over (F044963): each bone's local transform from the ragdoll's pose
+    /// to the get-up clip's first key, for the bones the clip has tracks for.
+    hand_over: Option<HandOver>,
+}
+
+/// F044963 / F044960: the bones held from the animation while getting up, lerped from where the
+/// ragdoll left them to the clip's first key.
+struct HandOver {
+    from: Vec<Transform>,
+    to: Vec<Transform>,
+    bones: Vec<usize>,
+}
+
+/// Ogre's Quaternion::nlerp with the shortest path (F044960's): the normalised straight blend.
+fn nlerp(a: Quat, b: Quat, t: f32) -> Quat {
+    let b = if a.dot(b) < 0.0 { -b } else { b };
+    (a + (b - a) * t).normalize()
+}
+
+/// World transforms of a skeleton's bones from their locals under `root_parent`.
+fn world_bones(locals: &[Transform], parents: &[Option<usize>], root_parent: Affine3A) -> Vec<Affine3A> {
+    fn at(k: usize, locals: &[Transform], parents: &[Option<usize>], rp: Affine3A, out: &mut Vec<Option<Affine3A>>) -> Affine3A {
+        if let Some(w) = out[k] {
+            return w;
+        }
+        let up = parents[k].map_or(rp, |p| at(p, locals, parents, rp, out));
+        let w = up * locals[k].compute_affine();
+        out[k] = Some(w);
+        w
+    }
+    let mut out = vec![None; locals.len()];
+    (0..locals.len()).map(|k| at(k, locals, parents, root_parent, &mut out)).collect()
 }
 
 /// A limb hanging limp while the body moves on (F038923 / F038930): the ragdoll with every
@@ -2239,11 +2401,36 @@ struct LimpLimbs {
     bones: Vec<usize>,
 }
 
-/// (stand-in) a standing person's collision height for ragdolls (units).
-const PERSON_HEIGHT: f32 = 18.0;
+/// @fn F043917
+///
+/// A severed limb dropped with physics on (Item +0x1da, F043877): its item's "physics file" made a
+/// moving actor (F002750c with static off), in collision group 3, or 4 in a building (+0x1d8 a
+/// building): it falls, rolls, meets the buildings and the ragdolls, and comes to rest.
+struct LyingLimb {
+    /// Its ground item.
+    id: u64,
+    body: kenshi_physics::ragdoll::Ragdoll,
+    template: Arc<kenshi_physics::ragdoll::Template>,
+    inside: bool,
+}
 
-/// (stand-in) the ragdoll hands over to getting up within this many seconds.
-const GET_UP_BLEND: f32 = 0.5;
+/// A ragdoll stepped this frame, posed after (`ragdolls`): its body, the root's parent, the
+/// pose for the bones without a body, the bones it poses (none: all), and the floor it lies on
+/// inside (else the ground).
+struct Stepped {
+    e: Entity,
+    id: usize,
+    rp: Affine3A,
+    locals: Vec<Transform>,
+    only: Vec<usize>,
+    floor: Option<f32>,
+    /// In a building: the ragdoll in collision group 4, else 3 (F038930 / F044968).
+    inside: bool,
+    /// The full ragdoll of one knocked out (AnimationClass ragdoll flag 1, its +0x59), not a
+    /// carried one or limp limbs.
+    limp: bool,
+}
+
 
 /// The carried ragdoll request (F039247: Character::setCarried asks AnimationClass::setRagdoll,
 /// F038930, for part flags 0x800; F044931 marks the ragdoll +0x5a) as a `LimpLimbs` mask.
@@ -2310,31 +2497,23 @@ fn ragdolls(
     mut commands: Commands,
     mut game: ResMut<Game>,
     time: Res<Time>,
-    mut bodies: Query<(&Animated, Option<&mut Limp>, Option<&mut LimpLimbs>)>,
+    mut bodies: Query<(Entity, &Animated, Option<&mut Limp>, Option<&mut LimpLimbs>)>,
     joints: Query<(&Transform, &GlobalTransform), Without<Animated>>,
     globals: Query<&GlobalTransform>,
     parents: Query<&ChildOf>,
+    mut nodes: Query<&mut Transform, With<Animated>>,
 ) {
     let dt = if game.paused { 0.0 } else { time.delta_secs() * game.speed };
     let origin = game.zone.origin;
-    // people getting up where their body came to rest: id, the pelvis (scene units)
-    let mut rest: Vec<(usize, Vec3)> = Vec::new();
-    // (stand-in for their Havok character controllers) the people on their feet as upright
-    // capsules, their movement radius round and 18 units tall; (testing)
-    // KENSHI_NO_PEOPLE_COLLISION leaves them out
-    let people: Vec<(usize, Vec3, Vec3, f32)> = game
-        .sim
-        .folk
-        .iter()
-        .filter(|q| !q.down && q.carried_by.is_none() && std::env::var("KENSHI_NO_PEOPLE_COLLISION").is_err())
-        .map(|q| {
-            let at = Vec3::from(q.mover.position_units()) - origin;
-            (q.id, at, at + Vec3::Y * PERSON_HEIGHT, q.mover.radius * 10.0)
-        })
-        .collect();
+    // people getting up where their body came to rest: id, the pelvis (scene units), the way it
+    // now faces and the body's node
+    let mut rest: Vec<(usize, Vec3, Quat, Affine3A)> = Vec::new();
+    // the ragdolls to step this frame, all together (they collide with each other: F045103
+    // leaves ragdoll groups 3 and 4 colliding; the people on their feet have no PhysX actor)
+    let mut stepped: Vec<Stepped> = Vec::new();
     for p in &game.sim.folk {
         let Some(&e) = game.bodies.get(p.id) else { continue };
-        let Ok((anim, limp, limbs)) = bodies.get_mut(e) else { continue };
+        let Ok((_, anim, limp, limbs)) = bodies.get_mut(e) else { continue };
         let root = anim.rig.parents.iter().position(Option::is_none).unwrap_or(0);
         let root_parent = || {
             let up = parents.get(*anim.joints.get(root)?).ok()?.parent();
@@ -2361,14 +2540,7 @@ fn ragdolls(
                             l.doll.pin(i, x, q);
                         }
                     }
-                    let world = kenshi_physics::world::Scene {
-                        ground: |x: f32, z: f32| game.ground(x, z),
-                        statics: &game.statics,
-                        people: &[],
-                    };
-                    l.doll.step(&rig.template, dt, &world);
-                    let out = rig.locals(&l.doll, rp, &anim.rig.parents, &locals);
-                    commands.entity(e).insert(PoseOverride { locals: out, weight: 1.0, only: l.bones.clone() });
+                    stepped.push(Stepped { e, id: p.id, rp, locals, only: l.bones.clone(), floor: None, inside: p.inside.is_some(), limp: false });
                 }
                 _ => {
                     let Some(rig) = game.body_outfit.get(p.id).and_then(|&k| game.ragdoll_rigs.get(k)?.clone()) else { continue };
@@ -2390,7 +2562,7 @@ fn ragdolls(
                 doll.unpin();
                 let locals: Option<Vec<Transform>> = anim.joints.iter().map(|&j| joints.get(j).ok().map(|(t, _)| *t)).collect();
                 if let Some(locals) = locals {
-                    commands.entity(e).insert(Limp { doll, rig, locals, up: None });
+                    commands.entity(e).insert(Limp { doll, rig, locals, up: None, hand_over: None });
                 }
             }
             continue;
@@ -2423,59 +2595,88 @@ fn ragdolls(
                     Vec3::ZERO
                 };
                 let doll = rig.start(&world, push);
-                commands.entity(e).insert(Limp { doll, rig, locals, up: None });
+                commands.entity(e).insert(Limp { doll, rig, locals, up: None, hand_over: None });
             }
             (true, Some(mut l)) => {
                 if l.up.take().is_some() {
                     l.doll.wake();
                 }
-                // the ground (inside a building, the floor it stood on), the buildings' collision
-                // and everyone standing (their carrier aside)
-                let floor = p.inside.map(|_| p.mover.position_units()[1] - origin.y);
-                let near: Vec<(Vec3, Vec3, f32)> = people
-                    .iter()
-                    .filter(|(id, ..)| *id != p.id)
-                    .map(|&(_, a, b, r)| (a, b, r))
-                    .collect();
-                let world = kenshi_physics::world::Scene {
-                    ground: |x: f32, z: f32| floor.unwrap_or_else(|| game.ground(x, z)),
-                    statics: &game.statics,
-                    people: &near,
-                };
-                let rig = l.rig.clone();
-                l.doll.step(&rig.template, dt, &world);
+                // the terrain and the buildings' collision; inside a building (ragdoll group 4,
+                // F039138) not the terrain (group 2, F045103): its floors hold it
+                let floor = p.inside.map(|_| f32::MIN);
                 let Some(rp) = root_parent() else { continue };
-                let locals = rig.locals(&l.doll, rp, &anim.rig.parents, &l.locals);
-                // (testing) KENSHI_RAGDOLL_DEBUG: each ragdoll's state twice a game second
-                if std::env::var("KENSHI_RAGDOLL_DEBUG").is_ok() && (game.sim.t * 2.0).fract() < dt * 2.0 {
-                    eprintln!("ragdoll {} asleep {} speeds {:?} pelvis {:?} ground {:.1}", p.id, l.doll.asleep, l.doll.speeds(), l.doll.poses().next().map(|x| x.0), l.doll.poses().next().map_or(0.0, |x| game.ground(x.0.x, x.0.z)));
-                }
-                commands.entity(e).insert(PoseOverride { locals, weight: 1.0, only: Vec::new() });
+                stepped.push(Stepped { e, id: p.id, rp, locals: l.locals.clone(), only: Vec::new(), floor, inside: p.inside.is_some(), limp: true });
             }
             (false, Some(mut l)) => {
-                if l.up.is_none()
-                    && let Some((x, _)) = l.doll.poses().next()
-                {
-                    rest.push((p.id, x));
-                }
-                let up = l.up.unwrap_or(0.0) + dt;
-                l.up = Some(up);
                 // F037164: prone (the legs collapsed), it comes round crawling
                 let prone = game.sim.arena.f.get(p.id).is_some_and(|f| f.prone());
                 let clip = anim.find(if prone { "crawl idle down" } else { "standing up 3" });
+                if l.up.is_none() {
+                    // @fn F044963
+                    //
+                    // Task_GetUp's start (F031044 -> F039096): the ragdoll goes and the body's
+                    // node turns to face from its root bone toward "Bip01 Head" across the ground
+                    // (the root bone turned back, so the pose stays), standing where the pelvis
+                    // lies (F038821); each bone the clip moves is then held, from its pose now to
+                    // the clip's first key over `GET_UP_BLEND` (F044960)
+                    let Some(rp) = root_parent() else { continue };
+                    let Ok(body) = globals.get(e).map(|g| g.affine()) else { continue };
+                    let Some((pelvis, _)) = l.doll.poses().next() else { continue };
+                    let lying = l.rig.locals(&l.doll, rp, &anim.rig.parents, &l.locals);
+                    let world = world_bones(&lying, &anim.rig.parents, rp);
+                    let head = anim.rig.names.iter().position(|n| n == "Bip01 Head");
+                    let dir = head.map_or(Vec3::ZERO, |h| Vec3::from(world[h].translation - world[root].translation));
+                    let (scale, turn, _) = body.to_scale_rotation_translation();
+                    let turn = if dir.x * dir.x + dir.z * dir.z > 1e-6 { Quat::from_rotation_y(dir.x.atan2(dir.z)) } else { turn };
+                    // the character's place: where the ragdoll's root lay (F044942), put on the
+                    // floor under it as it came round (`Sim::wake`)
+                    let stand = Vec3::from(p.mover.position_units()) - origin;
+                    let new_body = Affine3A::from_scale_rotation_translation(scale, turn, stand);
+                    let rp_new = new_body * body.inverse() * rp;
+                    let from = l.rig.locals(&l.doll, rp_new, &anim.rig.parents, &l.locals);
+                    let (to, bones) = match clip {
+                        Some(i) => {
+                            let c = &anim.library[i];
+                            let to: Vec<Transform> = anim
+                                .rig
+                                .sample(c, 0.0)
+                                .iter()
+                                .map(|x| Transform { translation: x.translation, rotation: x.rotation, scale: x.scale })
+                                .collect();
+                            let bones = (0..anim.rig.handles.len()).filter(|&k| c.tracks.iter().any(|t| t.bone == anim.rig.handles[k])).collect();
+                            (to, bones)
+                        }
+                        None => (from.clone(), Vec::new()),
+                    };
+                    l.hand_over = Some(HandOver { from, to, bones });
+                    rest.push((p.id, pelvis, turn, new_body));
+                }
+                let up = l.up.unwrap_or(0.0) + dt;
+                l.up = Some(up);
                 let len = clip.map_or(0.0, |i| anim.library[i].length);
-                if up >= len || (p.getting_up <= 0.0 && p.speed > 5.0) {
+                if up >= len.max(GET_UP_BLEND) || (p.getting_up <= 0.0 && p.speed > 5.0) {
                     commands.entity(e).remove::<(Limp, PoseOverride)>();
                     continue;
                 }
+                // the clip runs from the start (F038905 updates every playing clip), the held
+                // bones hidden from it until the hand-over is done
                 if let Some(i) = clip {
                     commands.entity(e).insert(Blend(vec![(i, up, 1.0)]));
                 }
-                let Some(rp) = root_parent() else { continue };
-                let locals = l.rig.locals(&l.doll, rp, &anim.rig.parents, &l.locals);
-                commands
-                    .entity(e)
-                    .insert(PoseOverride { locals, weight: 1.0 - up / GET_UP_BLEND, only: Vec::new() });
+                match l.hand_over.as_ref().filter(|_| up < GET_UP_BLEND) {
+                    Some(h) => {
+                        let f = up / GET_UP_BLEND;
+                        let mut locals = h.from.clone();
+                        for &k in &h.bones {
+                            let (a, b) = (h.from[k], h.to[k]);
+                            locals[k] = Transform { translation: a.translation.lerp(b.translation, f), rotation: nlerp(a.rotation, b.rotation, f), scale: a.scale };
+                        }
+                        commands.entity(e).insert(PoseOverride { locals, weight: 1.0, only: h.bones.clone() });
+                    }
+                    None => {
+                        commands.entity(e).remove::<PoseOverride>();
+                    }
+                }
             }
             (false, None) => {
                 // F038923 / F038930: a disabled limb (its part at no health, still on) hangs: an
@@ -2515,14 +2716,7 @@ fn ragdolls(
                                 l.doll.pin(i, x, q);
                             }
                         }
-                        let world = kenshi_physics::world::Scene {
-                            ground: |x: f32, z: f32| game.ground(x, z),
-                            statics: &game.statics,
-                            people: &[],
-                        };
-                        l.doll.step(&rig.template, dt, &world);
-                        let out = rig.locals(&l.doll, rp, &anim.rig.parents, &locals);
-                        commands.entity(e).insert(PoseOverride { locals: out, weight: 1.0, only: l.bones.clone() });
+                        stepped.push(Stepped { e, id: p.id, rp, locals, only: l.bones.clone(), floor: None, inside: p.inside.is_some(), limp: false });
                     }
                     _ => {
                         let Some(rig) = game.body_outfit.get(p.id).and_then(|&k| game.ragdoll_rigs.get(k)?.clone()) else { continue };
@@ -2554,14 +2748,190 @@ fn ragdolls(
             }
         }
     }
-    // (the root body is the pelvis) the character stands up where it lies
-    for (id, x) in rest {
-        let y = game.ground(x.x, x.z);
-        let at = [(x.x + origin.x) / 10.0, (y + origin.y) / 10.0, (x.z + origin.z) / 10.0];
-        let floor = game.sim.folk[id].inside.is_some();
-        if !floor {
-            game.sim.folk[id].mover.position = at;
-            game.sim.arena.f[id].mover.position = at;
+    // F040471: each limb severed this tick dropped at its part's "bone name 2" bone, as the bone
+    // lies (its place and turn)
+    for (gid, id, part) in std::mem::take(&mut game.sim.limb_drops) {
+        let Some(g) = game.sim.ground.iter().find(|g| g.id == gid) else { continue };
+        let record = g.item.record.clone();
+        let template = {
+            let file = game.sim.data.get(&record).and_then(|r| r.files.get("physics file").cloned()).filter(|f| !f.is_empty());
+            let Some(file) = file else { continue };
+            let gm: &mut Game = &mut game;
+            let res = &gm.res;
+            gm.limb_bodies
+                .entry(file.clone())
+                .or_insert_with(|| {
+                    let path = res.path(&file)?;
+                    let text = std::fs::read_to_string(path).ok()?;
+                    let b = kenshi_io::nxu::parse_bodies(&text).into_iter().next()?;
+                    Some(Arc::new(kenshi_physics::ragdoll::Template::from_nxu(&b)))
+                })
+                .clone()
+        };
+        if std::env::var("KENSHI_RAGDOLL_DEBUG").is_ok() {
+            eprintln!("limb {gid} dropped by {id} (part {part}): body {}", template.is_some());
+        }
+        let Some(template) = template else { continue };
+        let bone_name = game.sim.arena.f[id].medical.parts.get(part).and_then(|q| game.sim.data.get(&q.id)).and_then(|r| r.strings.get("bone name 2").cloned());
+        let Some(&e) = game.bodies.get(id) else { continue };
+        let Ok((_, anim, ..)) = bodies.get(e) else { continue };
+        let Some(k) = bone_name.and_then(|n| anim.rig.names.iter().position(|b| *b == n)) else { continue };
+        let Some(bone) = anim.joints.get(k).and_then(|&j| globals.get(j).ok()).map(|g| g.affine()) else { continue };
+        let (_, turn, at) = bone.to_scale_rotation_translation();
+        let com = Vec3::from(at) + turn * template.bodies[0].bind;
+        let body = kenshi_physics::ragdoll::Ragdoll::new(&[(com, turn)], &[]);
+        let inside = game.sim.folk[id].inside.is_some();
+        game.limbs_lying.push(LyingLimb { id: gid, body, template, inside });
+    }
+    // picked up: gone
+    let present: std::collections::HashSet<u64> = game.sim.ground.iter().map(|g| g.id).collect();
+    game.limbs_lying.retain(|l| present.contains(&l.id));
+    let mut lying = std::mem::take(&mut game.limbs_lying);
+    // every ragdoll stepped at once, then each body posed from its own
+    let at: std::collections::HashMap<Entity, usize> = stepped.iter().enumerate().map(|(k, s)| (s.e, k)).collect();
+    let mut dolls: Vec<(usize, &mut kenshi_physics::ragdoll::Ragdoll, Arc<RagdollRig>, Vec<Option<usize>>)> = Vec::new();
+    for (e, anim, limp, limbs) in bodies.iter_mut() {
+        let Some(&k) = at.get(&e) else { continue };
+        let parents_of = anim.rig.parents.clone();
+        if let Some(l) = limp {
+            let l = l.into_inner();
+            dolls.push((k, &mut l.doll, l.rig.clone(), parents_of.clone()));
+        } else if let Some(l) = limbs {
+            let l = l.into_inner();
+            dolls.push((k, &mut l.doll, l.rig.clone(), parents_of.clone()));
+        }
+    }
+    dolls.sort_by_key(|d| d.0);
+    // @fn F044968
+    //
+    // in the water: a knocked-out body of a race that swims (race +0x79) whose root body is at or
+    // under the water's surface (world 100, F050961) has each actor at or under it pushed up at
+    // sqrt(100 - its height + 1) + 98.1 units / s^2 (addForce, NX_ACCELERATION: gravity undone
+    // and more the deeper it is), and its settling (F044957) runs at half the time
+    let mut wet = vec![false; dolls.len()];
+    for (m, d) in dolls.iter_mut().enumerate() {
+        let st = &stepped[d.0];
+        let race = game.sim.race_of(st.id);
+        let swims = race.and_then(|r| game.sim.data.get(&r)).and_then(|r| r.bools.get("swims").copied()).unwrap_or(true);
+        let Some((root, _)) = d.1.poses().next() else { continue };
+        if !st.limp || !swims || root.y + origin.y > kenshi_game::sim::WATER_LEVEL {
+            continue;
+        }
+        wet[m] = true;
+        if std::env::var("KENSHI_RAGDOLL_DEBUG").is_ok() && (game.sim.t * 2.0).fract() < dt * 2.0 {
+            eprintln!("ragdoll {} in the water: root at world height {:.1}", st.id, root.y + origin.y);
+        }
+        for i in 0..d.2.template.bodies.len() {
+            if let Some(at) = d.1.actor_position(&d.2.template, i)
+                && at.y + origin.y <= kenshi_game::sim::WATER_LEVEL
+            {
+                d.1.accelerate(i, Vec3::Y * ((kenshi_game::sim::WATER_LEVEL - (at.y + origin.y) + 1.0).sqrt() + 98.1));
+            }
+        }
+    }
+    {
+        let g = &*game;
+        let worlds: Vec<_> = dolls
+            .iter()
+            .map(|d| {
+                let floor = stepped[d.0].floor;
+                let ignored = kenshi_physics::world::ragdoll_ignores(stepped[d.0].inside);
+                kenshi_physics::world::Scene { ground: move |x: f32, z: f32| floor.unwrap_or_else(|| g.ground(x, z)), statics: &g.statics, ignored }
+            })
+            .collect();
+        let worlds: Vec<&dyn kenshi_physics::world::Surroundings> = worlds.iter().map(|w| w as &dyn kenshi_physics::world::Surroundings).collect();
+        // and the limbs lying about, in the ragdolls' groups
+        let limb_worlds: Vec<_> = lying
+            .iter()
+            .map(|l| {
+                let inside = l.inside;
+                kenshi_physics::world::Scene { ground: move |x: f32, z: f32| if inside { f32::MIN } else { g.ground(x, z) }, statics: &g.statics, ignored: kenshi_physics::world::ragdoll_ignores(inside) }
+            })
+            .collect();
+        let limb_templates: Vec<Arc<kenshi_physics::ragdoll::Template>> = lying.iter().map(|l| l.template.clone()).collect();
+        let mut worlds = worlds;
+        worlds.extend(limb_worlds.iter().map(|w| w as &dyn kenshi_physics::world::Surroundings));
+        let rigs: Vec<Arc<RagdollRig>> = dolls.iter().map(|d| d.2.clone()).collect();
+        let mut templates: Vec<&kenshi_physics::ragdoll::Template> = rigs.iter().map(|r| &r.template).collect();
+        templates.extend(limb_templates.iter().map(|t| &**t));
+        let mut refs: Vec<&mut kenshi_physics::ragdoll::Ragdoll> = dolls.iter_mut().map(|d| &mut *d.1).collect();
+        refs.extend(lying.iter_mut().map(|l| &mut l.body));
+        kenshi_physics::ragdoll::Ragdoll::step_together(&mut refs, &templates, dt, &worlds);
+    }
+    // the severed limbs' items where their bodies lie (the item's node is the actor's, F043917)
+    for l in &lying {
+        let Some(at) = l.body.actor_position(&l.template, 0) else { continue };
+        let turn = l.body.poses().next().map_or(Quat::IDENTITY, |p| p.1);
+        let w = at + origin;
+        if let Some(g) = game.sim.ground.iter_mut().find(|g| g.id == l.id) {
+            g.at = w.to_array();
+            let f = turn * Vec3::Z;
+            g.yaw = f.x.atan2(f.z);
+        }
+        game.limb_turns.insert(l.id, turn);
+        // (testing) KENSHI_RAGDOLL_DEBUG: the limbs lying about
+        if std::env::var("KENSHI_RAGDOLL_DEBUG").is_ok() && (game.sim.t * 2.0).fract() < dt * 2.0 {
+            eprintln!("limb {} asleep {} at {at:?} speeds {:?}", l.id, l.body.asleep, l.body.speeds());
+        }
+    }
+    game.limbs_lying = lying;
+    // F044957: a knocked-out body put to sleep once it has lain a while over a floor
+    let mut settled = Vec::new();
+    for (m, d) in dolls.iter_mut().enumerate() {
+        if !stepped[d.0].limp {
+            continue;
+        }
+        let g = &*game;
+        let below = |from: Vec3| -> f32 {
+            let mask = kenshi_physics::ragdoll::SETTLE_RAY_GROUPS;
+            // the terrain (group 2), else the solids of the groups the ray takes
+            let terrain = Some(g.ground(from.x, from.z)).filter(|&y| y <= from.y);
+            let solid = g.statics.raycast_groups(from, Vec3::NEG_Y, 1.0e6, mask).map(|t| from.y - t);
+            terrain.into_iter().chain(solid).fold(None, |b: Option<f32>, y| Some(b.map_or(y, |b| b.max(y)))).unwrap_or(kenshi_physics::ragdoll::SETTLE_NO_HIT - origin.y)
+        };
+        if d.1.kenshi_settle(if wet[m] { dt * 0.5 } else { dt }, below) {
+            settled.push(m);
+        }
+    }
+    for m in settled {
+        let r = game.sim.rng.next();
+        dolls[m].1.settle_again(r);
+    }
+    let mut limp_at: Vec<(usize, Vec3)> = Vec::new();
+    for (k, doll, rig, parents_of) in &dolls {
+        let st = &stepped[*k];
+        if game.sim.folk[st.id].down
+            && game.sim.folk[st.id].carried_by.is_none()
+            && let Some((x, _)) = doll.poses().next()
+        {
+            limp_at.push((st.id, x));
+        }
+        let out = rig.locals(doll, st.rp, parents_of, &st.locals);
+        // (testing) KENSHI_RAGDOLL_DEBUG: each ragdoll's state twice a game second
+        if std::env::var("KENSHI_RAGDOLL_DEBUG").is_ok() && (game.sim.t * 2.0).fract() < dt * 2.0 {
+            eprintln!("ragdoll {} asleep {} speeds {:?} pelvis {:?} ground {:.1}", st.id, doll.asleep, doll.speeds(), doll.poses().next().map(|x| x.0), doll.poses().next().map_or(0.0, |x| game.ground(x.0.x, x.0.z)));
+        }
+        commands.entity(st.e).insert(PoseOverride { locals: out, weight: 1.0, only: st.only.clone() });
+    }
+    // @fn F044942
+    //
+    // while limp the character is where its ragdoll's root body (the pelvis) is (Character's
+    // update, F039249)
+    for (id, x) in limp_at {
+        let at = [(x.x + origin.x) / 10.0, (x.y + origin.y) / 10.0, (x.z + origin.z) / 10.0];
+        game.sim.folk[id].mover.position = at;
+        game.sim.arena.f[id].mover.position = at;
+    }
+    // getting up, facing the way the body lies (F044960 sets the character's direction from the
+    // node's turn)
+    for (id, _, turn, node) in rest {
+        game.sim.folk[id].facing = (turn * Vec3::Z).to_array();
+        if let Some(&e) = game.bodies.get(id)
+            && let Ok(mut tr) = nodes.get_mut(e)
+        {
+            let (_, r, t) = node.to_scale_rotation_translation();
+            tr.rotation = r;
+            tr.translation = t;
         }
     }
 }
@@ -2971,6 +3341,11 @@ fn place_people(
                     .map(|a| vec![(a, a.play_speed, 1.0)])
                     .unwrap_or_default()
             };
+            // (testing) KENSHI_ANIM_PICK=<id> (or sel, the first selected): that one's base clips each second
+            let pick = std::env::var("KENSHI_ANIM_PICK").ok().and_then(|v| if v == "sel" { game.selected.first().copied() } else { v.parse::<usize>().ok() });
+            if pick == Some(p.id) && sim.tick.is_multiple_of(60) {
+                eprintln!("anim pick {}: speed {:.1} stealth {} weapon {} carrying {} activity {:?} -> {:?}", p.id, p.speed, sit.stealth_mode, sit.weapon_r, sit.carrying_left, activity.map(|(a, _)| a.name.clone()), wanted.iter().map(|(a, r, w)| format!("{} ({}{}) r{:.2} w{:.2}", a.name, a.anim_name, if sim.arena.sh.lengths.contains_key(&a.anim_name.to_lowercase()) { "" } else { ", NO CLIP" }, r, w)).collect::<Vec<_>>());
+            }
             // (testing) KENSHI_TPOSE_DEBUG: those with no base clip (their bind pose shows)
             if wanted.is_empty() && std::env::var("KENSHI_TPOSE_DEBUG").is_ok() && sim.tick.is_multiple_of(300) {
                 eprintln!("no base clip: {} speed {:.2} category {} weapon {} carrying {} stealth {} race {:?} legs {:.0}/{:.0}", p.id, p.speed, sit.category, sit.weapon_r, sit.carrying_left, sit.stealth_mode, p.race, sit.l_leg, sit.r_leg);
@@ -3063,7 +3438,8 @@ fn place_people(
                     .enumerate()
                     .flat_map(|(li, l)| l.active.iter().chain(&l.fading).map(move |c| format!("L{li} {} t{:.2} w{:.2}", c.name, c.time, c.weight)))
                     .collect();
-                eprintln!("anim speed {:.1}: {}", p.speed, names.join(" | "));
+                let played: Vec<String> = blend.iter().map(|(i, t, w)| format!("{} t{:.2} w{:.2}", anim.library.get(*i).map_or("?", |a| a.name.as_str()), t, w)).collect();
+                eprintln!("anim speed {:.1}: {} => plays {}", p.speed, names.join(" | "), played.join(" | "));
             }
             if !blend.is_empty() {
                 pending.push((e, p.id, KIND_WALK, blend));
@@ -3479,7 +3855,9 @@ fn testing(
         }
     }
     // (testing) KENSHI_GIVE="[!]<item name>@<count>[,...]": at frame 30 the first selected
-    // character gets those items; a name starting '+' is worn, '>' put in the worn backpack
+    // character gets those items; a name starting '+' is worn, '>' put in the worn backpack;
+    // after the name "~<faction string id>": owned by that faction (Item +0x140); "*<name>":
+    // made by that smith; "=<faction string id>": that faction's uniform
     if *frames == 30
         && let Ok(v) = std::env::var("KENSHI_GIVE")
         && let Some(&me) = game.selected.first()
@@ -3505,10 +3883,27 @@ fn testing(
                 Some(n) => (n, true),
                 None => (name, false),
             };
+            let (name, uniform) = match name.split_once('=') {
+                Some((n, f)) => (n, Some(f.to_string())),
+                None => (name, None),
+            };
+            let (name, crafter) = match name.split_once('*') {
+                Some((n, f)) => (n, Some(f.to_string())),
+                None => (name, None),
+            };
+            let (name, owner) = match name.split_once('~') {
+                Some((n, f)) => (n, Some(f.to_string())),
+                None => (name, None),
+            };
             let rec = game.sim.data.records.values().find(|r| r.name == name && r.item_type().is_some()).cloned();
             match rec {
                 Some(r) => {
-                    let item = kenshi_char::inventory::Item::from_record(&r, n);
+                    let mut item = kenshi_char::inventory::Item::from_record(&r, n);
+                    item.owner = owner;
+                    item.crafter = crafter;
+                    if uniform.is_some() {
+                        item.uniform = uniform;
+                    }
                     let food = item.food;
                     let inv = &mut game.sim.folk[me].inventory;
                     let ok = if bagged { inv.bag_mut().is_some_and(|b| b.add(item, false)) } else { inv.add(item, wear) };
@@ -3816,6 +4211,49 @@ fn testing(
                     spot = [w.x / 10.0, w.y / 10.0, w.z / 10.0];
                     eprintln!("ko test: on the roof at {r}");
                 }
+                // KENSHI_KO_WATER: at the water's surface over the nearest ground 30+ units under
+                // it (within 1500 units of the squad), dropped in
+                let wet = std::env::var("KENSHI_KO_WATER").is_ok().then(|| {
+                    let level = kenshi_game::sim::WATER_LEVEL - origin.y;
+                    let mut best: Option<Vec3> = None;
+                    for i in -60..=60 {
+                        for k in -60..=60 {
+                            let p = Vec3::new(here.x + i as f32 * 25.0, 0.0, here.z + k as f32 * 25.0);
+                            if game.ground(p.x, p.z) < level - 30.0 && best.is_none_or(|b| b.distance(here.with_y(0.0)) > p.distance(here.with_y(0.0))) {
+                                best = Some(p);
+                            }
+                        }
+                    }
+                    best.map(|b| b.with_y(level + 5.0))
+                });
+                // KENSHI_KO_FOLIAGE: 25 units over the nearest walkable foliage object (its
+                // collision, group 14)
+                let wet = wet.or_else(|| {
+                    std::env::var("KENSHI_KO_FOLIAGE").is_ok().then(|| {
+                        std::iter::once(&game.zone)
+                            .chain(game.zones.values())
+                            .flat_map(|z| z.foliage_collision.iter())
+                            .filter(|f| f.2 == kenshi_render::zone::FEATURE_GROUP)
+                            .map(|f| f.0.translation)
+                            .filter(|t| t.with_y(0.0).distance(here.with_y(0.0)) < 1500.0)
+                            .map(|t| {
+                                let top = game.statics.raycast_groups(t + Vec3::Y * 300.0, Vec3::NEG_Y, 600.0, 1 << kenshi_render::zone::FEATURE_GROUP).map_or(t.y, |d| t.y + 300.0 - d);
+                                (t, top)
+                            })
+                            // (the tallest over the ground near the squad)
+                            .max_by(|a, b| (a.1 - game.ground(a.0.x, a.0.z)).total_cmp(&(b.1 - game.ground(b.0.x, b.0.z))))
+                            .map(|(t, top)| {
+                                eprintln!("ko test: over walkable foliage at {t}, top {top:.1}, ground {:.1}", game.ground(t.x, t.z));
+                                t.with_y(top + 25.0)
+                            })
+                    })
+                });
+                let roof = roof.or(wet.clone());
+                if let Some(Some(r)) = wet {
+                    let w = r + origin;
+                    spot = [w.x / 10.0, w.y / 10.0, w.z / 10.0];
+                    eprintln!("ko test: in the water at {r}, ground {:.1}", game.ground(r.x, r.z));
+                }
                 game.sim.folk[v].mover.position = spot;
                 game.sim.arena.f[v].mover.position = spot;
                 game.ko_test = Some(v);
@@ -3829,6 +4267,28 @@ fn testing(
             && let Some(v) = game.ko_test
         {
             game.sim.knock_out(v);
+            // KENSHI_KO=pile: the next nearest townsperson dropped onto them from 1.5 m up
+            if std::env::var("KENSHI_KO").is_ok_and(|k| k == "pile") {
+                let at = Vec3::from(game.sim.folk[v].mover.position_units());
+                let other = game
+                    .sim
+                    .folk
+                    .iter()
+                    .filter(|p| !p.player && p.inside.is_none() && !p.down && p.id != v)
+                    .min_by(|a, b| {
+                        let d = |p: &kenshi_game::sim::Person| Vec3::from(p.mover.position_units()).distance(at);
+                        d(a).total_cmp(&d(b))
+                    })
+                    .map(|p| p.id);
+                if let Some(o) = other {
+                    let mut spot = game.sim.folk[v].mover.position;
+                    spot[1] += 1.5;
+                    game.sim.folk[o].mover.position = spot;
+                    game.sim.arena.f[o].mover.position = spot;
+                    game.sim.knock_out(o);
+                    eprintln!("ko test: {o} dropped onto {v}");
+                }
+            }
         }
         if let Some(v) = game.ko_test {
             game.focus = Vec3::from(game.sim.folk[v].mover.position_units()) - game.zone.origin;
@@ -4573,15 +5033,10 @@ impl Game {
     }
 }
 
-/// (harness: Kenshi pages its world round the camera) the zones round the camera's focus load on
-/// threads, placed on the first zone's origin, and are spawned as they arrive.
-/// Kenshi's zone activation (F051606's timers, table 0x141748740: 4, 6, 5 s by request mode;
-/// a zone unloads when its timer runs out):
-/// - the camera (ZoneManager update F051615): the "current zone" is the zone under the camera's
-///   focus (F045490), re-chosen when the focus is over 4147.2 units from it in x or z; it and its
-///   eight neighbours are kept active (F051613 -> F051611 radius 1, mode 0: 4 s);
-/// - every player character (F039110 -> F051614 -> F051611): the zones its box of +-340 units
-///   overlaps (and with "Fast zone hopping" their neighbours), mode 1: 6 s.
+/// (harness: Kenshi pages its world round the camera) the zones Kenshi keeps loaded (the sim's
+/// `world::zones_tick`: the camera's current zone and its neighbours, the player's people's
+/// zones, each kept for its timer) load on threads, placed on the first zone's origin, and are
+/// spawned as they arrive; one whose timer runs out unloads.
 #[allow(clippy::too_many_arguments)]
 fn stream_zones(
     mut commands: Commands,
@@ -4594,59 +5049,18 @@ fn stream_zones(
     mut waters: ResMut<Assets<KenshiWaterMaterial>>,
     (sky, time, tagged): (Res<Sky>, Res<Time>, Query<(Entity, &ZoneTag)>),
 ) {
-    const REACH: f32 = 340.0;
-    const KEEP: f32 = 6.0;
-    let tiles = kenshi_world::navmesh::TILES;
-    let hop = i32::from(sky.0.fast_zone_hopping);
-    let mut want = std::collections::HashSet::new();
-    for p in game.sim.folk.iter().filter(|p| p.player) {
-        let [x, _, z] = p.mover.position_units();
-        let lo = kenshi_world::zone_of(x - REACH, z - REACH);
-        let hi = kenshi_world::zone_of(x + REACH, z + REACH);
-        for zx in lo.0 - hop..=hi.0 + hop {
-            for zy in lo.1 - hop..=hi.1 + hop {
-                if (0..tiles).contains(&zx) && (0..tiles).contains(&zy) {
-                    want.insert((zx, zy));
-                }
-            }
-        }
-    }
-    let dt = time.delta_secs();
-    for t in game.alive.values_mut() {
-        *t -= dt;
-    }
-    for &k in &want {
-        let t = game.alive.entry(k).or_insert(KEEP);
-        *t = t.max(KEEP);
-    }
-    // the camera's current zone and its neighbours (mode 0: 4 s)
-    const RECENTRE: f32 = 4147.2;
-    const KEEP_CAMERA: f32 = 4.0;
+    // the zones Kenshi keeps loaded (the sim's `zones_tick`, Kenshi's rule) by real time
     let focus = game.focus + game.zone.origin;
-    let centre = |z: (i32, i32)| {
-        let c = |k: i32| (k as f32 + 0.5) * kenshi_world::ZONE_SIZE - kenshi_world::WORLD_SIZE / 2.0;
-        (c(z.0), c(z.1))
-    };
-    let current = match game.camera_zone {
-        Some(z) if {
-            let (cx, cz) = centre(z);
-            (focus.x - cx).abs() <= RECENTRE && (focus.z - cz).abs() <= RECENTRE
-        } => z,
-        _ => kenshi_world::zone_of(focus.x, focus.z),
-    };
-    game.camera_zone = Some(current);
-    for zx in current.0 - 1..=current.0 + 1 {
-        for zy in current.1 - 1..=current.1 + 1 {
-            if (0..tiles).contains(&zx) && (0..tiles).contains(&zy) {
-                let t = game.alive.entry((zx, zy)).or_insert(KEEP_CAMERA);
-                *t = t.max(KEEP_CAMERA);
-                want.insert((zx, zy));
-            }
-        }
+    game.sim.camera_focus = Some([focus.x, focus.y, focus.z]);
+    game.sim.fast_zone_hopping = sky.0.fast_zone_hopping;
+    game.sim.zones_driven = true;
+    let (_, expired) = game.sim.zones_tick(time.delta_secs());
+    let want: std::collections::HashSet<(i32, i32)> = game.sim.live_zones.keys().copied().collect();
+    // a save loaded is done loading once its zones are in (ZoneManager +0x08, F051615)
+    if game.sim.loading && want.iter().all(|k| game.zones.contains_key(k)) {
+        game.sim.loading = false;
     }
-    let expired: Vec<(i32, i32)> = game.alive.iter().filter(|(_, t)| **t <= 0.0).map(|(k, _)| *k).collect();
     for key in expired {
-        game.alive.remove(&key);
         game.asked.remove(&key);
         game.zones.remove(&key);
         let mut n = 0;
@@ -4695,7 +5109,7 @@ fn stream_zones(
         .unwrap_or_default();
     for (key, r) in arrived {
         // unloaded again while it loaded
-        if !game.alive.contains_key(&key) {
+        if !game.sim.live_zones.contains_key(&key) {
             game.asked.remove(&key);
             continue;
         }
@@ -5093,11 +5507,7 @@ fn relight(
     game: Res<Game>,
     sky: Res<Sky>,
     mut look: ResMut<TerrainLook>,
-    mut materials: ResMut<Assets<KenshiTerrainMaterial>>,
-    mut objects: ResMut<Assets<KenshiObjectMaterial>>,
     mut skies: ResMut<Assets<KenshiSkyMaterial>>,
-    mut waters: ResMut<Assets<KenshiWaterMaterial>>,
-    mut characters: ResMut<Assets<KenshiCharacterMaterial>>,
     mut moons: ResMut<Assets<KenshiMoonMaterial>>,
     mut suns: Query<&mut Transform, With<DirectionalLight>>,
     mut hdr: ResMut<kenshi_render::hdr::KenshiHdr>,
@@ -5106,21 +5516,20 @@ fn relight(
 ) {
     let hour = game.sim.hour();
     let minute = (hour * 60.0) as i64;
-    if minute == *last {
+    // (testing) KENSHI_RELIGHT_EACH_FRAME: the light set again every frame (to time a relight)
+    if minute == *last && std::env::var("KENSHI_RELIGHT_EACH_FRAME").is_err() {
         return;
     }
     *last = minute;
+    let mut prof = kenshi_render::prof::Marks::start();
     let light = sky.0.terrain_light(hour as f32);
     // MIN_LUMINANCE (F040805) and MAX_LUMINANCE ("exposure max", F040804)
     hdr.min_luminance = sky.0.main_light(hour as f32).3;
     hdr.max_luminance = sky.0.exposure_max;
-    look.relight(light, &mut materials, &mut objects);
+    // the terrain, objects, characters and water: their shared light (kenshi_render::light_buffer)
+    look.relight(light);
     for (_, m) in skies.iter_mut() {
         m.set_light(&light);
-    }
-    kenshi_render::water_material::relight_water(&light, game.sim.hours_gone() as f32, &mut waters);
-    for (_, m) in characters.iter_mut() {
-        m.params.set_light(&light);
     }
     relight_moons(&light, &mut moons);
     // the ambient particles' sunDirection
@@ -5128,6 +5537,7 @@ fn relight(
     for mut t in &mut suns {
         *t = Transform::default().looking_to(-light.sun_direction, Vec3::Y);
     }
+    prof.mark("relight");
 }
 
 /// The particle systems' frame: each running system updated by the frame's time.
@@ -5165,9 +5575,11 @@ fn tick_particles(
     }
     // the game's frame time (none while paused)
     let dt = time.delta_secs() * if game.paused { 0.0 } else { game.speed };
+    let mut prof = kenshi_render::prof::Marks::start();
     for mut e in &mut effects {
         e.system.update(dt);
     }
+    prof.mark("particles: systems");
     // F037702: the buildings' effects follow their buildings' view
     weather_fx.follow_views(&|k| open.in_view.contains(&k));
     for (id, at, rot, building) in std::mem::take(&mut game.new_effects) {
@@ -5179,6 +5591,7 @@ fn tick_particles(
         }
     }
     weather_effects(dt, &game, &weather, &sky, &cams, &mut weather_fx, &mut region_zones, &mut terrain);
+    prof.mark("particles: weather and buildings");
     // the effects that hurt, for the sim (kenshi_game::hazards)
     game.sim.harms = weather_fx
         .harmful()
@@ -5612,10 +6025,12 @@ fn weather_effects(
     let towns: Vec<Vec3> = game.sim.towns.iter().map(|t| Vec3::from(t.position)).collect();
     let mut ground = |x: f32, z: f32| -> (f32, Vec3) {
         let Some(t) = terrain.as_mut() else { return (0.0, Vec3::Y) };
+        let at = std::time::Instant::now();
         let h = t.height_at(x, z).unwrap_or(0.0);
         let s = t.spacing();
         let hx = t.height_at(x + s, z).unwrap_or(h);
         let hz = t.height_at(x, z + s).unwrap_or(h);
+        kenshi_render::prof::add("particles: ground heights", at.elapsed().as_secs_f64());
         (h, Vec3::new(h - hx, s, h - hz).normalize_or(Vec3::Y))
     };
     let mut view = kenshi_render::particles::effects::WorldView {
@@ -5827,7 +6242,7 @@ fn spawn_zone_water(
 /// gameTime every frame: the water's clock and the heat haze's.
 fn water_clock(
     game: Res<Game>,
-    mut waters: ResMut<Assets<KenshiWaterMaterial>>,
+    mut shared: ResMut<kenshi_render::light_buffer::SharedLight>,
     mut hdr: ResMut<kenshi_render::hdr::KenshiHdr>,
     mut lights: ResMut<kenshi_render::local_lights::LightClock>,
 ) {
@@ -5836,9 +6251,8 @@ fn water_clock(
     let t = game.sim.hours_gone() as f32;
     // gameTime for the heat haze too, every frame (F040805 sets it each frame)
     hdr.game_time = t;
-    for (_, m) in waters.iter_mut() {
-        m.params.origin_time.w = t;
-    }
+    // the water's clock: its gameTime in the shared light buffer
+    shared.game_hours = t;
 }
 
 /// The moons each frame (F040806 -> F040808), round the camera.
@@ -6415,4 +6829,17 @@ fn race_posture_mids(game: &Game, race: &str, female: bool) -> [f32; 3] {
         }
     }
     out
+}
+
+/// (testing) KENSHI_NO_UI: every interface root hidden (the HUD, panels, name tags, tips), for
+/// clean world screenshots (trailer shots).
+fn no_ui_shots(mut roots: Query<&mut Visibility, (With<Node>, Without<ChildOf>)>) {
+    if std::env::var("KENSHI_NO_UI").is_err() {
+        return;
+    }
+    for mut v in &mut roots {
+        if *v != Visibility::Hidden {
+            *v = Visibility::Hidden;
+        }
+    }
 }

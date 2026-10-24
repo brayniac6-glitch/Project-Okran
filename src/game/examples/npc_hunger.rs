@@ -10,6 +10,8 @@ fn main() {
     let seconds: f32 = a[3].parse().unwrap();
     let extras: Vec<String> = a.iter().skip(4).cloned().collect();
     let mut sim = Sim::load(Path::new(&a[0]), zx, zy, 0, &extras);
+    // (testing) no roaming squads or new nests: a random squad can't wander into the test
+    sim.no_spawns();
     let show = |sim: &Sim, when: &str| {
         let mut rows: Vec<(String, f32)> = Vec::new();
         for p in &sim.folk {

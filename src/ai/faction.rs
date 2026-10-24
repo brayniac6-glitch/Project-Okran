@@ -72,9 +72,17 @@ impl FactionRelations {
     /// faction's `relations` list (Dust Bandits -100, ...) is the listed factions' relation to
     /// the player, and the player's to each faction is the faction's to it.
     pub fn from_data(r: &GameData, data: &kenshi_data::GameDataContainer) -> Self {
+        let factions: Vec<&GameData> = data.of_type(kenshi_data::ItemType::Faction).collect();
+        Self::from_data_among(r, data, &factions)
+    }
+
+    /// `from_data` with the FACTION records already listed (`data.of_type(Faction)`, in its
+    /// order), for a caller setting up many factions at once: the same relations, without
+    /// walking every record for each.
+    pub fn from_data_among(r: &GameData, data: &kenshi_data::GameDataContainer, factions: &[&GameData]) -> Self {
         let mine = default_relation(r);
-        let mut relations: HashMap<String, Relation> = data
-            .of_type(kenshi_data::ItemType::Faction)
+        let mut relations: HashMap<String, Relation> = factions
+            .iter()
             .map(|o| {
                 let theirs = default_relation(o);
                 let own = o.string_id == r.string_id;
@@ -98,7 +106,7 @@ impl FactionRelations {
         }
         if r.string_id == PLAYER_FACTION {
             // each faction's own entry for the player
-            for o in data.of_type(kenshi_data::ItemType::Faction) {
+            for o in factions.iter() {
                 if o.string_id == r.string_id {
                     continue;
                 }

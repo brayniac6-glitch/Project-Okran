@@ -215,17 +215,21 @@ fn storage_layout(game: &Game, owner: usize) -> &'static str {
 
 /// @fn F024417
 ///
-/// A storage's capacity line: "Max Capacity: {n}" and " (Full)" when no more fits; shown for a
-/// storage kept to one item ("limit inventory"), n its cells times that item's "stackable".
+/// A storage's capacity line: "Max Capacity: {n}" and " (Full)" when its stack is at it; set by
+/// a StorageBuilding's update (F029361) from its first typed container (F029410): n its limit
+/// (one item kept: its "stackable bonus mult"), full when the stack there holds that many.
+/// (assumption) Not shown for one of no limit (several items kept).
 fn capacity_text(game: &Game, owner: usize) -> Option<String> {
-    let pb = game.sim.buildings.get(owner.checked_sub(kenshi_game::base::BUILDING_OWNER)?)?;
+    let b = owner.checked_sub(kenshi_game::base::BUILDING_OWNER)?;
+    if !game.sim.is_storage_building(b) {
+        return None;
+    }
+    let pb = game.sim.buildings.get(b)?;
     let rec = game.sim.data.get(&pb.record)?;
-    let item = rec.refs("limit inventory").first().and_then(|(s, _)| game.sim.data.get(s))?;
+    let (_, cap) = kenshi_game::base::storage_entries(rec).into_iter().next().filter(|(_, n)| *n > 0)?;
     let sec = pb.storage.as_ref()?.sections.first()?;
-    let stack = item.ints.get("stackable").copied().unwrap_or(1).max(1) as u32;
-    let cap = sec.w * sec.h * stack;
-    let held: u32 = sec.items.iter().map(|i| i.item.quantity).sum();
-    Some(if held >= cap { format!("Max Capacity: {cap} (Full)") } else { format!("Max Capacity: {cap}") })
+    let full = sec.items.first().is_some_and(|p| p.item.quantity as i32 == cap);
+    Some(if full { format!("Max Capacity: {cap} (Full)") } else { format!("Max Capacity: {cap}") })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -252,8 +256,18 @@ fn open_storage(commands: &mut Commands, gui: &kenshi_gui::Gui, assets: &AssetSe
         for r in &ui.roots {
             commands.entity(*r).insert(GlobalZIndex(60));
         }
-        if let Some(e) = ui.get("out") {
-            commands.entity(e).insert((SectionNode(LOOT), RelativeCursorPosition::default()));
+        // its containers (F029392) in the widgets of their names (F024440: "in1", "in2", "out");
+        // a machine still set up the old way (a crafting bench) its storage grid in "out"
+        if let Some(inv) = game.sim.inv(owner) {
+            if inv.section("out").is_some() {
+                for name in ["in1", "in2", "out"] {
+                    if let (Some(e), Some(k)) = (ui.get(name), inv.section(name)) {
+                        commands.entity(e).insert((SectionNode(k + LOOT), RelativeCursorPosition::default()));
+                    }
+                }
+            } else if let Some(e) = ui.get("out") {
+                commands.entity(e).insert((SectionNode(LOOT), RelativeCursorPosition::default()));
+            }
         }
         for (n, t) in [("InputTitleText", "INPUTS"), ("OutputTitleText", "OUTPUT")] {
             if let Some(e) = ui.get(n) {
@@ -307,9 +321,20 @@ fn open_storage(commands: &mut Commands, gui: &kenshi_gui::Gui, assets: &AssetSe
 /// "QUEUE..." button), its ingredients ("consumes", up to two: each with what of it the
 /// player's storage holds, and how much of the next one it has taken), its product
 /// ("produces", or the queue's first) with how far the next one is made, its output in its
-/// grid.
-/// (assumption) Kenshi's machines are filled by hand through their input slots; the rewrite's
-/// take what they need from the player's storage, so the slots show what there is to take.
+/// grid. A machine made with containers (F029392) shows its inputs in their containers ("in1",
+/// "in2": filled by hand or by its workers, crate::jobs) with what they hold of their limit,
+/// and each ingredient's bar its banked level (F029327).
+/// (assumption) The other machines (crafting benches) take what they need from the player's
+/// storage, so their slots show what there is to take; the status line's "{n} / {limit}".
+/// Tells the game whether an inventory window is open (ForgottenGUI's open InventoryGUIs,
+/// F042066: a trader's visit stays while one is, crate::world).
+pub fn mark_open(win: Res<InventoryWindow>, mut game: ResMut<Game>) {
+    let open = win.is_open();
+    if game.sim.inventory_open != open {
+        game.sim.inventory_open = open;
+    }
+}
+
 pub fn machine_window(mut commands: Commands, win: Res<InventoryWindow>, mut game: ResMut<Game>, mut clicks: MessageReader<GuiClick>) {
     let Some(o) = &win.open else { return };
     let Some((who, ui)) = &o.other else { return };
@@ -352,6 +377,16 @@ pub fn machine_window(mut commands: Commands, win: Res<InventoryWindow>, mut gam
     for k in 0..2 {
         let (t, st, p, panel) = (format!("Input{}Text", k + 1), format!("Input{}StatusText", k + 1), format!("Input{}ProgressBar", k + 1), format!("Input{}Panel", k + 1));
         match consumes.get(k) {
+            Some((item, _)) if pb.containers_made => {
+                let sec = pb.storage.as_ref().and_then(|i| i.section(kenshi_game::production::INPUTS[k]).map(|s| &i.sections[s]));
+                let (have, most) = sec.map_or((0, 0), |s| (s.count(), s.stack));
+                set(&mut commands, &t, name(item));
+                set(&mut commands, &st, if have == 0 { "Missing".to_string() } else { format!("{have} / {most}") });
+                bar(&mut commands, &p, pb.taken.get(k).copied().unwrap_or(0.0).clamp(0.0, 1.0));
+                if let Some(e) = ui.get(&panel) {
+                    commands.queue(kenshi_gui::SetVisible(e, true));
+                }
+            }
             Some((item, _)) => {
                 let have = sim.count_material(b, b, item);
                 set(&mut commands, &t, name(item));
@@ -443,9 +478,12 @@ fn open_trader(commands: &mut Commands, gui: &kenshi_gui::Gui, assets: &AssetSer
         commands.entity(*r).insert(GlobalZIndex(60));
     }
     // the grid: the slot panel (its cells the character inventory's; the scroll view over it
-    // is wider, its scroll bar's room)
+    // is wider, its scroll bar's room). The layout puts the scroll view (Kenshi_ScrollView, a
+    // Kenshi_GenericTextBoxSkin box) after the slot panel, over it; Kenshi's code has the slot
+    // panel in the scroll view's canvas, so it shows. (stand-in for that reparenting) the slot
+    // panel is drawn above its sibling, else the box hid the stock.
     if let Some(e) = ui.get("backpack_content").or(ui.get("scrollview_backpack_content")) {
-        commands.entity(e).insert((SectionNode(TRADER), RelativeCursorPosition::default()));
+        commands.entity(e).insert((SectionNode(TRADER), RelativeCursorPosition::default(), ZIndex(1)));
     }
     if let Some(e) = ui.get("ArrangeButton") {
         commands.queue(SetCaption(e, "ARRANGE".into()));
@@ -554,6 +592,7 @@ fn draw_item(
     equip: bool,
     node: ItemNode,
     price: Option<i32>,
+    holder: usize,
 ) -> Entity {
     let (cw, ch) = (size[0] / cells.0 as f32, size[1] / cells.1 as f32);
     let (x, y, w, h) = if equip {
@@ -575,7 +614,8 @@ fn draw_item(
             Button,
             Interaction::default(),
             node,
-            ItemTip(super::item_tip::tip(game, &p.item, price)),
+            // its holder: whose inventory it is in (Item +0x160, for "Stolen", F044591)
+            ItemTip(super::item_tip::tip(game, &p.item, price, Some(holder))),
             super::tooltip_ui::InventoryTip,
         ))
         .id();
@@ -662,7 +702,7 @@ pub fn draw(
             let (Some(widget), Some(item)) = (l.get(name), sim.folk[o.person].limbs[k].as_ref()) else { continue };
             let size = l.sizes.get(&widget).copied().unwrap_or([60.0, 160.0]);
             let p = kenshi_char::inventory::Placed { item: item.clone(), x: 0, y: 0 };
-            let e = draw_item(&mut commands, &game, &assets, &mut icons, &font, widget, size, (item.w.max(1), item.h.max(1)), &p, true, ItemNode { section: LIMBS + k, idx: 0 }, None);
+            let e = draw_item(&mut commands, &game, &assets, &mut icons, &font, widget, size, (item.w.max(1), item.h.max(1)), &p, true, ItemNode { section: LIMBS + k, idx: 0 }, None, o.person);
             o.items.push(e);
         }
     }
@@ -678,7 +718,7 @@ pub fn draw(
         for (idx, p) in sec.items.iter().enumerate() {
             // while trading, what the trader would pay
             let price = trading.map(|(_, s)| sim.price(&p.item, s.town, false) * p.item.quantity as i32);
-            let e = draw_item(&mut commands, &game, &assets, &mut icons, &font, widget, size, (sec.w, sec.h), p, sec.is_equipment(), ItemNode { section: k, idx }, price);
+            let e = draw_item(&mut commands, &game, &assets, &mut icons, &font, widget, size, (sec.w, sec.h), p, sec.is_equipment(), ItemNode { section: k, idx }, price, o.person);
             o.items.push(e);
         }
     }
@@ -691,19 +731,26 @@ pub fn draw(
     if let Some((who, ui)) = &o.other
         && let Some(inv) = sim.inv(*who)
     {
-        // a building's storage: its one section in the generic window's grid
-        let names: &[&str] = if *who >= kenshi_game::base::BUILDING_OWNER {
-            if ui.get("out").is_some() { &["out"] } else { &["backpack_content"] }
+        // a building's storage: its one section in the generic window's grid, a machine's
+        // containers in the building window's widgets of their names
+        let window = *who >= kenshi_game::base::BUILDING_OWNER && ui.get("out").is_some();
+        let machine = window && inv.section("out").is_some();
+        let names: &[&str] = if machine {
+            &["in1", "in2", "out"]
+        } else if window {
+            &["out"]
+        } else if *who >= kenshi_game::base::BUILDING_OWNER {
+            &["backpack_content"]
         } else {
             &SECTIONS
         };
         for (j, name) in names.iter().enumerate() {
-            // a storage's one grid, a character's sections by name
-            let Some(k) = (if *who >= kenshi_game::base::BUILDING_OWNER { Some(j) } else { inv.section(name) }) else { continue };
+            // a storage's one grid, a character's sections and a machine's containers by name
+            let Some(k) = (if *who >= kenshi_game::base::BUILDING_OWNER && !machine { Some(j) } else { inv.section(name) }) else { continue };
             let (Some(widget), Some(sec)) = (ui.get(name), inv.sections.get(k)) else { continue };
             let size = ui.sizes.get(&widget).copied().unwrap_or([100.0, 100.0]);
             for (idx, p) in sec.items.iter().enumerate() {
-                let e = draw_item(&mut commands, &game, &assets, &mut icons, &font, widget, size, (sec.w, sec.h), p, sec.is_equipment(), ItemNode { section: k + LOOT, idx }, None);
+                let e = draw_item(&mut commands, &game, &assets, &mut icons, &font, widget, size, (sec.w, sec.h), p, sec.is_equipment(), ItemNode { section: k + LOOT, idx }, None, *who);
                 o.items.push(e);
             }
         }
@@ -720,7 +767,7 @@ pub fn draw(
                 }
                 let shown = kenshi_char::inventory::Placed { item: p.item.clone(), x: p.x, y: p.y - t.scroll };
                 let price = sim.price(&p.item, shop.town, true) * p.item.quantity as i32;
-                let e = draw_item(&mut commands, &game, &assets, &mut icons, &font, widget, size, (sec.w, rows), &shown, false, ItemNode { section: TRADER, idx }, Some(price));
+                let e = draw_item(&mut commands, &game, &assets, &mut icons, &font, widget, size, (sec.w, rows), &shown, false, ItemNode { section: TRADER, idx }, Some(price), t.id);
                 o.items.push(e);
             }
         }
@@ -770,7 +817,7 @@ fn info_rows(sim: &kenshi_game::sim::Sim, id: usize) -> Vec<super::hud_ui::Row> 
     } else {
         ("Weightless", LIGHT)
     };
-    let tipped = |label: &str, value: String, colour, tip: &str| Row { label: label.into(), value, colour, tip: tip.into() };
+    let tipped = |label: &str, value: String, colour, tip: &str| Row { label: label.into(), value, colour, tip: tip.into(), button: None };
     let mut rows = vec![row("Total Weight:", format!("{}/{}", weight.round() as i64, capacity.round() as i64)), tipped("", class.into(), colour, "")];
     let o = sim.outfit(id);
     let mut total = o.disguise * 100.0;

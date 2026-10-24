@@ -3,8 +3,11 @@
 //! and a shooting character's crossbow in hand - its "mesh" with "extra mesh loaded" while a shot
 //! is in it, else "extra mesh unloaded" (F033884, F033826) - and everyone else their own weapon.
 //!
-//! (stand-in) The crossbow hangs on the sword's prop bone ("Bip01 Prop2") with no offset: where
-//! Kenshi's attach point and "equip offset" put it is not decompiled.
+//! The crossbow in hand hangs on the sword's prop bone ("Bip01 Prop2"), set its CROSSBOW
+//! record's "equip offset" along the bone's z (F037439: the attachment node at (0, 0, offset)
+//! for an item with a crossbow; only CROSSBOW records have the field, 1.4 or 2.2). (assumption)
+//! The prop bone is the hand Kenshi attaches it to. Melee weapons have no such offset in the
+//! data, so a sheathed weapon of any length hangs at the race's attachment point as it is.
 use super::Game;
 use kenshi_render::object_material::KenshiObjectMaterial;
 use kenshi_render::terrain_material::TerrainLook;
@@ -211,7 +214,8 @@ pub fn bows(
         }
         let mut drawn: Option<usize> = None;
         if let Some(g) = f.gun.as_ref().filter(|_| f.shooting && !f.down) {
-            pieces.push((g.record.clone(), vec!["mesh", if 0 < g.shots { "extra mesh loaded" } else { "extra mesh unloaded" }], prop, Transform::default()));
+            let lift = game.sim.data.get(&g.record).and_then(|r| r.floats.get("equip offset").copied()).unwrap_or(0.0);
+            pieces.push((g.record.clone(), vec!["mesh", if 0 < g.shots { "extra mesh loaded" } else { "extra mesh unloaded" }], prop, Transform::from_xyz(0.0, 0.0, lift)));
             drawn = slotted.iter().position(|(_, i)| i.record == g.record);
         } else if p.weapon_out && !f.down {
             if let Some(k) = slotted.iter().position(|(_, i)| i.kind == Some(kenshi_data::ItemType::Weapon)) {

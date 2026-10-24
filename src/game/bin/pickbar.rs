@@ -16,6 +16,9 @@ use std::collections::HashMap;
 #[derive(Resource, Default)]
 pub struct PickBars {
     bars: HashMap<usize, Built>,
+    /// Kenshi_ProgressBarPanel.layout, read when the first bar is made (not each frame: a read
+    /// of the file every frame stalled frames whenever the disk was busy).
+    defs: Option<Vec<kenshi_gui::res::WidgetDef>>,
 }
 
 /// A "Pick failed" / "Pick success!" floater rising over someone.
@@ -64,11 +67,11 @@ pub fn update(
         }
         keep
     });
-    let defs = gui.0.layout("Kenshi_ProgressBarPanel.layout");
     let (w, h) = (size[0] * 0.112, size[1] * 0.0306);
     for (id, caption, frac) in pickers {
+        let bars = &mut *bars;
         let b = bars.bars.entry(id).or_insert_with(|| {
-            let mut d = defs.clone();
+            let mut d = bars.defs.get_or_insert_with(|| gui.0.layout("Kenshi_ProgressBarPanel.layout")).clone();
             if let Some(r) = d.first_mut() {
                 r.pos = kenshi_gui::res::Pos::Px([-1000.0, 0.0, w, h]);
             }
