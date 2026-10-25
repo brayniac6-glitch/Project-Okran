@@ -72,10 +72,40 @@ fn give_mipmaps(mut events: MessageReader<AssetEvent<Image>>, mut images: ResMut
     }
 }
 
+/// A texture loaded from a file is drawn from the GPU alone: once it has its mips (and any
+/// quality cut), the main world's copy of its pixels is let go after the upload. (They were kept
+/// by default: about 2 GB for a town.) The GUI's and icons' images stay, as the interface reads
+/// their sizes. KENSHI_KEEP_TEXTURES=1 keeps them all.
+fn release_cpu_copies(
+    mut events: MessageReader<AssetEvent<Image>>,
+    mut images: ResMut<Assets<Image>>,
+    assets: Res<AssetServer>,
+    keep: Local<Option<bool>>,
+) {
+    let keep = keep.unwrap_or_else(|| std::env::var("KENSHI_KEEP_TEXTURES").is_ok());
+    for e in events.read() {
+        let AssetEvent::LoadedWithDependencies { id } = e else { continue };
+        if keep {
+            continue;
+        }
+        let Some(path) = assets.get_path(*id) else { continue };
+        let p = path.to_string().to_ascii_lowercase();
+        if p.contains("gui") || p.contains("icon") || p.contains("portrait") || p.contains("font") {
+            continue;
+        }
+        if let Some(mut image) = images.get_mut(*id) {
+            if image.data.is_some() {
+                image.asset_usage = bevy::asset::RenderAssetUsages::RENDER_WORLD;
+            }
+        }
+    }
+}
+
 pub struct MipmapPlugin;
 
 impl Plugin for MipmapPlugin {
     fn build(&self, app: &mut App) {
+        app.add_systems(Last, release_cpu_copies);
         app.add_systems(PostUpdate, give_mipmaps);
     }
 }
