@@ -5254,6 +5254,9 @@ fn rebody(
         let handles = upload_character_with(&asset, &mut meshes, &mut bindposes, |surface| {
             characters.add(look.character(&assets, &mut images, surface, origin))
         });
+        // the meshes are uploaded (the faces' morphs kept in `handles`): the copies in the
+        // asset, a few MB for each look, are let go
+        asset.parts.clear();
         game.ragdoll_rigs.push(asset.ragdoll.as_ref().map(|r| Arc::new(RagdollRig::new(r, &asset.rig))));
         game.outfits.push(asset);
         game.uploads.push(handles);
